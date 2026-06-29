@@ -190,6 +190,7 @@ async function handle(chatId: number, text: string) {
       `*Commandes disponibles :*\n` +
       `\`/ls\` — Lister les fichiers\n` +
       `\`/read [fichier]\` — Lire un fichier\n` +
+      `\`/explain [fichier]\` — Explication pédagogique ligne par ligne\n` +
       `\`/history\` — 10 derniers commits\n` +
       `\`/deploy\` — Redéployer le bot\n` +
       `\`/status\` — Statut GitHub Actions\n` +
@@ -266,6 +267,27 @@ async function handle(chatId: number, text: string) {
     if (!run) return send(chatId, "ℹ️ Aucun déploiement trouvé.");
     const icon = run.conclusion==="success"?"✅":run.conclusion==="failure"?"❌":"⏳";
     return send(chatId, `${icon} \`${run.conclusion??run.status}\` — \`${run.head_sha?.slice(0,7)}\`\n[Voir logs](${run.html_url})`);
+  }
+
+  // /explain [file]
+  if (text.startsWith("/explain")) {
+    const path = text.slice(9).trim();
+    if (!path) return send(chatId, "Usage: `/explain chemin/vers/fichier.ts`");
+    await send(chatId, `📖 Je lis \`${path}\`... Je vais te l'expliquer comme si tu débutais !`);
+    await typing(chatId);
+    const f = await readFile(session.ghToken, session.repo, path);
+    if (!f) return send(chatId, `❌ \`${path}\` introuvable. Utilise \`/ls\` pour voir les fichiers disponibles.`);
+    const preview = f.content.slice(0, 6000);
+    const explanation = await groq([
+      { role: "system", content: `Tu es Keve, un mentor développeur bienveillant. Explique ce fichier de code de façon pédagogique et naturelle, comme si tu donnais un cours à un étudiant. Structure ton explication ainsi :
+1. "C'est quoi ce fichier ?" — rôle global en 2-3 phrases simples
+2. "Comment ça marche ?" — explication des parties importantes, avec des analogies si possible  
+3. "Les points clés à retenir" — 3-5 bullets des concepts importants
+4. "Ce qu'on pourrait améliorer" — suggestions constructives et encourageantes
+Utilise des emojis avec parcimonie, reste naturel et humain. Pas de langage robotique.` },
+      { role: "user", content: `Fichier: ${path}\n\n\`\`\`\n${preview}\n\`\`\`` },
+    ]);
+    return send(chatId, `*📚 Explication de \`${path}\` :*\n\n${explanation}`);
   }
 
   // /deploy
