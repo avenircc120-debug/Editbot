@@ -1,375 +1,360 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+// ═══════════════════════════════════════════════════════
+//  EDITBOT — Agent IA + Mentor Humain via Groq
+// ═══════════════════════════════════════════════════════
 
-const TELEGRAM_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
-const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY")!;
-const GITHUB_TOKEN = Deno.env.get("GITHUB_ACCESS_TOKEN")!;
-const GITHUB_REPO = Deno.env.get("GITHUB_REPO")!;
-const SUPABASE_TOKEN = Deno.env.get("SUPABASE_ACCESS_TOKEN")!;
-const SUPABASE_REF = "jxrwgcsbomqvvchvkkdt";
-const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
+const DEFAULT_GH_TOKEN = Deno.env.get("GITHUB_ACCESS_TOKEN") ?? "";
+const DEFAULT_REPO     = Deno.env.get("GITHUB_REPO") ?? "avenircc120-debug/Editbot";
+const GROQ_KEY         = Deno.env.get("GROQ_API_KEY") ?? "";
+const TG_TOKEN         = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
+const SB_TOKEN         = Deno.env.get("SB_ACCESS_TOKEN") ?? "";
+const SB_REF           = "jxrwgcsbomqvvchvkkdt";
+const TG               = `https://api.telegram.org/bot${TG_TOKEN}`;
 
-const SYSTEM_PROMPT = `Tu es Editbot, un agent de développement autonome et omniscient.
-
-Ton rôle :
-- Analyser l'arborescence complète d'un projet GitHub
-- Comprendre les dépendances entre fichiers
-- Modifier le code de façon intelligente et cohérente selon les intentions naturelles de l'utilisateur
-- Garantir que chaque modification est syntaxiquement correcte et fonctionnellement cohérente
-
-Règles absolues :
-1. Tu dois toujours retourner un JSON valide UNIQUEMENT avec cette structure :
-{
-  "explanation": "Explication claire de ce que tu fais et pourquoi",
-  "files": [
-    {
-      "path": "chemin/vers/fichier.ext",
-      "content": "contenu complet du fichier modifié",
-      "action": "update" | "create" | "delete"
-    }
-  ]
+// ── Session par utilisateur (mémoire de travail) ──────
+interface Session {
+  ghToken: string;
+  repo: string;
+  projectIndex: string;   // résumé indexé du projet
+  indexedAt: number;      // timestamp
+  mentorMode: boolean;
 }
-2. Retourne TOUJOURS le fichier COMPLET, jamais d'extraits partiels
-3. Sois précis sur les chemins de fichiers (respecte la casse)
-4. Si tu crées plusieurs fichiers interdépendants, inclus-les tous dans la même réponse
-5. Ne jamais inclure de texte hors du JSON`;
+const sessions = new Map<number, Session>();
 
-const CORRECTION_PROMPT = `Tu es un expert en débogage de code (Deno/TypeScript/Node.js/Python).
-Analyse les logs d'erreur fournis et réponds en JSON :
-{
-  "diagnostic": "Explication claire du problème",
-  "severity": "critical" | "warning" | "info",
-  "fix_suggestion": "Correction concrète à apporter",
-  "affected_files": ["liste des fichiers concernés"]
-}`;
-
-interface TelegramMessage {
-  message?: {
-    chat: { id: number };
-    text?: string;
-    from?: { id: number; username?: string };
-  };
+function getSession(chatId: number): Session {
+  if (!sessions.has(chatId)) {
+    sessions.set(chatId, {
+      ghToken: DEFAULT_GH_TOKEN,
+      repo: DEFAULT_REPO,
+      projectIndex: "",
+      indexedAt: 0,
+      mentorMode: true,
+    });
+  }
+  return sessions.get(chatId)!;
 }
 
-async function sendMessage(chatId: number, text: string, parseMode = "Markdown") {
+// ── Prompts ───────────────────────────────────────────
+const MENTOR_SYSTEM = `Tu es Keve, un mentor développeur bienveillant, expérimenté et passionné.
+Tu t'adresses à ton étudiant de façon naturelle et chaleureuse, jamais comme un robot.
+Tu utilises "tu", tu encourages, tu expliques avec des analogies simples.
+Exemples de ton style :
+  "Salut ! Je viens de lire ton code, je vois quelque chose d'intéressant ici 👀"
+  "Bonne question ! Regarde cette partie — voilà comment je l'optimiserais :"
+  "Tu es sur la bonne voie, juste ce petit détail à ajuster..."
+
+Quand tu dois MODIFIER du code, tu retournes du JSON structuré :
+{"explanation":"...","files":[{"path":"...","content":"...","action":"create|update|delete"}]}
+
+Quand tu EXPLIQUES ou RÉPONDS sans modifier de code, tu réponds naturellement en texte libre.
+Ton rôle : expliquer le code, corriger les erreurs, enseigner les bonnes pratiques, motiver.`;
+
+const AGENT_SYSTEM = `Tu es Editbot, agent de développement autonome.
+Réponds UNIQUEMENT en JSON : {"explanation":"...","files":[{"path":"...","content":"contenu complet","action":"create|update|delete"}]}
+Toujours retourner le fichier COMPLET.`;
+
+// ── Telegram ──────────────────────────────────────────
+async function send(chatId: number, text: string) {
   const chunks = text.match(/[\s\S]{1,4000}/g) || [text];
-  for (const chunk of chunks) {
-    await fetch(`${TELEGRAM_API}/sendMessage`, {
+  for (const c of chunks) {
+    await fetch(`${TG}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: chunk, parse_mode: parseMode }),
+      body: JSON.stringify({ chat_id: chatId, text: c, parse_mode: "Markdown" }),
     });
   }
 }
-
-async function sendTyping(chatId: number) {
-  await fetch(`${TELEGRAM_API}/sendChatAction`, {
+async function typing(chatId: number) {
+  await fetch(`${TG}/sendChatAction`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: chatId, action: "typing" }),
   });
 }
 
-async function getRepoTree(path = ""): Promise<{ path: string; sha: string; type: string }[]> {
-  const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${path}`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, Accept: "application/vnd.github+json" },
+// ── GitHub API ────────────────────────────────────────
+async function repoTree(token: string, repo: string, path = ""): Promise<{path:string;sha:string;size:number}[]> {
+  const r = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
   });
-  if (!res.ok) return [];
-  const items = await res.json();
-  let allFiles: { path: string; sha: string; type: string }[] = [];
-  for (const item of items) {
-    if (item.type === "dir") {
-      allFiles = allFiles.concat(await getRepoTree(item.path));
-    } else {
-      allFiles.push({ path: item.path, sha: item.sha, type: item.type });
-    }
+  if (!r.ok) return [];
+  const items = await r.json();
+  if (!Array.isArray(items)) return [];
+  let all: {path:string;sha:string;size:number}[] = [];
+  for (const i of items) {
+    if (i.type === "dir") all = all.concat(await repoTree(token, repo, i.path));
+    else all.push({ path: i.path, sha: i.sha, size: i.size ?? 0 });
   }
-  return allFiles;
+  return all;
 }
 
-async function getFileContent(path: string): Promise<{ content: string; sha: string } | null> {
-  const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/contents/${path}`, {
-    headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, Accept: "application/vnd.github+json" },
+async function readFile(token: string, repo: string, path: string): Promise<{content:string;sha:string}|null> {
+  const r = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
   });
-  if (!res.ok) return null;
-  const data = await res.json();
-  const content = atob(data.content.replace(/\n/g, ""));
-  return { content, sha: data.sha };
+  if (!r.ok) return null;
+  const d = await r.json();
+  try { return { content: atob(d.content.replace(/\n/g,"")), sha: d.sha }; }
+  catch { return null; }
 }
 
-async function updateFile(path: string, content: string, message: string, sha?: string): Promise<boolean> {
-  const body: Record<string, string> = {
-    message,
-    content: btoa(unescape(encodeURIComponent(content))),
-  };
+async function writeFile(token: string, repo: string, path: string, content: string, msg: string, sha?: string): Promise<boolean> {
+  const body: Record<string,string> = { message: msg, content: btoa(unescape(encodeURIComponent(content))) };
   if (sha) body.sha = sha;
-  const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/contents/${path}`, {
+  const r = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, {
     method: "PUT",
-    headers: {
-      Authorization: `Bearer ${GITHUB_TOKEN}`,
-      Accept: "application/vnd.github+json",
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return res.ok;
+  return r.ok;
 }
 
-async function deleteFile(path: string, message: string, sha: string): Promise<boolean> {
-  const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/contents/${path}`, {
-    method: "DELETE",
-    headers: {
-      Authorization: `Bearer ${GITHUB_TOKEN}`,
-      Accept: "application/vnd.github+json",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ message, sha }),
-  });
-  return res.ok;
-}
-
-async function callGroq(messages: { role: string; content: string }[], json = true): Promise<string> {
-  const body: Record<string, unknown> = {
-    model: "llama3-70b-8192",
+// ── Groq ──────────────────────────────────────────────
+async function groq(
+  messages: {role:string;content:string}[],
+  jsonMode = false,
+  model = "llama3-70b-8192"
+): Promise<string> {
+  const body: Record<string,unknown> = {
+    model,
     messages,
-    temperature: 0.2,
+    temperature: 0.4,
     max_tokens: 8192,
   };
-  if (json) body.response_format = { type: "json_object" };
-
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  if (jsonMode) body.response_format = { type: "json_object" };
+  const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
-    headers: { Authorization: `Bearer ${GROQ_API_KEY}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content ?? "{}";
+  const d = await r.json();
+  return d.choices?.[0]?.message?.content ?? "";
 }
 
-async function deployEdgeFunction(functionBody: string): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`https://api.supabase.com/v1/projects/${SUPABASE_REF}/functions/telegram-agent`, {
-    method: "PUT",
-    headers: {
-      Authorization: `Bearer ${SUPABASE_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      slug: "telegram-agent",
-      name: "telegram-agent",
-      body: functionBody,
-      verify_jwt: false,
-    }),
-  });
-  if (res.ok) return { ok: true };
-  const err = await res.text();
-  return { ok: false, error: err };
+// ── Clonage & Indexation ──────────────────────────────
+async function cloneAndIndex(chatId: number, token: string, repo: string): Promise<string> {
+  await send(chatId, `🔍 Clonage de \`${repo}\` en cours...\nJe lis tous vos fichiers pour créer ma mémoire de travail.`);
+  await typing(chatId);
+
+  const files = await repoTree(token, repo);
+  if (!files.length) return "❌ Impossible d'accéder au repo. Vérifiez le token et le nom du repo.";
+
+  const exts = [".ts",".js",".tsx",".jsx",".py",".json",".md",".toml",".yaml",".yml",".html",".css",".sql",".env.example",".sh"];
+  const keyFiles = files
+    .filter(f => exts.some(e => f.path.endsWith(e)) && !f.path.includes("lock") && !f.path.includes(".tsbuildinfo") && f.size < 50000)
+    .slice(0, 20);
+
+  await send(chatId, `📂 ${files.length} fichiers trouvés. Lecture de ${keyFiles.length} fichiers clés...`);
+  await typing(chatId);
+
+  let codeContext = `PROJET: ${repo}\nFICHIERS TOTAUX: ${files.length}\n\nARBORESCENCE:\n${files.map(f=>f.path).join("\n")}\n\n`;
+  codeContext += "═══ CONTENU DES FICHIERS CLÉS ═══\n";
+
+  for (const f of keyFiles) {
+    const file = await readFile(token, repo, f.path);
+    if (file) codeContext += `\n\n┌── ${f.path}\n${file.content.slice(0, 2000)}`;
+  }
+
+  // Génère un résumé intelligent du projet via Groq
+  await send(chatId, "🧠 Analyse et indexation du code via IA...");
+  await typing(chatId);
+
+  const summary = await groq([
+    { role: "system", content: "Tu es un analyste de code expert. Analyse ce projet et génère un résumé structuré en français : stack technique, architecture, fichiers principaux, fonctionnalités, points d'amélioration possibles. Sois précis et concis." },
+    { role: "user", content: codeContext.slice(0, 15000) },
+  ]);
+
+  // Stocke dans la session
+  const session = getSession(chatId);
+  session.ghToken = token;
+  session.repo = repo;
+  session.projectIndex = `${codeContext.slice(0, 8000)}\n\n═══ RÉSUMÉ IA ═══\n${summary}`;
+  session.indexedAt = Date.now();
+  sessions.set(chatId, session);
+
+  return summary;
 }
 
-async function getLastCommitStatus(): Promise<{ status: string; sha: string; url: string } | null> {
-  const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/actions/runs?per_page=1`, {
-    headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, Accept: "application/vnd.github+json" },
-  });
-  if (!res.ok) return null;
-  const data = await res.json();
-  const run = data.workflow_runs?.[0];
-  if (!run) return null;
-  return { status: run.conclusion ?? run.status, sha: run.head_sha?.slice(0, 7), url: run.html_url };
-}
-
-async function handleCommand(chatId: number, text: string) {
-  await sendTyping(chatId);
+// ── Commandes ─────────────────────────────────────────
+async function handle(chatId: number, text: string) {
+  const session = getSession(chatId);
+  await typing(chatId);
 
   // /start
-  if (text.startsWith("/start")) {
-    await sendMessage(chatId,
-      `🤖 *Editbot — Agent IA de développement autonome*\n\n` +
-      `Je scanne votre projet GitHub et modifie le code selon vos intentions naturelles.\n\n` +
-      `*Commandes :*\n` +
-      `/ls — Lister tous les fichiers du projet\n` +
-      `/read [fichier] — Lire un fichier spécifique\n` +
-      `/deploy — Redéployer l'Edge Function maintenant\n` +
-      `/status — Statut du dernier déploiement GitHub Actions\n\n` +
-      `💡 Ou décrivez simplement ce que vous voulez faire en langage naturel !`
+  if (text.startsWith("/start") || text === "/help") {
+    return send(chatId,
+      `👋 Salut ! Je suis *Keve*, ton mentor dev et agent IA autonome.\n\n` +
+      `Je peux lire, comprendre et modifier ton code GitHub comme un vrai développeur.\n\n` +
+      `*Pour commencer :*\n` +
+      `📌 \`/clone [token] [owner/repo]\` — Je clone et lis ton projet\n` +
+      `📌 \`/clone [owner/repo]\` — Avec ton token déjà configuré\n\n` +
+      `*Commandes disponibles :*\n` +
+      `\`/ls\` — Lister les fichiers\n` +
+      `\`/read [fichier]\` — Lire un fichier\n` +
+      `\`/history\` — 10 derniers commits\n` +
+      `\`/deploy\` — Redéployer le bot\n` +
+      `\`/status\` — Statut GitHub Actions\n` +
+      `\`/whoami\` — Voir le repo actif\n\n` +
+      `💬 *Ou parle-moi directement !* Une fois cloné, je réponds à toutes tes questions sur le code.`
     );
-    return;
+  }
+
+  // /clone [token?] [repo]
+  if (text.startsWith("/clone")) {
+    const parts = text.split(/\s+/).slice(1);
+    if (!parts.length) {
+      return send(chatId, "Usage:\n`/clone owner/repo` — avec ton token déjà configuré\n`/clone ghp_xxx owner/repo` — avec un nouveau token");
+    }
+    let token = session.ghToken;
+    let repo = parts[0];
+    if (parts.length >= 2 && parts[0].startsWith("ghp_") || parts[0].startsWith("github_pat_")) {
+      token = parts[0];
+      repo = parts[1];
+    }
+    if (!repo.includes("/")) {
+      return send(chatId, "❌ Format du repo invalide. Exemple: `owner/nom-du-repo`");
+    }
+    const summary = await cloneAndIndex(chatId, token, repo);
+    return send(chatId,
+      `✅ *Projet \`${repo}\` cloné et indexé !*\n\n` +
+      `*📋 Analyse du projet :*\n\n${summary}\n\n` +
+      `---\nJe connais maintenant ton projet. Parle-moi de ce que tu veux faire ! 🚀`
+    );
+  }
+
+  // /whoami
+  if (text.startsWith("/whoami")) {
+    const indexed = session.indexedAt ? `\nIndexé il y a ${Math.round((Date.now()-session.indexedAt)/60000)} min` : "\nPas encore indexé — utilise /clone";
+    return send(chatId, `*Repo actif :* \`${session.repo}\`${indexed}`);
   }
 
   // /ls
   if (text.startsWith("/ls")) {
-    await sendMessage(chatId, "🔍 Scan de l'arborescence en cours...");
-    const files = await getRepoTree();
-    if (files.length === 0) {
-      await sendMessage(chatId, "❌ Repo vide ou inaccessible.");
-      return;
-    }
-    const tree = files.map(f => `📄 \`${f.path}\``).join("\n");
-    await sendMessage(chatId, `*Arborescence (${files.length} fichiers) :*\n\n${tree}`);
-    return;
+    await send(chatId, "🔍 Scan en cours...");
+    const files = await repoTree(session.ghToken, session.repo);
+    if (!files.length) return send(chatId, "❌ Repo inaccessible.");
+    return send(chatId, `*${files.length} fichiers dans \`${session.repo}\` :*\n\n` + files.map(f=>`📄 \`${f.path}\``).join("\n"));
   }
 
   // /read [file]
   if (text.startsWith("/read ")) {
-    const filePath = text.slice(6).trim();
-    await sendMessage(chatId, `📖 Lecture de \`${filePath}\`...`);
-    const file = await getFileContent(filePath);
-    if (!file) {
-      await sendMessage(chatId, `❌ Fichier \`${filePath}\` introuvable.`);
-      return;
-    }
-    const preview = file.content.length > 3500 ? file.content.slice(0, 3500) + "\n...[tronqué]" : file.content;
-    await sendMessage(chatId, `*\`${filePath}\` :*\n\`\`\`\n${preview}\n\`\`\``);
-    return;
+    const path = text.slice(6).trim();
+    const f = await readFile(session.ghToken, session.repo, path);
+    if (!f) return send(chatId, `❌ \`${path}\` introuvable.`);
+    const preview = f.content.length > 3500 ? f.content.slice(0,3500)+"\n...[tronqué]" : f.content;
+    return send(chatId, `*\`${path}\` :*\n\`\`\`\n${preview}\n\`\`\``);
+  }
+
+  // /history
+  if (text.startsWith("/history")) {
+    const r = await fetch(`https://api.github.com/repos/${session.repo}/commits?per_page=10`, {
+      headers: { Authorization: `Bearer ${session.ghToken}`, Accept: "application/vnd.github+json" },
+    });
+    if (!r.ok) return send(chatId, "❌ Historique inaccessible.");
+    const commits = await r.json();
+    return send(chatId, `*📜 Historique :*\n\n` + commits.map((c:{sha:string;commit:{message:string}}) =>
+      `• \`${c.sha.slice(0,7)}\` ${c.commit.message.split("\n")[0].slice(0,60)}`
+    ).join("\n"));
   }
 
   // /status
   if (text.startsWith("/status")) {
-    const run = await getLastCommitStatus();
-    if (!run) {
-      await sendMessage(chatId, "ℹ️ Aucun déploiement GitHub Actions trouvé.");
-      return;
-    }
-    const icon = run.status === "success" ? "✅" : run.status === "failure" ? "❌" : "⏳";
-    await sendMessage(chatId, `${icon} *Dernier déploiement :*\nStatut: \`${run.status}\`\nCommit: \`${run.sha}\`\n[Voir les logs](${run.url})`);
-    return;
+    const r = await fetch(`https://api.github.com/repos/${session.repo}/actions/runs?per_page=1`, {
+      headers: { Authorization: `Bearer ${session.ghToken}`, Accept: "application/vnd.github+json" },
+    });
+    const d = await r.json();
+    const run = d.workflow_runs?.[0];
+    if (!run) return send(chatId, "ℹ️ Aucun déploiement trouvé.");
+    const icon = run.conclusion==="success"?"✅":run.conclusion==="failure"?"❌":"⏳";
+    return send(chatId, `${icon} \`${run.conclusion??run.status}\` — \`${run.head_sha?.slice(0,7)}\`\n[Voir logs](${run.html_url})`);
   }
 
-  // /deploy — redeploy Edge Function directly
+  // /deploy
   if (text.startsWith("/deploy")) {
-    await sendMessage(chatId, "🚀 Redéploiement de l'Edge Function en cours...");
-    const currentFile = await getFileContent("supabase/functions/telegram-agent/index.ts");
-    if (!currentFile) {
-      await sendMessage(chatId, "❌ Fichier source introuvable dans le repo.");
-      return;
-    }
-    const result = await deployEdgeFunction(currentFile.content);
-    if (result.ok) {
-      await sendMessage(chatId, "✅ *Edge Function redéployée avec succès !*\nLe bot est à jour.");
-    } else {
-      // Auto-correct via Groq
-      await sendMessage(chatId, "❌ Déploiement échoué. Analyse IA en cours...");
-      const analysis = await callGroq([
-        { role: "system", content: CORRECTION_PROMPT },
-        { role: "user", content: `Logs d'erreur du déploiement Supabase:\n${result.error}` },
-      ]);
-      let parsed: { diagnostic: string; fix_suggestion: string } = { diagnostic: "Inconnu", fix_suggestion: "Vérifiez le code" };
-      try { parsed = JSON.parse(analysis); } catch { /* ignore */ }
-      await sendMessage(chatId,
-        `❌ *Déploiement échoué*\n\n` +
-        `🔍 *Diagnostic IA :* ${parsed.diagnostic}\n\n` +
-        `💡 *Correction suggérée :* ${parsed.fix_suggestion}`
-      );
-    }
-    return;
+    await send(chatId, "🚀 Redéploiement en cours...");
+    const f = await readFile(session.ghToken, session.repo, "supabase/functions/telegram-agent/index.ts");
+    if (!f) return send(chatId, "❌ Fichier source introuvable dans le repo.");
+    const r = await fetch(`https://api.supabase.com/v1/projects/${SB_REF}/functions/telegram-agent`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${SB_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "telegram-agent", body: f.content, verify_jwt: false }),
+    });
+    return r.ok ? send(chatId, "✅ *Bot redéployé avec succès !*") : send(chatId, "❌ Échec du redéploiement.");
   }
 
-  // Autonomous agent mode — natural language
-  await sendMessage(chatId, "🧠 Analyse du projet en cours...");
+  // ── Mode Mentor / Agent IA (texte libre) ────────────
+  await typing(chatId);
 
-  const files = await getRepoTree();
-  if (files.length === 0) {
-    await sendMessage(chatId, "❌ Repo vide ou inaccessible. Poussez d'abord du code sur GitHub.");
-    return;
+  // Détermine si la demande nécessite une modification de code
+  const isCodeMod = /modif|change|ajoute|crée|supprime|corrige|refactor|implement|update|fix|add|create|delete/i.test(text);
+  const hasContext = !!session.projectIndex;
+
+  const systemPrompt = isCodeMod ? AGENT_SYSTEM : MENTOR_SYSTEM;
+  const userContent = hasContext
+    ? `CONTEXTE DU PROJET (${session.repo}):\n${session.projectIndex.slice(0,6000)}\n\n---\nDemande de l'utilisateur: ${text}`
+    : text;
+
+  const messages = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userContent },
+  ];
+
+  if (!hasContext && !isCodeMod) {
+    // Pas de projet cloné — répond en mode mentor général
+    const reply = await groq(messages);
+    return send(chatId, reply || "Hmm, je n'ai pas eu de réponse. Réessaie !");
   }
 
-  // Read key files for context
-  const keyExtensions = [".ts", ".js", ".tsx", ".jsx", ".json", ".md", ".py", ".toml", ".yaml", ".yml", ".env.example"];
-  const keyFiles = files
-    .filter(f => keyExtensions.some(ext => f.path.endsWith(ext)) && !f.path.includes("pnpm-lock") && !f.path.includes(".tsbuildinfo"))
-    .slice(0, 15);
-
-  let contextFiles = "";
-  for (const f of keyFiles) {
-    const file = await getFileContent(f.path);
-    if (file) {
-      contextFiles += `\n\n--- FILE: ${f.path} ---\n${file.content.slice(0, 1500)}`;
-    }
+  if (!hasContext && isCodeMod) {
+    return send(chatId, `💡 Pour modifier du code, utilise d'abord :\n\`/clone owner/repo\`\n\nJe pourrai ensuite modifier tes fichiers directement !`);
   }
 
-  const treeStr = files.map(f => f.path).join("\n");
+  await send(chatId, "🧠 Je réfléchis...");
+  await typing(chatId);
 
-  await sendMessage(chatId, `📁 ${files.length} fichiers analysés, ${keyFiles.length} lus. IA en réflexion...`);
-  await sendTyping(chatId);
+  if (isCodeMod) {
+    // Mode agent — retourne JSON + applique les modifications
+    const raw = await groq(messages, true);
+    let parsed: { explanation: string; files: {path:string;content:string;action:string}[] };
+    try { parsed = JSON.parse(raw); }
+    catch { return send(chatId, `Voilà ce que j'en pense :\n\n${raw.slice(0,2000)}`); }
 
-  const aiResponse = await callGroq([
-    { role: "system", content: SYSTEM_PROMPT },
-    {
-      role: "user",
-      content: `ARBORESCENCE DU PROJET:\n${treeStr}\n\nCONTENU DES FICHIERS CLÉS:${contextFiles}\n\nDEMANDE UTILISATEUR: ${text}`,
-    },
-  ]);
+    if (!parsed.files?.length) return send(chatId, parsed.explanation || raw);
 
-  let parsed: { explanation: string; files: { path: string; content: string; action: string }[] };
-  try {
-    parsed = JSON.parse(aiResponse);
-  } catch {
-    await sendMessage(chatId, `❌ Erreur de parsing JSON.\n\nRéponse brute:\n${aiResponse.slice(0, 500)}`);
-    return;
-  }
+    await send(chatId, `💡 *Mon plan :* ${parsed.explanation}\n\n📝 Fichiers : ${parsed.files.map(f=>`\`${f.path}\``).join(", ")}\n\n⏳ J'applique les modifications...`);
+    await typing(chatId);
 
-  if (!parsed.files || parsed.files.length === 0) {
-    await sendMessage(chatId, `ℹ️ *Analyse de l'IA :*\n\n${parsed.explanation}`);
-    return;
-  }
-
-  await sendMessage(chatId,
-    `💡 *Plan de l'agent :*\n${parsed.explanation}\n\n` +
-    `📝 Fichiers : ${parsed.files.map(f => `\`${f.path}\` (${f.action})`).join(", ")}\n\n` +
-    `⏳ Application des modifications...`
-  );
-
-  await sendTyping(chatId);
-  const results: string[] = [];
-
-  for (const file of parsed.files) {
-    try {
-      if (file.action === "delete") {
-        const existing = await getFileContent(file.path);
-        if (existing) {
-          const ok = await deleteFile(file.path, `[Editbot] Delete ${file.path}`, existing.sha);
-          results.push(ok ? `🗑️ \`${file.path}\` supprimé` : `❌ Échec suppression \`${file.path}\``);
-        } else {
-          results.push(`⚠️ \`${file.path}\` déjà absent`);
-        }
+    const results: string[] = [];
+    for (const f of parsed.files) {
+      const ex = await readFile(session.ghToken, session.repo, f.path);
+      if (f.action === "delete" && ex) {
+        const r = await fetch(`https://api.github.com/repos/${session.repo}/contents/${f.path}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${session.ghToken}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+          body: JSON.stringify({ message: `[Keve] Delete ${f.path}`, sha: ex.sha }),
+        });
+        results.push(r.ok ? `🗑️ \`${f.path}\` supprimé` : `❌ Échec \`${f.path}\``);
       } else {
-        const existing = await getFileContent(file.path);
-        const ok = await updateFile(
-          file.path,
-          file.content,
-          `[Editbot] ${file.action === "create" ? "Create" : "Update"} ${file.path}`,
-          existing?.sha
-        );
-        results.push(ok
-          ? `✅ \`${file.path}\` ${file.action === "create" ? "créé" : "mis à jour"}`
-          : `❌ Échec sur \`${file.path}\``
-        );
+        const ok = await writeFile(session.ghToken, session.repo, f.path, f.content, `[Keve] ${f.action==="create"?"Create":"Update"} ${f.path}`, ex?.sha);
+        results.push(ok ? `✅ \`${f.path}\` ${f.action==="create"?"créé":"mis à jour"}` : `❌ Échec \`${f.path}\``);
       }
-    } catch (e) {
-      results.push(`❌ Erreur \`${file.path}\`: ${String(e).slice(0, 100)}`);
     }
+    return send(chatId, `*Résultat :*\n${results.join("\n")}\n\nTu veux que j'explique ce que j'ai fait ? 😊`);
+  } else {
+    // Mode mentor — réponse naturelle avec contexte du projet
+    const reply = await groq(messages);
+    return send(chatId, reply || "Je n'ai pas bien compris, reformule ta question !");
   }
-
-  const allOk = results.every(r => r.startsWith("✅") || r.startsWith("🗑️"));
-
-  await sendMessage(chatId,
-    `*Résultat :*\n${results.join("\n")}\n\n` +
-    (allOk
-      ? `✅ Modifications appliquées sur GitHub.\n💡 Tapez /deploy pour redéployer l'Edge Function.`
-      : `⚠️ Certaines modifications ont échoué. Tapez /ls pour vérifier l'état du repo.`)
-  );
 }
 
-serve(async (req) => {
-  if (req.method !== "POST") return new Response("OK", { status: 200 });
+// ── Serveur ───────────────────────────────────────────
+Deno.serve(async (req) => {
+  if (req.method !== "POST") return new Response("Keve Bot OK 🤖");
   try {
-    const body: TelegramMessage = await req.json();
-    const message = body.message;
-    if (!message?.text) return new Response("OK", { status: 200 });
-    const chatId = message.chat.id;
-    const text = message.text.trim();
-    handleCommand(chatId, text).catch(console.error);
-    return new Response("OK", { status: 200 });
-  } catch (e) {
-    console.error(e);
-    return new Response("Error", { status: 500 });
-  }
+    const body = await req.json();
+    const msg = body?.message;
+    if (msg?.text && msg?.chat?.id) {
+      handle(msg.chat.id, msg.text.trim()).catch(console.error);
+    }
+    return new Response("OK");
+  } catch { return new Response("OK"); }
 });
