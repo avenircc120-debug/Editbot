@@ -148,46 +148,57 @@ async function getDefaultMatch(): Promise<{ match: string; context: string } | n
 }
 
 // ── Extraction et filtrage de la confiance ────────────
+//
+// Format attendu (strict) par ligne :
+//   [Match] | [Marché] | [Pronostic] | [Confiance: XX%]
+// Un token est valide seulement si :
+//   • il respecte exactement la structure à 4 champs séparés par "|"
+//   • le 4e champ contient "Confiance:" suivi d'un entier entre 0 et 100
+//   • la confiance est ≥ 90 pour passer le filtre
 
 interface PredLine {
-  raw       : string;
-  confidence: number;
+  raw       : string;  // ligne originale
+  confidence: number;  // valeur extraite (0-100)
 }
 
+// Regex ancrée : valide l'intégralité de la ligne, extrait la confiance
+// uniquement depuis le dernier champ "Confiance: XX%"
+const PRED_LINE_RE = /^[^|]+\|[^|]+\|[^|]+\|\s*confiance\s*:\s*(\d{1,3})\s*%\s*$/i;
+
 function parsePredictions(raw: string): PredLine[] {
-  const lines = raw.split("\n").map(l => l.trim()).filter(Boolean);
   const results: PredLine[] = [];
-  for (const line of lines) {
-    // Cherche "Confiance: XX%" ou "XX%" en fin de ligne
-    const m = line.match(/confiance\s*[:\-]?\s*(\d+)\s*%/i) ?? line.match(/(\d+)\s*%\s*$/i);
-    if (m) results.push({ raw: line, confidence: parseInt(m[1], 10) });
+  for (const line of raw.split("\n").map(l => l.trim()).filter(Boolean)) {
+    const m = line.match(PRED_LINE_RE);
+    if (!m) continue;
+    const conf = parseInt(m[1], 10);
+    if (conf < 0 || conf > 100) continue;   // valeur hors-bornes → rejet
+    results.push({ raw: line, confidence: conf });
   }
   return results;
 }
 
 function applyConfidenceFilter(raw: string): string {
-  // Cas signal trop faible renvoyé directement par l'IA
+  // L'IA a renvoyé le message d'erreur directement
   if (/signal trop faible/i.test(raw)) {
     return "🚫 *Signal trop faible* — aucune prédiction fiable pour ce match.";
   }
 
-  const lines = parsePredictions(raw);
+  const lines  = parsePredictions(raw);
 
+  // Aucune ligne au format valide → bloquer par sécurité
   if (lines.length === 0) {
-    // Réponse malformée → bloquer par sécurité
     return "🚫 *Signal trop faible* — aucune prédiction fiable pour ce match.";
   }
 
-  const passed = lines.filter(l => l.confidence >= 90);
+  const passed  = lines.filter(l => l.confidence >= 90);
+  const blocked = lines.length - passed.length;
 
   if (passed.length === 0) {
     return "🚫 *Signal trop faible* — aucune prédiction fiable pour ce match.";
   }
 
-  // Construire la réponse finale avec uniquement les marchés fiables
   const header = "🎯 *PRONOSTICS CERTIFIÉS* _(confiance ≥ 90%)_\n";
   const body   = passed.map(l => `✅ ${l.raw}`).join("\n");
-  const blocked = lines.length - passed.length;
   const footer = blocked > 0
     ? `\n\n_${blocked} marché(s) filtré(s) — confiance insuffisante (<90%)_`
     : "";
@@ -472,35 +483,41 @@ async function handle(chatId: number, text: string) {
 
   // ── Live ──────────────────────────────────────────
   if (cmd === "/live") {
+    transition(s, "idle");
     const r = await getLive(); addHistory(s, "user", cmd); addHistory(s, "assistant", r); return send(chatId, r);
   }
 
   // ── Aujourd'hui ───────────────────────────────────
   if (cmd === "/auj" || cmd === "/aujourd'hui" || cmd === "/today") {
+    transition(s, "idle");
     const r = await getToday(); addHistory(s, "user", cmd); addHistory(s, "assistant", r); return send(chatId, r);
   }
 
   // ── Classement ────────────────────────────────────
   const cm = cmd.match(/^\/classement\s+(\w+)$/i);
   if (cm) {
+    transition(s, "idle");
     const r = await getStandings(cm[1]); addHistory(s, "user", cmd); addHistory(s, "assistant", r); return send(chatId, r);
   }
 
   // ── Équipe ────────────────────────────────────────
   const em = cmd.match(/^\/equipe\s+(.+)$/i);
   if (em) {
+    transition(s, "idle");
     const r = await getTeam(em[1].trim()); addHistory(s, "user", cmd); addHistory(s, "assistant", r); return send(chatId, r);
   }
 
   // ── Joueur ────────────────────────────────────────
   const jm = cmd.match(/^\/joueur\s+(.+)$/i);
   if (jm) {
+    transition(s, "idle");
     const r = await getPlayer(jm[1].trim()); addHistory(s, "user", cmd); addHistory(s, "assistant", r); return send(chatId, r);
   }
 
   // ── H2H ──────────────────────────────────────────
   const hm = cmd.match(/^\/h2h\s+(.+)\s+vs\.?\s+(.+)$/i);
   if (hm) {
+    transition(s, "idle");
     const r = await getH2H(hm[1].trim(), hm[2].trim()); addHistory(s, "user", cmd); addHistory(s, "assistant", r); return send(chatId, r);
   }
 
@@ -574,14 +591,24 @@ async function handle(chatId: number, text: string) {
 
 const WEBHOOK_SECRET = Deno.env.get("TELEGRAM_WEBHOOK_SECRET") ?? "";
 
+// Avertissement au démarrage si le secret n'est pas configuré
+if (!WEBHOOK_SECRET) {
+  console.warn(
+    "[SECURITY] TELEGRAM_WEBHOOK_SECRET non configuré — " +
+    "toute requête POST est acceptée sans vérification d'origine. " +
+    "Définissez ce secret dans Supabase pour protéger le bot."
+  );
+}
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return new Response("FootBot ⚽ — Système d'Analyse Prédictive Sportive");
 
-  // Vérification du secret webhook Telegram (si configuré)
+  // Vérification du secret webhook Telegram
+  // Si TELEGRAM_WEBHOOK_SECRET est défini, il est obligatoire.
   if (WEBHOOK_SECRET) {
     const sig = req.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
     if (sig !== WEBHOOK_SECRET) {
-      console.warn("Unauthorized webhook attempt");
+      console.warn(`Unauthorized webhook attempt — IP header: ${req.headers.get("x-forwarded-for") ?? "unknown"}`);
       return new Response("Unauthorized", { status: 401 });
     }
   }
