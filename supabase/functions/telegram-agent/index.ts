@@ -114,6 +114,26 @@ async function send(chatId: number, text: string): Promise<void> {
   }).catch(console.error);
 }
 
+// Affiche "Bot est en train d'écrire..." dans Telegram
+async function typing(chatId: number): Promise<void> {
+  await fetch(`${TG}/sendChatAction`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, action: "typing" }),
+  }).catch(() => {});
+}
+
+// Maintient l'indicateur "typing" pendant toute la durée d'une opération longue
+async function keepTyping(chatId: number, durationMs: number): Promise<void> {
+  const interval = Math.min(4000, durationMs);
+  let elapsed = 0;
+  while (elapsed < durationMs) {
+    await typing(chatId);
+    await sleep(interval);
+    elapsed += interval;
+  }
+}
+
 // ══════════════════════════════════════════════════════
 //  ÉTAPE 1 — SCRAPING COMPLET
 // ══════════════════════════════════════════════════════
@@ -312,11 +332,24 @@ async function scrapeMatchStats(event: any): Promise<MatchData | null> {
   }
 }
 
+// Score de priorité ligue : grandes ligues en premier, reste accepté
+function leaguePriority(e: any): number {
+  const id = e.tournament?.uniqueTournament?.id;
+  if (MAJOR.has(id)) return 0;           // grande ligue
+  const name = (e.tournament?.name ?? "").toLowerCase();
+  if (/world|mundial|mondial|copa|euro|nations|confed/i.test(name)) return 1;
+  if (/primera|premier|liga|serie|bundesliga|ligue|champions|europa/i.test(name)) return 2;
+  return 3;                              // toute autre ligue
+}
+
 // ── Scraping des matchs du jour (séquentiel + délai) ──
 async function scrapeUpcomingMatches(count: number, onProgress: (msg: string) => void): Promise<MatchData[]> {
   const data = await sfFetch(`/sport/football/scheduled-events/${todayStr()}`);
+
+  // Filtre universel : tous les matchs pas encore commencés, triés par priorité
   const candidates: any[] = (data?.events ?? [])
-    .filter((e: any) => MAJOR.has(e.tournament?.uniqueTournament?.id) && e.status?.type === "notstarted");
+    .filter((e: any) => e.status?.type === "notstarted" && e.homeTeam?.id && e.awayTeam?.id)
+    .sort((a: any, b: any) => leaguePriority(a) - leaguePriority(b));
 
   if (!candidates.length) return [];
 
@@ -522,37 +555,47 @@ async function runPronosticPipeline(chatId: number, count: number): Promise<void
     `Je vais collecter toutes les stats réelles pour ${count} match${count > 1 ? "s" : ""} d'aujourd'hui.`
   );
 
-  // Callback de progression — envoie une mise à jour à chaque match scrapé
-  const seenProgress = new Set<string>();
+  // Typing continu pendant le scraping (~40s max)
+  const typingLoop = keepTyping(chatId, 40_000);
+
+  // Callback progression : typing + message texte pour chaque match
+  let scrapedCount = 0;
   const onProgress = async (msg: string) => {
-    if (!seenProgress.has(msg)) {
-      seenProgress.add(msg);
-      await send(chatId, msg).catch(() => {});
-    }
+    scrapedCount++;
+    await typing(chatId);       // renouvelle "en train d'écrire..."
+    await send(chatId, msg).catch(() => {});
   };
 
-  const matches = await scrapeUpcomingMatches(count, onProgress);
+  const [matches] = await Promise.all([
+    scrapeUpcomingMatches(count, onProgress),
+    typingLoop,
+  ]).then(r => [r[0]]);         // on récupère seulement les matchs
 
   if (!matches.length) {
     await send(chatId,
-      "❌ Pas de matchs disponibles dans les grandes ligues aujourd'hui.\n" +
-      "Réessaie plus tard ou utilise /auj pour voir le programme."
+      "❌ Aucun match de football disponible aujourd'hui pour l'instant.\n\n" +
+      "💡 Utilise /auj pour voir tous les matchs du programme, ou réessaie dans quelques heures."
     );
     return;
   }
 
-  // Résumé du scraping
+  // Typing pendant l'analyse IA
+  await typing(chatId);
   await send(chatId,
-    `✅ <b>${matches.length} match${matches.length > 1 ? "s" : ""} scrapé${matches.length > 1 ? "s" : ""} avec succès !</b>\n\n` +
-    `🧠 <i>Analyse IA en cours... L'IA examine chaque statistique pour trouver le meilleur marché.</i>`
+    `✅ <b>${matches.length} match${matches.length > 1 ? "s" : ""} scrapés !</b>\n` +
+    `🧠 <i>L'IA analyse toutes les statistiques...</i>`
   );
 
-  const pronostics = await analyseWithAI(matches);
+  // Typing pendant que Groq raisonne
+  const [pronostics] = await Promise.all([
+    analyseWithAI(matches),
+    keepTyping(chatId, 25_000),
+  ]).then(r => [r[0]]);
 
   const isAIResult = pronostics.some(p => p.reason && p.reason.length > 10);
   const header = isAIResult
-    ? `⚽ <b>Pronostics IA — ${new Date().toLocaleDateString("fr-FR")}</b>\n<i>Basés sur forme, buts, H2H et signaux statistiques</i>\n\n`
-    : `⚽ <b>Pronostics — ${new Date().toLocaleDateString("fr-FR")}</b>\n<i>Basés sur les statistiques calculées localement</i>\n\n`;
+    ? `⚽ <b>Pronostics IA — ${new Date().toLocaleDateString("fr-FR")}</b>\n<i>Forme · Buts · H2H · Signaux stats</i>\n\n`
+    : `⚽ <b>Pronostics — ${new Date().toLocaleDateString("fr-FR")}</b>\n<i>Basés sur les statistiques calculées</i>\n\n`;
 
   await send(chatId, header + formatPronostics(pronostics));
 }
@@ -562,21 +605,27 @@ async function runPronosticPipeline(chatId: number, count: number): Promise<void
 // ══════════════════════════════════════════════════════
 
 async function cmdLive(chatId: number): Promise<void> {
+  await typing(chatId);
   const data   = await sfFetch(`/sport/football/events/live`);
-  const events = (data?.events ?? []).filter((e: any) => MAJOR.has(e.tournament?.uniqueTournament?.id));
-  if (!events.length) { await send(chatId, "Aucun match en direct dans les grandes ligues."); return; }
-  const lines = events.slice(0, 10).map((e: any) =>
-    `⚽ ${e.homeTeam?.name} ${e.homeScore?.current ?? 0}-${e.awayScore?.current ?? 0} ${e.awayTeam?.name} (${e.tournament?.name})`
+  const all: any[] = data?.events ?? [];
+  // Priorité grandes ligues, puis tout le reste
+  const events = all.sort((a: any, b: any) => leaguePriority(a) - leaguePriority(b));
+  if (!events.length) { await send(chatId, "Aucun match de football en direct pour l'instant."); return; }
+  const lines = events.slice(0, 12).map((e: any) =>
+    `⚽ ${e.homeTeam?.name} ${e.homeScore?.current ?? 0}-${e.awayScore?.current ?? 0} ${e.awayTeam?.name} — <i>${e.tournament?.name}</i>`
   );
   await send(chatId, `🔴 <b>Matchs en direct</b>\n\n${lines.join("\n")}`);
 }
 
 async function cmdToday(chatId: number): Promise<void> {
+  await typing(chatId);
   const data   = await sfFetch(`/sport/football/scheduled-events/${todayStr()}`);
-  const events = (data?.events ?? []).filter((e: any) => MAJOR.has(e.tournament?.uniqueTournament?.id));
-  if (!events.length) { await send(chatId, "Aucun match prévu aujourd'hui dans les grandes ligues."); return; }
+  const events: any[] = (data?.events ?? [])
+    .filter((e: any) => e.status?.type === "notstarted")
+    .sort((a: any, b: any) => leaguePriority(a) - leaguePriority(b));
+  if (!events.length) { await send(chatId, "Aucun match prévu aujourd'hui."); return; }
   const lines = events.slice(0, 15).map((e: any) =>
-    `${fmtTime(e.startTimestamp)} — ${e.homeTeam?.name} vs ${e.awayTeam?.name} (${e.tournament?.name})`
+    `${fmtTime(e.startTimestamp)} — ${e.homeTeam?.name} vs ${e.awayTeam?.name} (<i>${e.tournament?.name}</i>)`
   );
   await send(chatId, `📅 <b>Matchs du jour</b>\n\n${lines.join("\n")}`);
 }
