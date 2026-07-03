@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════
-//  FOOTBOT — Pipeline Pronostics Sportifs IA (v2)
+//  FOOTBOT — Pipeline Pronostics Sportifs IA (v3)
 //  Architecture : Scraping → Analyse IA → Sortie directe
-//  SofaScore (unofficial) + Groq AI · Mémoire Supabase
+//  Flow conversationnel : détection intention → question → pipeline
 // ═══════════════════════════════════════════════════════
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
@@ -31,17 +31,67 @@ const LEAGUES: Record<string, { id: number; name: string }> = {
 
 const MAJOR = new Set([7, 17, 8, 34, 35, 23, 679, 44, 771, 242, 119]);
 
+// ══════════════════════════════════════════════════════
+//  SESSION — État conversationnel en mémoire + Supabase
+// ══════════════════════════════════════════════════════
+
+type Phase = "idle" | "awaiting_count";
+
+interface Session {
+  chatId : number;
+  phase  : Phase;
+}
+
+// Cache local (durée de vie de la requête Edge Function)
+const sessionCache = new Map<number, Session>();
+
+function getSession(chatId: number): Session {
+  if (!sessionCache.has(chatId)) {
+    sessionCache.set(chatId, { chatId, phase: "idle" });
+  }
+  return sessionCache.get(chatId)!;
+}
+
+function sbHeaders(): Record<string, string> {
+  return {
+    "apikey"       : SB_KEY,
+    "Authorization": `Bearer ${SB_KEY}`,
+    "Content-Type" : "application/json",
+    "Prefer"       : "return=representation",
+  };
+}
+
+async function loadPhase(chatId: number): Promise<Phase> {
+  if (!SB_URL || !SB_KEY) return "idle";
+  try {
+    const r = await fetch(
+      `${SB_URL}/rest/v1/bot_sessions?chat_id=eq.${chatId}&select=phase`,
+      { headers: sbHeaders() }
+    );
+    if (!r.ok) return "idle";
+    const rows: any[] = await r.json();
+    return (rows?.[0]?.phase as Phase) ?? "idle";
+  } catch { return "idle"; }
+}
+
+async function savePhase(chatId: number, phase: Phase): Promise<void> {
+  if (!SB_URL || !SB_KEY) return;
+  try {
+    await fetch(`${SB_URL}/rest/v1/bot_sessions`, {
+      method : "POST",
+      headers: { ...sbHeaders(), "Prefer": "resolution=merge-duplicates,return=minimal" },
+      body   : JSON.stringify({ chat_id: chatId, phase }),
+    });
+  } catch { /* non bloquant */ }
+}
+
 // ── SofaScore fetch ────────────────────────────────────
 async function sfFetch(path: string): Promise<any> {
   try {
     const r = await fetch(`https://api.sofascore.com/api/v1${path}`, { headers: SF });
     if (r.ok) return r.json();
-    console.error(`SofaScore ${r.status} on ${path}`);
     return null;
-  } catch (e) {
-    console.error(`SofaScore error on ${path}:`, e);
-    return null;
-  }
+  } catch { return null; }
 }
 
 const todayStr = () => new Date().toISOString().split("T")[0];
@@ -57,7 +107,7 @@ const fmtDate = (ts: number) =>
   });
 
 // ══════════════════════════════════════════════════════
-//  TELEGRAM — Envoi de messages
+//  TELEGRAM — Envoi messages
 // ══════════════════════════════════════════════════════
 async function send(chatId: number, text: string): Promise<void> {
   await fetch(`${TG}/sendMessage`, {
@@ -68,18 +118,18 @@ async function send(chatId: number, text: string): Promise<void> {
 }
 
 // ══════════════════════════════════════════════════════
-//  ÉTAPE 1 — SCRAPING : Récupération des données
+//  ÉTAPE 1 — SCRAPING
 // ══════════════════════════════════════════════════════
 
 interface MatchData {
-  id      : number;
-  homeTeam: string;
-  awayTeam: string;
-  league  : string;
-  kickoff : string;
-  homeForm: string;
-  awayForm: string;
-  h2h     : string;
+  id          : number;
+  homeTeam    : string;
+  awayTeam    : string;
+  league      : string;
+  kickoff     : string;
+  homeForm    : string;
+  awayForm    : string;
+  h2h         : string;
   homeGoalsAvg: number;
   awayGoalsAvg: number;
   homeWinPct  : number;
@@ -92,17 +142,15 @@ async function scrapeUpcomingMatches(count: number): Promise<MatchData[]> {
   const data  = await sfFetch(`/sport/football/scheduled-events/${today}`);
   const events: any[] = data?.events ?? [];
 
-  // Filtrer sur les grandes ligues, prendre les N premiers à venir
   const upcoming = events
     .filter((e: any) =>
       MAJOR.has(e.tournament?.uniqueTournament?.id) &&
       e.status?.type === "notstarted"
     )
-    .slice(0, count);
+    .slice(0, count * 2); // marge en cas d'échec de scraping
 
-  // Pour chaque match, scraper les stats en parallèle
   const matchDataList = await Promise.all(upcoming.map(scrapeMatchStats));
-  return matchDataList.filter(Boolean) as MatchData[];
+  return matchDataList.filter(Boolean).slice(0, count) as MatchData[];
 }
 
 async function scrapeMatchStats(event: any): Promise<MatchData | null> {
@@ -115,7 +163,6 @@ async function scrapeMatchStats(event: any): Promise<MatchData | null> {
     const homeId   = event.homeTeam?.id;
     const awayId   = event.awayTeam?.id;
 
-    // Requêtes parallèles : form domicile, form extérieur, h2h
     const [homeFormData, awayFormData, h2hData] = await Promise.all([
       homeId ? sfFetch(`/team/${homeId}/events/last/0`) : Promise.resolve(null),
       awayId ? sfFetch(`/team/${awayId}/events/last/0`) : Promise.resolve(null),
@@ -125,8 +172,8 @@ async function scrapeMatchStats(event: any): Promise<MatchData | null> {
     const homeForm = extractForm(homeFormData?.events ?? [], homeId);
     const awayForm = extractForm(awayFormData?.events ?? [], awayId);
     const { h2hStr, homeWinPct, awayWinPct, drawPct } = extractH2H(h2hData, homeTeam, awayTeam);
-    const homeGoalsAvg = calcGoalsAvg(homeFormData?.events ?? [], homeId, "home");
-    const awayGoalsAvg = calcGoalsAvg(awayFormData?.events ?? [], awayId, "away");
+    const homeGoalsAvg = calcGoalsAvg(homeFormData?.events ?? [], homeId);
+    const awayGoalsAvg = calcGoalsAvg(awayFormData?.events ?? [], awayId);
 
     return {
       id: matchId, homeTeam, awayTeam, league, kickoff,
@@ -134,32 +181,29 @@ async function scrapeMatchStats(event: any): Promise<MatchData | null> {
       homeGoalsAvg, awayGoalsAvg,
       homeWinPct, awayWinPct, drawPct,
     };
-  } catch (e) {
-    console.error("scrapeMatchStats error:", e);
-    return null;
-  }
+  } catch { return null; }
 }
 
 function extractForm(events: any[], teamId: number): string {
   if (!events?.length) return "N/A";
-  return events
-    .slice(-5)
-    .map((e: any) => {
-      const isHome   = e.homeTeam?.id === teamId;
-      const homeScore = e.homeScore?.current ?? 0;
-      const awayScore = e.awayScore?.current ?? 0;
-      if (isHome) return homeScore > awayScore ? "V" : homeScore < awayScore ? "D" : "N";
-      return awayScore > homeScore ? "V" : awayScore < homeScore ? "D" : "N";
-    })
-    .join("-");
+  return events.slice(-5).map((e: any) => {
+    const isHome    = e.homeTeam?.id === teamId;
+    const hs        = e.homeScore?.current ?? 0;
+    const as_       = e.awayScore?.current ?? 0;
+    const scored    = isHome ? hs : as_;
+    const conceded  = isHome ? as_ : hs;
+    if (scored > conceded) return "V";
+    if (scored < conceded) return "D";
+    return "N";
+  }).join("-");
 }
 
 function extractH2H(
   data: any,
   homeTeam: string,
-  awayTeam: string
+  awayTeam: string,
 ): { h2hStr: string; homeWinPct: number; awayWinPct: number; drawPct: number } {
-  const empty = { h2hStr: "Pas de h2h", homeWinPct: 33, awayWinPct: 33, drawPct: 34 };
+  const empty = { h2hStr: "Pas de h2h disponible", homeWinPct: 33, awayWinPct: 33, drawPct: 34 };
   if (!data) return empty;
 
   const events: any[] = [
@@ -172,42 +216,41 @@ function extractH2H(
 
   let hw = 0, aw = 0, d = 0;
   const lines: string[] = [];
+  const homeLower = homeTeam.toLowerCase().slice(0, 4);
 
   for (const e of events.slice(-5)) {
-    const hn = e.homeTeam?.name ?? "?";
-    const an = e.awayTeam?.name ?? "?";
-    const hs = e.homeScore?.current ?? 0;
+    const hn  = e.homeTeam?.name ?? "?";
+    const an  = e.awayTeam?.name ?? "?";
+    const hs  = e.homeScore?.current ?? 0;
     const as_ = e.awayScore?.current ?? 0;
-    const res = hs > as_ ? hn : hs < as_ ? an : "Nul";
     lines.push(`${hn} ${hs}-${as_} ${an} (${fmtDate(e.startTimestamp)})`);
-    const isHomeHome = hn.toLowerCase().includes(homeTeam.toLowerCase().slice(0, 4));
-    if (hs > as_) isHomeHome ? hw++ : aw++;
-    else if (hs < as_) isHomeHome ? aw++ : hw++;
-    else d++;
+    const isHomeHome = hn.toLowerCase().includes(homeLower);
+    if (hs > as_) { isHomeHome ? hw++ : aw++; }
+    else if (hs < as_) { isHomeHome ? aw++ : hw++; }
+    else { d++; }
   }
 
   const total = hw + aw + d || 1;
   return {
-    h2hStr   : lines.join(" | "),
+    h2hStr    : lines.join(" | "),
     homeWinPct: Math.round((hw / total) * 100),
     awayWinPct: Math.round((aw / total) * 100),
     drawPct   : Math.round((d  / total) * 100),
   };
 }
 
-function calcGoalsAvg(events: any[], teamId: number, side: "home" | "away"): number {
+function calcGoalsAvg(events: any[], teamId: number): number {
   if (!events?.length) return 1.2;
   const last5 = events.slice(-5);
   const total = last5.reduce((acc: number, e: any) => {
     const isHome = e.homeTeam?.id === teamId;
-    const scored = isHome ? (e.homeScore?.current ?? 0) : (e.awayScore?.current ?? 0);
-    return acc + scored;
+    return acc + (isHome ? (e.homeScore?.current ?? 0) : (e.awayScore?.current ?? 0));
   }, 0);
   return parseFloat((total / last5.length).toFixed(2));
 }
 
 // ══════════════════════════════════════════════════════
-//  ÉTAPE 2 — ANALYSE IA : Groq + Prompt système strict
+//  ÉTAPE 2 — ANALYSE IA (Groq)
 // ══════════════════════════════════════════════════════
 
 interface Pronostic {
@@ -234,23 +277,21 @@ MATCH ${i + 1}: ${m.homeTeam} vs ${m.awayTeam}
 
   const systemPrompt = `Tu es un analyste sportif expert en paris sportifs.
 Tu reçois des données réelles (forme, h2h, statistiques) pour plusieurs matchs.
-Pour chaque match, tu dois identifier le marché ayant la PLUS FORTE probabilité statistique parmi :
+Pour chaque match, identifie le marché avec la PLUS FORTE probabilité statistique parmi :
   - Résultat 1X2 (Victoire domicile / Nul / Victoire extérieur)
-  - Les deux équipes marquent (BTTSoui/non)
+  - Les deux équipes marquent (BTTS Oui/Non)
   - Plus/Moins de 2.5 buts
   - Double chance (1X / X2 / 12)
 
 RÈGLES STRICTES :
-1. Analyse les stats réelles fournis pour chaque match.
-2. Choisis UN seul marché par match, celui avec la probabilité la plus élevée.
-3. Donne une confiance entre 55% et 92% selon la force du signal statistique.
-4. Réponds UNIQUEMENT avec un JSON valide, aucun autre texte, format exact :
+1. Analyse les stats réelles fournies.
+2. Un seul marché par match — celui avec la probabilité la plus élevée.
+3. Confiance entre 55% et 92% selon la force du signal statistique.
+4. Réponds UNIQUEMENT avec un JSON valide, aucun autre texte :
 [
   {"index":1,"homeTeam":"Nom","awayTeam":"Nom","market":"Marché","choice":"Pronostic","confidence":XX},
   ...
 ]`;
-
-  const userMsg = `Analyse ces ${matches.length} matchs et génère les pronostics :\n\n${matchesBlock}`;
 
   try {
     const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -258,36 +299,28 @@ RÈGLES STRICTES :
       headers: { "Authorization": `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" },
       body   : JSON.stringify({
         model      : "llama-3.3-70b-versatile",
-        temperature: 0.3,
+        temperature: 0.2,
         max_tokens : 1500,
         messages   : [
           { role: "system", content: systemPrompt },
-          { role: "user",   content: userMsg },
+          { role: "user",   content: `Analyse ces ${matches.length} matchs :\n\n${matchesBlock}` },
         ],
       }),
     });
     const json = await r.json();
     const raw  = json.choices?.[0]?.message?.content ?? "[]";
-
-    // Extraire le JSON même si le modèle ajoute du texte autour
-    const jsonMatch = raw.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      console.error("AI response not parseable:", raw);
-      return [];
-    }
-    return JSON.parse(jsonMatch[0]) as Pronostic[];
-  } catch (e) {
-    console.error("analyseWithAI error:", e);
-    return [];
-  }
+    const m    = raw.match(/\[[\s\S]*\]/);
+    if (!m) return [];
+    return JSON.parse(m[0]) as Pronostic[];
+  } catch { return []; }
 }
 
 // ══════════════════════════════════════════════════════
-//  ÉTAPE 3 — SORTIE : Format imposé, rien d'autre
+//  ÉTAPE 3 — SORTIE FORMAT IMPOSÉ
 // ══════════════════════════════════════════════════════
 
 function formatPronostics(pronostics: Pronostic[]): string {
-  if (!pronostics.length) return "❌ Aucun pronostic disponible pour l'instant.";
+  if (!pronostics.length) return "❌ Aucun pronostic disponible pour l'instant. Réessayez dans quelques minutes.";
   return pronostics
     .map((p, i) =>
       `${i + 1}. ${p.homeTeam} vs ${p.awayTeam}\n` +
@@ -297,53 +330,60 @@ function formatPronostics(pronostics: Pronostic[]): string {
 }
 
 // ══════════════════════════════════════════════════════
-//  PIPELINE PRINCIPAL — Scraping → IA → Sortie
+//  PIPELINE : Scraping → IA → Sortie
 // ══════════════════════════════════════════════════════
 
 async function runPronosticPipeline(chatId: number, count: number): Promise<void> {
-  // Scraping
-  const matches = await scrapeUpcomingMatches(count);
+  await send(chatId, `⏳ Analyse de ${count} match${count > 1 ? "s" : ""} en cours...`);
 
+  const matches    = await scrapeUpcomingMatches(count);
   if (!matches.length) {
-    await send(chatId, "❌ Aucun match trouvé pour aujourd'hui dans les grandes ligues.");
+    await send(chatId, "❌ Aucun match trouvé dans les grandes ligues aujourd'hui.");
     return;
   }
 
-  // Analyse IA
-  const pronostics = await analyseWithAI(matches.slice(0, count));
-
-  // Sortie directe
-  const output = formatPronostics(pronostics);
+  const pronostics = await analyseWithAI(matches);
+  const output     = formatPronostics(pronostics);
   await send(chatId, output);
 }
 
 // ══════════════════════════════════════════════════════
-//  COMMANDES SIMPLES (live, auj, classement, etc.)
+//  DÉTECTION D'INTENTION "PRONOSTIC"
+// ══════════════════════════════════════════════════════
+
+const PRONOS_INTENT = /pronos|pronostic|predict|tip|paris|mise|bet|cote|palmarès|analyse/i;
+
+function extractNumberFromText(text: string): number | null {
+  const m = text.match(/\b(\d+)\b/);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  if (n >= 1 && n <= 10) return n;
+  return null;
+}
+
+// ══════════════════════════════════════════════════════
+//  COMMANDES SIMPLES
 // ══════════════════════════════════════════════════════
 
 async function cmdLive(chatId: number): Promise<void> {
   const data   = await sfFetch(`/sport/football/events/live`);
-  const events: any[] = data?.events ?? [];
-  const major  = events.filter((e: any) => MAJOR.has(e.tournament?.uniqueTournament?.id));
-  if (!major.length) { await send(chatId, "Aucun match en direct dans les grandes ligues."); return; }
-  const lines = major.slice(0, 10).map((e: any) => {
-    const hn = e.homeTeam?.name ?? "?";
-    const an = e.awayTeam?.name ?? "?";
-    const hs = e.homeScore?.current ?? 0;
-    const as_ = e.awayScore?.current ?? 0;
-    const min = e.time?.played ?? e.time?.currentPeriodStartTimestamp ? "?" : "";
-    return `⚽ ${hn} ${hs} - ${as_} ${an} (${e.tournament?.name ?? "?"})`;
-  });
+  const events: any[] = (data?.events ?? []).filter((e: any) =>
+    MAJOR.has(e.tournament?.uniqueTournament?.id)
+  );
+  if (!events.length) { await send(chatId, "Aucun match en direct dans les grandes ligues."); return; }
+  const lines = events.slice(0, 10).map((e: any) =>
+    `⚽ ${e.homeTeam?.name} ${e.homeScore?.current ?? 0} - ${e.awayScore?.current ?? 0} ${e.awayTeam?.name} (${e.tournament?.name ?? "?"})`
+  );
   await send(chatId, `🔴 <b>Matchs en direct</b>\n\n${lines.join("\n")}`);
 }
 
 async function cmdToday(chatId: number): Promise<void> {
-  const today  = todayStr();
-  const data   = await sfFetch(`/sport/football/scheduled-events/${today}`);
-  const events: any[] = data?.events ?? [];
-  const major  = events.filter((e: any) => MAJOR.has(e.tournament?.uniqueTournament?.id));
-  if (!major.length) { await send(chatId, "Aucun match prévu aujourd'hui dans les grandes ligues."); return; }
-  const lines = major.slice(0, 15).map((e: any) =>
+  const data   = await sfFetch(`/sport/football/scheduled-events/${todayStr()}`);
+  const events: any[] = (data?.events ?? []).filter((e: any) =>
+    MAJOR.has(e.tournament?.uniqueTournament?.id)
+  );
+  if (!events.length) { await send(chatId, "Aucun match prévu aujourd'hui dans les grandes ligues."); return; }
+  const lines = events.slice(0, 15).map((e: any) =>
     `${fmtTime(e.startTimestamp)} — ${e.homeTeam?.name} vs ${e.awayTeam?.name} (${e.tournament?.name})`
   );
   await send(chatId, `📅 <b>Matchs du jour</b>\n\n${lines.join("\n")}`);
@@ -352,20 +392,15 @@ async function cmdToday(chatId: number): Promise<void> {
 async function cmdStanding(chatId: number, leagueKey: string): Promise<void> {
   const lg = LEAGUES[leagueKey];
   if (!lg) {
-    const keys = Object.keys(LEAGUES).join(", ");
-    await send(chatId, `Ligue inconnue. Disponibles : ${keys}`);
+    await send(chatId, `Ligue inconnue. Disponibles : ${Object.keys(LEAGUES).join(", ")}`);
     return;
   }
-
-  // Chercher la saison courante
-  const seasons = await sfFetch(`/unique-tournament/${lg.id}/seasons`);
+  const seasons  = await sfFetch(`/unique-tournament/${lg.id}/seasons`);
   const seasonId = seasons?.seasons?.[0]?.id;
   if (!seasonId) { await send(chatId, "Impossible de récupérer la saison."); return; }
-
-  const data  = await sfFetch(`/unique-tournament/${lg.id}/season/${seasonId}/standings/total`);
+  const data = await sfFetch(`/unique-tournament/${lg.id}/season/${seasonId}/standings/total`);
   const rows: any[] = data?.standings?.[0]?.rows ?? [];
   if (!rows.length) { await send(chatId, "Classement non disponible."); return; }
-
   const lines = rows.slice(0, 10).map((r: any) =>
     `${r.position}. ${r.team?.name} — ${r.points} pts (${r.wins}V ${r.draws}N ${r.losses}D)`
   );
@@ -376,18 +411,14 @@ async function cmdTeam(chatId: number, name: string): Promise<void> {
   const search = await sfFetch(`/search/teams?q=${encodeURIComponent(name)}`);
   const team   = search?.teams?.[0];
   if (!team) { await send(chatId, `Équipe "${name}" introuvable.`); return; }
-
   const [info, events] = await Promise.all([
     sfFetch(`/team/${team.id}`),
     sfFetch(`/team/${team.id}/events/last/0`),
   ]);
-
   const form = extractForm(events?.events ?? [], team.id);
   const t    = info?.team ?? team;
   await send(chatId,
-    `🏟 <b>${t.name}</b>\n` +
-    `Pays : ${t.country?.name ?? "?"}\n` +
-    `Forme (5 derniers) : ${form}`
+    `🏟 <b>${t.name}</b>\nPays : ${t.country?.name ?? "?"}\nForme (5 derniers) : ${form}`
   );
 }
 
@@ -395,63 +426,10 @@ async function cmdPlayer(chatId: number, name: string): Promise<void> {
   const search = await sfFetch(`/search/players?q=${encodeURIComponent(name)}`);
   const player = search?.players?.[0]?.player ?? search?.players?.[0];
   if (!player) { await send(chatId, `Joueur "${name}" introuvable.`); return; }
-
   await send(chatId,
-    `👤 <b>${player.name}</b>\n` +
-    `Équipe : ${player.team?.name ?? "N/A"}\n` +
-    `Nationalité : ${player.country?.name ?? "?"}\n` +
-    `Position : ${player.position ?? "?"}`
+    `👤 <b>${player.name}</b>\nÉquipe : ${player.team?.name ?? "N/A"}\n` +
+    `Nationalité : ${player.country?.name ?? "?"}\nPosition : ${player.position ?? "?"}`
   );
-}
-
-async function cmdH2H(chatId: number, team1: string, team2: string): Promise<void> {
-  const [s1, s2] = await Promise.all([
-    sfFetch(`/search/teams?q=${encodeURIComponent(team1)}`),
-    sfFetch(`/search/teams?q=${encodeURIComponent(team2)}`),
-  ]);
-  const t1 = s1?.teams?.[0];
-  const t2 = s2?.teams?.[0];
-  if (!t1 || !t2) { await send(chatId, "Équipe(s) introuvable(s)."); return; }
-
-  // Trouver un event commun pour le h2h
-  const today  = todayStr();
-  const sched  = await sfFetch(`/sport/football/scheduled-events/${today}`);
-  const ev     = (sched?.events ?? []).find((e: any) =>
-    (e.homeTeam?.id === t1.id && e.awayTeam?.id === t2.id) ||
-    (e.homeTeam?.id === t2.id && e.awayTeam?.id === t1.id)
-  );
-
-  if (ev) {
-    const h2hData = await sfFetch(`/event/${ev.id}/h2h/events`);
-    const { h2hStr } = extractH2H(h2hData, t1.name, t2.name);
-    await send(chatId, `⚔️ <b>H2H : ${t1.name} vs ${t2.name}</b>\n\n${h2hStr}`);
-  } else {
-    await send(chatId, `${t1.name} vs ${t2.name} — pas de confrontation trouvée aujourd'hui.`);
-  }
-}
-
-async function cmdSinglePronostic(chatId: number, team1: string, team2: string): Promise<void> {
-  // Chercher le match aujourd'hui
-  const today = todayStr();
-  const sched = await sfFetch(`/sport/football/scheduled-events/${today}`);
-  const event = (sched?.events ?? []).find((e: any) =>
-    (e.homeTeam?.name?.toLowerCase().includes(team1.toLowerCase()) &&
-     e.awayTeam?.name?.toLowerCase().includes(team2.toLowerCase())) ||
-    (e.homeTeam?.name?.toLowerCase().includes(team2.toLowerCase()) &&
-     e.awayTeam?.name?.toLowerCase().includes(team1.toLowerCase()))
-  );
-
-  if (!event) {
-    await send(chatId, `Match ${team1} vs ${team2} introuvable dans les matchs du jour.`);
-    return;
-  }
-
-  const matchStats = await scrapeMatchStats(event);
-  if (!matchStats) { await send(chatId, "Impossible de récupérer les stats du match."); return; }
-
-  const pronostics = await analyseWithAI([matchStats]);
-  const output     = formatPronostics(pronostics);
-  await send(chatId, output);
 }
 
 async function cmdHelp(chatId: number): Promise<void> {
@@ -462,45 +440,36 @@ async function cmdHelp(chatId: number): Promise<void> {
     `/auj — Matchs du jour\n` +
     `/classement [ligue] — Classement (premier, laliga, ligue1, bundesliga, seriea, ucl)\n` +
     `/equipe [nom] — Infos + forme d'une équipe\n` +
-    `/joueur [nom] — Stats d'un joueur\n` +
-    `/h2h [e1] vs [e2] — Confrontations directes\n` +
-    `/pronostic [e1] vs [e2] — Pronostic IA pour un match précis`
+    `/joueur [nom] — Stats d'un joueur`
   );
 }
 
 // ══════════════════════════════════════════════════════
-//  ROUTEUR DE COMMANDES
+//  ROUTEUR PRINCIPAL
 // ══════════════════════════════════════════════════════
 
 async function handle(chatId: number, text: string): Promise<void> {
-  const raw  = text.trim();
+  const raw   = text.trim();
   const lower = raw.toLowerCase();
 
-  // /pronos N  ou  /pronos  (défaut 5)
-  const pronosMatch = lower.match(/^\/pronos(?:tics?)?\s*(\d+)?/);
-  if (pronosMatch) {
-    const n = Math.min(Math.max(parseInt(pronosMatch[1] ?? "5", 10), 1), 10);
+  // ── Commandes directes ──────────────────────────────
+
+  // /pronos [N]
+  const pronosCmd = lower.match(/^\/pronos(?:tics?)?\s*(\d+)?/);
+  if (pronosCmd) {
+    const n = Math.min(Math.max(parseInt(pronosCmd[1] ?? "5", 10), 1), 10);
+    await savePhase(chatId, "idle");
     await runPronosticPipeline(chatId, n);
     return;
   }
 
-  // /pronostic eq1 vs eq2
-  if (lower.startsWith("/pronostic ")) {
-    const rest    = raw.slice(11).trim();
-    const vsMatch = rest.match(/^(.+?)\s+vs\s+(.+)$/i);
-    if (vsMatch) { await cmdSinglePronostic(chatId, vsMatch[1].trim(), vsMatch[2].trim()); return; }
-  }
-
-  if (lower === "/live")                { await cmdLive(chatId); return; }
-  if (lower === "/auj")                 { await cmdToday(chatId); return; }
+  if (lower === "/live")  { await cmdLive(chatId); return; }
+  if (lower === "/auj")   { await cmdToday(chatId); return; }
   if (lower === "/start" || lower === "/help") { await cmdHelp(chatId); return; }
 
   // /classement [ligue]
   const standMatch = lower.match(/^\/classement\s*(\w+)?/);
-  if (standMatch) {
-    await cmdStanding(chatId, standMatch[1] ?? "premier");
-    return;
-  }
+  if (standMatch) { await cmdStanding(chatId, standMatch[1] ?? "premier"); return; }
 
   // /equipe [nom]
   const teamMatch = raw.match(/^\/equipe\s+(.+)/i);
@@ -510,12 +479,59 @@ async function handle(chatId: number, text: string): Promise<void> {
   const playerMatch = raw.match(/^\/joueur\s+(.+)/i);
   if (playerMatch) { await cmdPlayer(chatId, playerMatch[1].trim()); return; }
 
-  // /h2h eq1 vs eq2
-  const h2hMatch = raw.match(/^\/h2h\s+(.+?)\s+vs\s+(.+)/i);
-  if (h2hMatch) { await cmdH2H(chatId, h2hMatch[1].trim(), h2hMatch[2].trim()); return; }
+  // ── Gestion de la phase conversationnelle ───────────
+  const phase = await loadPhase(chatId);
 
-  // Texte libre — guide vers /pronos
-  await send(chatId, `Utilisez /pronos 5 pour recevoir 5 pronostics IA ou /help pour la liste des commandes.`);
+  // Phase awaiting_count : l'utilisateur répond au nombre de matchs demandé
+  if (phase === "awaiting_count") {
+    const num = extractNumberFromText(raw);
+
+    // L'utilisateur a donné un nombre → lancer le pipeline
+    if (num !== null) {
+      await savePhase(chatId, "idle");
+      await runPronosticPipeline(chatId, num);
+      return;
+    }
+
+    // L'utilisateur dit "oui", "ok", "vas-y", etc. → défaut 5 matchs
+    if (/^(oui|ok|yes|vas[- ]?y|go|allez|c'est bon|parfait|top|super)$/i.test(raw)) {
+      await savePhase(chatId, "idle");
+      await runPronosticPipeline(chatId, 5);
+      return;
+    }
+
+    // L'utilisateur dit "non" → annuler
+    if (/^(non|no|annule|annuler|stop|cancel)$/i.test(raw)) {
+      await savePhase(chatId, "idle");
+      await send(chatId, "Demande annulée. Tapez /pronos 5 quand vous voulez.");
+      return;
+    }
+
+    // Réponse non reconnue → rappeler la question
+    await send(chatId, "Donnez un nombre entre 1 et 10 (ou tapez \"non\" pour annuler) :");
+    return;
+  }
+
+  // ── Phase idle : détecter l'intention "pronostic" ───
+  if (PRONOS_INTENT.test(lower)) {
+    // L'utilisateur mentionne un nombre dans le même message → lancer directement
+    const num = extractNumberFromText(raw);
+    if (num !== null) {
+      await savePhase(chatId, "idle");
+      await runPronosticPipeline(chatId, num);
+      return;
+    }
+
+    // Pas de nombre → poser la question et mémoriser la phase
+    await savePhase(chatId, "awaiting_count");
+    await send(chatId, "Combien de matchs voulez-vous analyser ? (1-10, défaut : 5)");
+    return;
+  }
+
+  // ── Texte libre sans intention reconnue ─────────────
+  await send(chatId,
+    "Envoyez <b>/pronos</b> pour des pronostics, ou <b>/help</b> pour voir toutes les commandes."
+  );
 }
 
 // ══════════════════════════════════════════════════════
@@ -524,20 +540,14 @@ async function handle(chatId: number, text: string): Promise<void> {
 
 const WEBHOOK_SECRET = Deno.env.get("TELEGRAM_WEBHOOK_SECRET") ?? "";
 
-if (!WEBHOOK_SECRET) {
-  console.warn("[SECURITY] TELEGRAM_WEBHOOK_SECRET non configuré — toutes les requêtes POST sont acceptées.");
-}
-
 Deno.serve(async (req) => {
   if (req.method !== "POST")
-    return new Response("FootBot ⚽ — Pipeline Pronostics Sportifs IA v2");
+    return new Response("FootBot ⚽ — Pipeline Pronostics Sportifs IA v3");
 
   if (WEBHOOK_SECRET) {
     const sig = req.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
-    if (sig !== WEBHOOK_SECRET) {
-      console.warn(`Unauthorized webhook — ${req.headers.get("x-forwarded-for") ?? "unknown"}`);
+    if (sig !== WEBHOOK_SECRET)
       return new Response("Unauthorized", { status: 401 });
-    }
   }
 
   try {
