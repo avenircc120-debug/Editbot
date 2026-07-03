@@ -1,10 +1,12 @@
 // ═══════════════════════════════════════════════════════
-//  FOOTBOT — Système d'Analyse Prédictive Sportive
-//  SofaScore (unofficial) + Groq AI · Fiabilité cible 99%
+//  FOOTBOT — Moteur de Pronostics Sportifs IA
+//  SofaScore (unofficial) + Groq AI · Mémoire persistante
 // ═══════════════════════════════════════════════════════
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const GROQ_KEY  = Deno.env.get("GROQ_API_KEY") ?? "";
+const SB_URL    = Deno.env.get("SUPABASE_URL") ?? "";
+const SB_KEY    = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const TG = `https://api.telegram.org/bot${TG_TOKEN}`;
 
 // ── SofaScore headers ─────────────────────────────────
@@ -27,7 +29,6 @@ const LEAGUES: Record<string, { id: number; name: string }> = {
   seriea    : { id: 23, name: "Serie A" },
 };
 
-// IDs des ligues majeures (filtre SofaScore)
 const MAJOR = new Set([7, 17, 8, 34, 35, 23, 679, 44, 771, 242, 119]);
 
 // ── SofaScore fetch ───────────────────────────────────
@@ -53,82 +54,132 @@ const fmtDate = (ts: number) =>
   new Date(ts * 1000).toLocaleDateString("fr-FR", { timeZone: "Europe/Paris", day: "2-digit", month: "2-digit", year: "numeric" });
 
 // ══════════════════════════════════════════════════════
-//  MACHINE À ÉTATS — Session utilisateur
+//  SESSION — Mémoire persistante (Supabase DB)
 // ══════════════════════════════════════════════════════
 
-type SessionPhase =
-  | "idle"              // En attente de commande
-  | "predicting"        // Analyse en cours
-  | "awaiting_market";  // Pronostic reçu, marché additionnel possible
-
-interface Message { role: "user" | "assistant"; content: string; }
+type SessionPhase = "idle" | "predicting" | "awaiting_market";
+interface Message  { role: "user" | "assistant"; content: string; }
 
 interface Session {
+  chatId     : number;
   phase      : SessionPhase;
   history    : Message[];
-  lastMatch  ?: string;       // Dernier match analysé (pour relances)
-  lastContext?: string;       // Contexte complet du dernier match
+  memory     : string;        // Faits mémorisés long-terme (équipes favorites, style de jeu, etc.)
+  lastMatch  ?: string;
+  lastContext?: string;
 }
 
-const sessions = new Map<number, Session>();
+// Cache local pour éviter des aller-retours DB inutiles dans la même requête
+const cache = new Map<number, Session>();
 
-function getSession(id: number): Session {
-  if (!sessions.has(id)) sessions.set(id, { phase: "idle", history: [] });
-  return sessions.get(id)!;
+function sbHeaders(): Record<string, string> {
+  return {
+    "apikey"       : SB_KEY,
+    "Authorization": `Bearer ${SB_KEY}`,
+    "Content-Type" : "application/json",
+    "Prefer"       : "return=representation",
+  };
 }
 
-function transition(s: Session, phase: SessionPhase) {
-  s.phase = phase;
+async function loadSession(chatId: number): Promise<Session> {
+  if (cache.has(chatId)) return cache.get(chatId)!;
+
+  const blank: Session = { chatId, phase: "idle", history: [], memory: "" };
+
+  if (!SB_URL || !SB_KEY) {
+    cache.set(chatId, blank);
+    return blank;
+  }
+
+  try {
+    const r = await fetch(
+      `${SB_URL}/rest/v1/bot_sessions?chat_id=eq.${chatId}&select=*`,
+      { headers: sbHeaders() }
+    );
+    const rows: any[] = await r.json();
+    if (rows?.length) {
+      const row = rows[0];
+      const s: Session = {
+        chatId,
+        phase      : row.phase ?? "idle",
+        history    : Array.isArray(row.history) ? row.history : [],
+        memory     : row.memory ?? "",
+        lastMatch  : row.last_match  ?? undefined,
+        lastContext: row.last_context ?? undefined,
+      };
+      cache.set(chatId, s);
+      return s;
+    }
+  } catch (e) { console.error("loadSession:", e); }
+
+  cache.set(chatId, blank);
+  return blank;
 }
+
+async function saveSession(s: Session): Promise<void> {
+  cache.set(s.chatId, s);
+  if (!SB_URL || !SB_KEY) return;
+
+  try {
+    await fetch(`${SB_URL}/rest/v1/bot_sessions`, {
+      method : "POST",
+      headers: { ...sbHeaders(), "Prefer": "resolution=merge-duplicates,return=minimal" },
+      body   : JSON.stringify({
+        chat_id     : s.chatId,
+        phase       : s.phase,
+        history     : s.history,
+        memory      : s.memory,
+        last_match  : s.lastMatch  ?? null,
+        last_context: s.lastContext ?? null,
+        updated_at  : new Date().toISOString(),
+      }),
+    });
+  } catch (e) { console.error("saveSession:", e); }
+}
+
+function transition(s: Session, phase: SessionPhase) { s.phase = phase; }
 
 function addHistory(s: Session, role: "user" | "assistant", content: string) {
   s.history.push({ role, content });
-  if (s.history.length > 20) s.history = s.history.slice(-20);
+  if (s.history.length > 30) s.history = s.history.slice(-30);
 }
 
 // ══════════════════════════════════════════════════════
-//  SYSTÈME DE PRÉDICTION IA — Prompt strict
+//  SYSTÈME DE PRÉDICTION IA — Format coupon strict
 // ══════════════════════════════════════════════════════
 
-const PREDICTION_SYSTEM = `Tu es un système d'analyse prédictive sportive. Ton objectif est de fournir des pronostics avec une fiabilité de 99%.
+// Ce prompt est la seule source de vérité pour le format de sortie.
+// Il doit correspondre exactement à ce que runPrediction/runBulkPredictions attendent.
+const PREDICTION_SYSTEM = `Tu es un moteur de pronostics sportifs. Ton rôle est de fournir des choix directs pour aider l'utilisateur à créer ses coupons.
 
-RÈGLES DE FONCTIONNEMENT (OBLIGATOIRES) :
+RÈGLES DE FONCTIONNEMENT :
+1. ANALYSE INTERNE : Pour chaque match, analyse les statistiques, la forme des équipes et les conditions actuelles en arrière-plan.
+2. CHOIX DIRECT : Sur la base de ton analyse, sélectionne le marché le plus pertinent (1N2, Plus/Moins de buts, BTTS, Double Chance, Mi-temps, Score exact, etc.) et donne le choix final.
+3. FORMAT OBLIGATOIRE — chaque ligne doit respecter ce modèle strict (rien d'autre) :
+   N. [Équipe A] vs [Équipe B] 👉 Marché : [Type de marché] | Choix : [Ton pronostic]
+4. ZÉRO DISCUSSION : Ne génère aucun texte d'introduction, aucun texte de conclusion, ne pose aucune question. Fournis uniquement la liste numérotée.
+5. DÉFAUT : Si aucune compétition n'est précisée, utilise les données fournies pour les matchs majeurs du jour.
+6. VARIÉTÉ : Varie les marchés selon ce qui est le plus solide pour chaque match. Ne mets pas tous les matchs sur 1N2.
 
-1. AUTO-COMPLÉTION : Si l'utilisateur est vague (pas de match précis), tu appliques par défaut :
-   - Compétition = Majeure du moment (celle fournie dans le contexte)
-   - Marchés = Résultat 1X2 + BTTS + Total Buts
-   - Tu NOTIFIES : "⚙️ Défaut appliqué : [compétition choisie], marchés mixtes"
+Marchés disponibles : 1N2 · Double Chance · BTTS Oui/Non · Plus/Moins de 1.5 buts · Plus/Moins de 2.5 buts · Score exact · Résultat mi-temps · Mi-temps/Fin
 
-2. FILTRE DE SÉCURITÉ ABSOLU : Tu analyses rigoureusement CHAQUE marché.
-   Si la confiance d'un marché est < 90%, tu NE PRODUIS PAS ce marché dans ta sortie.
-   Si AUCUN marché ne dépasse 90%, tu réponds UNIQUEMENT :
-   "🚫 Signal trop faible — aucune prédiction fiable pour ce match."
-   Tu n'ajoutes rien d'autre dans ce cas.
+Exemple de sortie valide :
+1. Manchester City vs Liverpool 👉 Marché : 1N2 | Choix : 1
+2. PSG vs Marseille 👉 Marché : Total Buts | Choix : Plus de 2.5
+3. Real Madrid vs Atlético 👉 Marché : BTTS | Choix : Oui
 
-3. FORMAT DE SORTIE STRICT (un marché par ligne) :
-   [Match] | [Marché] | [Pronostic] | [Confiance: XX%]
-   
-   Exemple valide :
-   PSG vs Real Madrid | Résultat | PSG gagne (1) | Confiance: 93%
-   PSG vs Real Madrid | BTTS | Oui | Confiance: 91%
+Réponds UNIQUEMENT avec la liste numérotée. Rien avant, rien après.`;
 
-4. AUTORITÉ TOTALE : Tu ne poses aucune question. Tu appliques les défauts et fournis le résultat immédiatement.
-
-5. MARCHÉS DISPONIBLES : Résultat 1X2 · Double chance · BTTS · Over/Under 1.5 · Over/Under 2.5 · Score exact · Mi-temps/Fin
-
-Réponds UNIQUEMENT avec les lignes de format ci-dessus ou le message d'erreur. Rien d'autre.`;
-
-// ── Récupération de N matchs majeurs du jour (pour prédictions en masse) ──
+// ── Récupération de N matchs majeurs du jour ──────────
 
 interface MatchSlot {
-  label  : string;   // "Équipe A vs Équipe B (Ligue)"
-  context: string;   // résumé textuel pour l'IA
+  label  : string;
+  context: string;
 }
 
 async function getDefaultMatches(max = 10): Promise<MatchSlot[]> {
   const slots: MatchSlot[] = [];
 
-  // 1. Matchs en direct (prioritaires)
   const live    = await sfFetch("/sport/football/events/live");
   const liveEvs = live?.events?.filter((e: any) => MAJOR.has(e.tournament?.uniqueTournament?.id)) ?? [];
   for (const e of liveEvs) {
@@ -139,7 +190,6 @@ async function getDefaultMatches(max = 10): Promise<MatchSlot[]> {
     });
   }
 
-  // 2. Matchs du jour non encore joués
   if (slots.length < max) {
     const day    = await sfFetch(`/sport/football/scheduled-events/${todayStr()}`);
     const dayEvs = day?.events
@@ -147,7 +197,6 @@ async function getDefaultMatches(max = 10): Promise<MatchSlot[]> {
       ?.sort((a: any, b: any) => a.startTimestamp - b.startTimestamp) ?? [];
     for (const e of dayEvs) {
       if (slots.length >= max) break;
-      // Éviter les doublons avec les matchs en direct
       const label = `${e.homeTeam?.name} vs ${e.awayTeam?.name} (${e.tournament?.name})`;
       if (!slots.some(s => s.label === label)) {
         slots.push({
@@ -160,87 +209,44 @@ async function getDefaultMatches(max = 10): Promise<MatchSlot[]> {
   return slots;
 }
 
-// Compatibilité ascendante (1 match pour /pronostic équipe vs équipe)
-async function getDefaultMatch(): Promise<MatchSlot | null> {
-  const slots = await getDefaultMatches(1);
-  return slots[0] ?? null;
-}
-
-// ── Extraction et filtrage de la confiance ────────────
-//
-// Format attendu (strict) par ligne :
-//   [Match] | [Marché] | [Pronostic] | [Confiance: XX%]
-// Un token est valide seulement si :
-//   • il respecte exactement la structure à 4 champs séparés par "|"
-//   • le 4e champ contient "Confiance:" suivi d'un entier entre 0 et 100
-//   • la confiance est ≥ 90 pour passer le filtre
-
-interface PredLine {
-  raw       : string;  // ligne originale
-  confidence: number;  // valeur extraite (0-100)
-}
-
-// Regex ancrée : valide l'intégralité de la ligne, extrait la confiance
-// uniquement depuis le dernier champ "Confiance: XX%"
-const PRED_LINE_RE = /^[^|]+\|[^|]+\|[^|]+\|\s*confiance\s*:\s*(\d{1,3})\s*%\s*$/i;
-
-function parsePredictions(raw: string): PredLine[] {
-  const results: PredLine[] = [];
-  for (const line of raw.split("\n").map(l => l.trim()).filter(Boolean)) {
-    const m = line.match(PRED_LINE_RE);
-    if (!m) continue;
-    const conf = parseInt(m[1], 10);
-    if (conf < 0 || conf > 100) continue;   // valeur hors-bornes → rejet
-    results.push({ raw: line, confidence: conf });
-  }
-  return results;
-}
-
-function applyConfidenceFilter(raw: string): string {
-  // L'IA a renvoyé le message d'erreur directement
-  if (/signal trop faible/i.test(raw)) {
-    return "🚫 *Signal trop faible* — aucune prédiction fiable pour ce match.";
-  }
-
-  const lines  = parsePredictions(raw);
-
-  // Aucune ligne au format valide → bloquer par sécurité
-  if (lines.length === 0) {
-    return "🚫 *Signal trop faible* — aucune prédiction fiable pour ce match.";
-  }
-
-  const passed  = lines.filter(l => l.confidence >= 90);
-  const blocked = lines.length - passed.length;
-
-  if (passed.length === 0) {
-    return "🚫 *Signal trop faible* — aucune prédiction fiable pour ce match.";
-  }
-
-  const header = "🎯 *PRONOSTICS CERTIFIÉS* _(confiance ≥ 90%)_\n";
-  const body   = passed.map(l => `✅ ${l.raw}`).join("\n");
-  const footer = blocked > 0
-    ? `\n\n_${blocked} marché(s) filtré(s) — confiance insuffisante (<90%)_`
-    : "";
-
-  return `${header}\n${body}${footer}`;
-}
-
-// ── Appel IA prédictif ────────────────────────────────
+// ── Appels IA prédictifs ──────────────────────────────
 
 async function runPrediction(matchInfo: string, dataCtx: string): Promise<string> {
   const userPrompt = dataCtx
-    ? `Analyse ce match et génère les pronostics.\n\n=== DONNÉES TEMPS RÉEL ===\n${dataCtx}`
-    : `Analyse ce match et génère les pronostics.\n\nMatch: ${matchInfo}`;
+    ? `Génère les pronostics pour ce match.\n\n=== DONNÉES TEMPS RÉEL ===\n${dataCtx}\n\nMatch : ${matchInfo}`
+    : `Génère les pronostics pour ce match.\n\nMatch : ${matchInfo}`;
 
   const raw = await groq(
     [
       { role: "system", content: PREDICTION_SYSTEM },
       { role: "user"  , content: userPrompt },
     ],
-    { temperature: 0.2, max_tokens: 800 } // Température basse = sorties plus déterministes
+    { temperature: 0.15, max_tokens: 500 }
   );
 
-  return applyConfidenceFilter(raw);
+  return raw.trim() || "⚠️ Aucune donnée disponible pour ce match.";
+}
+
+async function runBulkPredictions(slots: MatchSlot[], market?: string): Promise<string> {
+  if (!slots.length) return "❌ Aucun match majeur trouvé en ce moment.";
+
+  const matchList = slots.map((s, i) => `${i + 1}. ${s.context}`).join("\n");
+  const marketLine = market
+    ? `Marchés demandés : ${market}`
+    : "Varie les marchés selon ce qui est le plus solide pour chaque match.";
+
+  const raw = await groq(
+    [
+      { role: "system", content: PREDICTION_SYSTEM },
+      {
+        role   : "user",
+        content: `Génère des pronostics pour ces matchs des compétitions majeures.\n${marketLine}\n\n=== MATCHS ===\n${matchList}`,
+      },
+    ],
+    { temperature: 0.15, max_tokens: 1500 }
+  );
+
+  return raw.trim() || "⚠️ Aucune prédiction générée. Réessayez dans quelques secondes.";
 }
 
 // ══════════════════════════════════════════════════════
@@ -292,12 +298,12 @@ async function getStandings(key: string): Promise<string> {
   const lg = LEAGUES[key.toLowerCase()];
   if (!lg) return `❌ Ligue inconnue. Disponibles: ${Object.keys(LEAGUES).join(", ")}`;
   const sd = await sfFetch(`/unique-tournament/${lg.id}/seasons`);
-  const s = sd?.seasons?.[0];
-  if (!s) return "❌ Saison non disponible.";
-  const d = await sfFetch(`/unique-tournament/${lg.id}/season/${s.id}/standings/total`);
+  const season = sd?.seasons?.[0];
+  if (!season) return "❌ Saison non disponible.";
+  const d = await sfFetch(`/unique-tournament/${lg.id}/season/${season.id}/standings/total`);
   const rows = d?.standings?.[0]?.rows;
   if (!rows?.length) return "❌ Classement non disponible.";
-  const lines = [`🏆 *${lg.name} — Classement ${s.year ?? ""}*\n`];
+  const lines = [`🏆 *${lg.name} — Classement ${season.year ?? ""}*\n`];
   for (const r of rows.slice(0, 20)) {
     const gd = r.scoredGoals - r.receivedGoals;
     lines.push(`${String(r.position).padEnd(3)}${(r.team?.name ?? "?").substring(0, 20).padEnd(21)}${String(r.points).padEnd(4)}pts │ ${r.matches}J ${r.wins}V ${r.draws}N ${r.losses}D │ ${gd >= 0 ? "+" : ""}${gd}`);
@@ -386,12 +392,8 @@ async function getH2H(n1: string, n2: string): Promise<string> {
   return lines.join("\n");
 }
 
-// ── Construction du contexte match pour la prédiction ─
-
 async function buildMatchContext(teamA: string, teamB: string): Promise<string> {
-  const [t1, t2, hh] = await Promise.all([
-    getTeam(teamA), getTeam(teamB), getH2H(teamA, teamB),
-  ]);
+  const [t1, t2, hh] = await Promise.all([getTeam(teamA), getTeam(teamB), getH2H(teamA, teamB)]);
   return `${t1}\n\n${t2}\n\n${hh}`;
 }
 
@@ -423,7 +425,21 @@ async function groq(
   return "";
 }
 
-// ── Détection d'intention pronostic dans le texte libre ──
+// ── Mémoire : extraction de faits mémorisables ────────
+// L'IA identifie les faits importants dans la conversation et les résume
+async function extractMemory(newFact: string, existing: string): Promise<string> {
+  const prompt = existing
+    ? `Voici la mémoire actuelle de cet utilisateur :\n${existing}\n\nNouveau message utilisateur : "${newFact}"\n\nMets à jour la mémoire en intégrant les nouveaux éléments pertinents (équipes favorites, style de paris, préférences). Réponds uniquement avec la mémoire mise à jour (max 300 caractères, en français).`
+    : `Extrait les informations utiles de ce message pour mémoriser les préférences de l'utilisateur : "${newFact}"\n\nRéponds uniquement avec les faits mémorisés (max 300 caractères, en français). Si aucun fait utile, réponds par une chaîne vide.`;
+
+  return groq(
+    [{ role: "system", content: "Tu es un système de mémorisation des préférences utilisateur. Tu extrais et résumes les informations pertinentes pour personnaliser les prochaines interactions." },
+     { role: "user"  , content: prompt }],
+    { temperature: 0.3, max_tokens: 100 }
+  );
+}
+
+// ── Détection d'intention pronostic ───────────────────
 
 const PRONO_INTENT_RE = /\b(pronostic|prono|paris?|mise|cote|côte|match|matchs|analyse|foot|football|soir|aujourd'?hui|ligue|ligue1|premier|laliga|bundesliga|seriea|ucl|gagnant|score|buts?|over|under|btts|1x2|pr[ée]vision|pr[ée]diction)\b/i;
 const BULK_COUNT_RE   = /\b(\d{1,2})\s*(matchs?|pronostics?|pronos?|paris?)\b/i;
@@ -435,46 +451,25 @@ function detectPronosticIntent(text: string): { isBulk: boolean; count: number }
   return null;
 }
 
-// ── Prédictions en masse sur N matchs ────────────────
+// ── Chat général ──────────────────────────────────────
 
-async function runBulkPredictions(slots: MatchSlot[], market?: string): Promise<string> {
-  if (!slots.length) return "❌ Aucun match majeur trouvé en ce moment.";
+async function aiChat(q: string, hist: Message[], memory: string): Promise<string> {
+  const memoryBlock = memory
+    ? `\nCe que tu sais de cet utilisateur :\n${memory}\n`
+    : "";
 
-  // Construire un prompt unique listant tous les matchs
-  const matchList = slots
-    .map((s, i) => `${i + 1}. ${s.context}`)
-    .join("\n");
-
-  const marketLine = market
-    ? `Marchés demandés : ${market}`
-    : "Marchés : mélange de Résultat 1X2, BTTS, Over/Under 2.5 (varie selon chaque match).";
-
-  const raw = await groq(
-    [
-      { role: "system", content: PREDICTION_SYSTEM },
-      {
-        role   : "user",
-        content : `Génère des pronostics pour ces matchs des compétitions majeures.\n${marketLine}\n\n=== MATCHS ===\n${matchList}\n\nFournis une ligne par marché rentable par match. Varie les types de marchés.`,
-      },
-    ],
-    { temperature: 0.2, max_tokens: 2000 }
-  );
-  return applyConfidenceFilter(raw);
-}
-
-async function aiChat(q: string, hist: Message[]): Promise<string> {
   return groq(
     [
       {
         role   : "system",
-        content : `Tu es FootBot, système expert d'analyse football IA.
+        content: `Tu es FootBot, système expert d'analyse football IA.${memoryBlock}
 RÈGLES ABSOLUES :
 - Tu réponds TOUJOURS par une action ou une information concrète — JAMAIS par une question.
-- Si la demande est vague, tu fournis immédiatement une réponse utile en appliquant des défauts intelligents.
+- Si la demande est vague, tu fournis immédiatement une réponse utile avec des défauts intelligents.
 - Tes réponses sont courtes, directes et en français.
-- Tu ne termines JAMAIS par une question ("Que voulez-vous ?", "Puis-je vous aider ?", etc.).
-- Si l'utilisateur te salue, réponds brièvement et donne directement le statut du moment (matchs en cours, prochain match majeur, etc.)
-Données disponibles: SofaScore (temps réel) · Groq AI · Commandes: /live /auj /classement /equipe /joueur /h2h /pronostic`,
+- Tu ne termines JAMAIS par une question.
+- Si l'utilisateur te salue, réponds brièvement et donne le statut du moment (matchs en cours, prochain match majeur).
+Commandes disponibles: /live /auj /classement /equipe /joueur /h2h /pronostic`,
       },
       ...hist.slice(-10),
       { role: "user", content: q },
@@ -497,7 +492,6 @@ async function send(chatId: number, text: string) {
         body   : JSON.stringify({ chat_id: chatId, text: c, parse_mode: "Markdown" }),
       });
       if (!r.ok) {
-        // Fallback sans Markdown (évite les erreurs de parsing)
         await fetch(`${TG}/sendMessage`, {
           method : "POST",
           headers: { "Content-Type": "application/json" },
@@ -522,66 +516,98 @@ const typing = (id: number) =>
 // ══════════════════════════════════════════════════════
 
 async function handle(chatId: number, text: string) {
-  const s   = getSession(chatId);
+  const s   = await loadSession(chatId);
   const cmd = text.trim();
   typing(chatId);
 
   // ── Aide ──────────────────────────────────────────
   if (["/start", "/help", "/aide"].includes(cmd)) {
     transition(s, "idle");
+    await saveSession(s);
     return send(chatId,
-      `⚽ *FootBot — Système d'Analyse Prédictive IA*\n` +
-      `_Moteur Groq · Données SofaScore · Fiabilité cible 99%_\n\n` +
+      `⚽ *FootBot — Moteur de Pronostics Sportifs IA*\n` +
+      `_Groq AI · SofaScore · Mémoire persistante_\n\n` +
+      `🎯 /pronostic — Pronostics directs (coupon prêt)\n` +
+      `🎯 /pronostic PSG vs Real — Match précis\n` +
       `🔴 /live — Matchs en direct\n` +
       `📅 /auj — Matchs du jour\n` +
       `🏆 /classement [ligue] — Classement\n` +
       `⚽ /equipe [nom] — Infos équipe\n` +
       `👤 /joueur [nom] — Stats joueur\n` +
       `⚔️ /h2h [e1] vs [e2] — Historique\n` +
-      `🎯 /pronostic [e1] vs [e2] — Prédiction IA certifiée\n\n` +
-      `*Ligues:* premier · laliga · ligue1 · bundesliga · seriea · ucl\n\n` +
-      `⚠️ _Seuls les pronostics avec confiance ≥ 90% sont affichés._`
+      `🧠 /memoire — Voir ma mémoire\n` +
+      `🗑 /oublie — Effacer ma mémoire\n\n` +
+      `*Ligues:* premier · laliga · ligue1 · bundesliga · seriea · ucl`
     );
+  }
+
+  // ── Afficher la mémoire ───────────────────────────
+  if (cmd === "/memoire") {
+    return send(chatId,
+      s.memory
+        ? `🧠 *Ce que je retiens de toi :*\n\n${s.memory}`
+        : "🧠 Je n'ai encore rien mémorisé te concernant."
+    );
+  }
+
+  // ── Effacer la mémoire ────────────────────────────
+  if (cmd === "/oublie") {
+    s.memory  = "";
+    s.history = [];
+    await saveSession(s);
+    return send(chatId, "🗑 Mémoire effacée. Je repars de zéro.");
   }
 
   // ── Live ──────────────────────────────────────────
   if (cmd === "/live") {
     transition(s, "idle");
-    const r = await getLive(); addHistory(s, "user", cmd); addHistory(s, "assistant", r); return send(chatId, r);
+    const r = await getLive();
+    addHistory(s, "user", cmd); addHistory(s, "assistant", r);
+    await saveSession(s); return send(chatId, r);
   }
 
   // ── Aujourd'hui ───────────────────────────────────
   if (cmd === "/auj" || cmd === "/aujourd'hui" || cmd === "/today") {
     transition(s, "idle");
-    const r = await getToday(); addHistory(s, "user", cmd); addHistory(s, "assistant", r); return send(chatId, r);
+    const r = await getToday();
+    addHistory(s, "user", cmd); addHistory(s, "assistant", r);
+    await saveSession(s); return send(chatId, r);
   }
 
   // ── Classement ────────────────────────────────────
   const cm = cmd.match(/^\/classement\s+(\w+)$/i);
   if (cm) {
     transition(s, "idle");
-    const r = await getStandings(cm[1]); addHistory(s, "user", cmd); addHistory(s, "assistant", r); return send(chatId, r);
+    const r = await getStandings(cm[1]);
+    addHistory(s, "user", cmd); addHistory(s, "assistant", r);
+    await saveSession(s); return send(chatId, r);
   }
 
   // ── Équipe ────────────────────────────────────────
   const em = cmd.match(/^\/equipe\s+(.+)$/i);
   if (em) {
     transition(s, "idle");
-    const r = await getTeam(em[1].trim()); addHistory(s, "user", cmd); addHistory(s, "assistant", r); return send(chatId, r);
+    const r = await getTeam(em[1].trim());
+    addHistory(s, "user", cmd); addHistory(s, "assistant", r);
+    await saveSession(s); return send(chatId, r);
   }
 
   // ── Joueur ────────────────────────────────────────
   const jm = cmd.match(/^\/joueur\s+(.+)$/i);
   if (jm) {
     transition(s, "idle");
-    const r = await getPlayer(jm[1].trim()); addHistory(s, "user", cmd); addHistory(s, "assistant", r); return send(chatId, r);
+    const r = await getPlayer(jm[1].trim());
+    addHistory(s, "user", cmd); addHistory(s, "assistant", r);
+    await saveSession(s); return send(chatId, r);
   }
 
   // ── H2H ──────────────────────────────────────────
   const hm = cmd.match(/^\/h2h\s+(.+)\s+vs\.?\s+(.+)$/i);
   if (hm) {
     transition(s, "idle");
-    const r = await getH2H(hm[1].trim(), hm[2].trim()); addHistory(s, "user", cmd); addHistory(s, "assistant", r); return send(chatId, r);
+    const r = await getH2H(hm[1].trim(), hm[2].trim());
+    addHistory(s, "user", cmd); addHistory(s, "assistant", r);
+    await saveSession(s); return send(chatId, r);
   }
 
   // ── Pronostic ─────────────────────────────────────
@@ -598,38 +624,37 @@ async function handle(chatId: number, text: string) {
       const dataCtx = await buildMatchContext(teamA.trim(), teamB.trim());
       s.lastMatch   = arg;
       s.lastContext = dataCtx;
-      await send(chatId, "🧠 Analyse prédictive en cours...");
+      await send(chatId, "🧠 Analyse en cours...");
       const result = await runPrediction(arg, dataCtx);
       addHistory(s, "user", cmd);
       addHistory(s, "assistant", result);
       transition(s, "awaiting_market");
+      await saveSession(s);
       return send(chatId, result);
     }
 
     // Scénario 2 — Vague ou en masse : /pronostic | /pronostic 10 matchs
     const bulkMatch = arg.match(BULK_COUNT_RE);
     const count     = bulkMatch ? Math.min(parseInt(bulkMatch[1], 10), 20) : 5;
-    await send(chatId,
-      `⚙️ *Défaut appliqué* — Compétitions majeures du moment · Marchés mixtes\n` +
-      `🔍 Collecte des ${count} meilleurs matchs...`
-    );
+    await send(chatId, `🔍 Collecte des ${count} meilleurs matchs du moment...`);
     const slots = await getDefaultMatches(count);
     if (!slots.length) {
       transition(s, "idle");
+      await saveSession(s);
       return send(chatId, "❌ Aucun match majeur en ce moment. Précisez : `/pronostic Équipe1 vs Équipe2`");
     }
     await send(chatId, `🧠 Analyse de *${slots.length}* match(s)...`);
     const result = await runBulkPredictions(slots);
     addHistory(s, "user", cmd);
     addHistory(s, "assistant", result);
-    // Bulk : pas de contexte unique → on reste en idle (pas de suivi de marché)
     s.lastMatch   = undefined;
     s.lastContext = undefined;
     transition(s, "idle");
+    await saveSession(s);
     return send(chatId, result);
   }
 
-  // ── Marché additionnel (état awaiting_market) ─────────
+  // ── Marché additionnel (état awaiting_market) ─────
   if (s.phase === "awaiting_market" && s.lastMatch &&
       /^(over|under|btts|score|double|1x2|r[ée]sultat|mi-temps|1n2)/i.test(cmd)) {
     transition(s, "predicting");
@@ -639,38 +664,44 @@ async function handle(chatId: number, text: string) {
     addHistory(s, "user", cmd);
     addHistory(s, "assistant", result);
     transition(s, "awaiting_market");
+    await saveSession(s);
     return send(chatId, result);
   }
 
-  // ── Texte libre — détection d'intention pronostic ─────
-  // Mot-clé foot/paris détecté → prédictions auto, SANS demander de précision
+  // ── Texte libre — détection d'intention pronostic ─
   const intent = detectPronosticIntent(cmd);
   if (intent) {
     transition(s, "predicting");
-    await send(chatId,
-      `⚙️ *Défaut appliqué* — Compétitions majeures · Marchés mixtes\n` +
-      `🔍 Collecte des meilleurs matchs du moment...`
-    );
+    await send(chatId, `🔍 Collecte des meilleurs matchs du moment...`);
     const intentSlots = await getDefaultMatches(intent.count);
     if (intentSlots.length) {
       await send(chatId, `🧠 Analyse de *${intentSlots.length}* match(s)...`);
       const result = await runBulkPredictions(intentSlots);
       addHistory(s, "user", cmd);
       addHistory(s, "assistant", result);
-      // Bulk : pas de contexte unique → idle, pas de suivi de marché
       s.lastMatch   = undefined;
       s.lastContext = undefined;
       transition(s, "idle");
+      await saveSession(s);
       return send(chatId, result);
     }
   }
 
-  // ── Conversation générale (salutation, info) ──────────
+  // ── Conversation générale ─────────────────────────
+  // Mémoriser en arrière-plan si le message contient des préférences
+  const MEMORY_TRIGGER = /\b(j'aime|je préfère|mon équipe|je mise|toujours|jamais|je veux|habituellement|je suis fan|ma ligue)\b/i;
+  if (MEMORY_TRIGGER.test(cmd) && cmd.length > 10) {
+    extractMemory(cmd, s.memory)
+      .then(updated => { if (updated) { s.memory = updated.slice(0, 400); saveSession(s); } })
+      .catch(() => {});
+  }
+
   transition(s, "idle");
   addHistory(s, "user", cmd);
-  const r    = await aiChat(cmd, s.history.slice(0, -1));
+  const r    = await aiChat(cmd, s.history.slice(0, -1), s.memory);
   const resp = r || "⚽ Aucune donnée disponible. Essayez /live ou /auj.";
   addHistory(s, "assistant", resp);
+  await saveSession(s);
   return send(chatId, resp);
 }
 
@@ -680,24 +711,20 @@ async function handle(chatId: number, text: string) {
 
 const WEBHOOK_SECRET = Deno.env.get("TELEGRAM_WEBHOOK_SECRET") ?? "";
 
-// Avertissement au démarrage si le secret n'est pas configuré
 if (!WEBHOOK_SECRET) {
   console.warn(
     "[SECURITY] TELEGRAM_WEBHOOK_SECRET non configuré — " +
-    "toute requête POST est acceptée sans vérification d'origine. " +
-    "Définissez ce secret dans Supabase pour protéger le bot."
+    "toute requête POST est acceptée sans vérification d'origine."
   );
 }
 
 Deno.serve(async (req) => {
-  if (req.method !== "POST") return new Response("FootBot ⚽ — Système d'Analyse Prédictive Sportive");
+  if (req.method !== "POST") return new Response("FootBot ⚽ — Moteur de Pronostics Sportifs IA");
 
-  // Vérification du secret webhook Telegram
-  // Si TELEGRAM_WEBHOOK_SECRET est défini, il est obligatoire.
   if (WEBHOOK_SECRET) {
     const sig = req.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
     if (sig !== WEBHOOK_SECRET) {
-      console.warn(`Unauthorized webhook attempt — IP header: ${req.headers.get("x-forwarded-for") ?? "unknown"}`);
+      console.warn(`Unauthorized webhook — IP: ${req.headers.get("x-forwarded-for") ?? "unknown"}`);
       return new Response("Unauthorized", { status: 401 });
     }
   }
