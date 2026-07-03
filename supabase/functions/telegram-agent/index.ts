@@ -515,8 +515,8 @@ async function cmdTeam(chatId: number, name: string): Promise<void> {
 
 async function cmdHelp(chatId: number): Promise<void> {
   await send(chatId,
-    `⚽ <b>FootBot — Commandes</b>\n\n` +
-    `/pronos [N] — N pronostics du jour basés sur toutes les stats\n` +
+    `⚽ <b>FootBot</b> — Je suis ton assistant pronostics IA !\n\n` +
+    `Dis-moi juste combien de matchs tu veux analyser, ou utilise :\n\n` +
     `/live — Matchs en direct\n` +
     `/auj — Matchs du jour\n` +
     `/classement [ligue] — Classement (premier, laliga, ligue1, bundesliga, seriea, ucl)\n` +
@@ -528,7 +528,44 @@ async function cmdHelp(chatId: number): Promise<void> {
 //  ROUTEUR
 // ══════════════════════════════════════════════════════
 
-const PRONOS_INTENT = /pronos|pronostic|predict|paris|mise|bet|cote|analyse|tip/i;
+// Salutations dans toutes les langues + messages courts sans ponctuation
+const GREETING = /^(
+  # Français
+  salut|slt|cc|coucou|bonjour|bonsoir|bonne\s?nuit|yo|eh|hey|cava|ça\s?va|quoi\s?de\s?neuf|
+  # Anglais
+  hi|hello|hey|howdy|sup|what'?s\s?up|good\s?(morning|evening|night|day)|hiya|greetings|
+  # Arabe / Maghrébin
+  salam|slam|salam\s?aleykoum|wa?\s?aleykoum|sabah\s?al?\s?kheir|msa\s?lkhir|labas|wach|wsh|wc|
+  # Espagnol
+  hola|buenas|buenos\s?(días|tardes|noches)|
+  # Italien
+  ciao|salve|buongiorno|buonasera|
+  # Portugais
+  olá|oi|bom\s?(dia|tarde|noite)|
+  # Allemand
+  hallo|guten\s?(tag|morgen|abend)|servus|moin|
+  # Turc
+  merhaba|selam|
+  # Russe / Est
+  privet|zdravo|
+  # Divers
+  allo|allô|nsm|nss|slt\s?bb|bb|frero|frr|frère
+)[\s!?.]*$/ix;
+
+const PRONOS_INTENT = /pronos|pronostic|predict|paris|mise|bet|côte|cote|analyse|tip|match|foot|football|pari/i;
+
+// Réponses de salutation variées (naturel, pas robotique)
+const GREET_REPLIES = [
+  "Wesh 👋 Tu veux combien de matchs à analyser aujourd'hui ? (ex: 3, 5 ou 10)",
+  "Salut ! 👋 Je te prépare des pronostics basés sur les vraies stats — tu veux analyser combien de matchs ?",
+  "Hey ! ⚽ Prêt à analyser les matchs du jour. Combien tu en veux ? (1 à 10)",
+  "Bonjour ! 🤖 Je scrappe les stats en temps réel. Dis-moi combien de matchs tu veux (ex: 5)",
+  "Salam ! ⚽ Combien de matchs je t'analyse aujourd'hui ?",
+];
+
+function randomGreetReply(): string {
+  return GREET_REPLIES[Math.floor(Math.random() * GREET_REPLIES.length)];
+}
 
 function extractNumber(text: string): number | null {
   const m = text.match(/\b(\d+)\b/);
@@ -539,9 +576,9 @@ function extractNumber(text: string): number | null {
 
 async function handle(chatId: number, text: string): Promise<void> {
   const raw   = text.trim();
-  const lower = raw.toLowerCase();
+  const lower = raw.toLowerCase().replace(/\s+/g, " ");
 
-  // Commandes directes
+  // ── Commandes slash directes ───────────────────────
   const pronosCmd = lower.match(/^\/pronos(?:tics?)?\s*(\d+)?/);
   if (pronosCmd) {
     const n = Math.min(Math.max(parseInt(pronosCmd[1] ?? "5", 10), 1), 10);
@@ -559,7 +596,7 @@ async function handle(chatId: number, text: string): Promise<void> {
   const teamMatch = raw.match(/^\/equipe\s+(.+)/i);
   if (teamMatch) { await cmdTeam(chatId, teamMatch[1].trim()); return; }
 
-  // Phase conversationnelle
+  // ── Phase en cours : on attend un nombre ──────────
   const phase = await loadPhase(chatId);
 
   if (phase === "awaiting_count") {
@@ -569,21 +606,43 @@ async function handle(chatId: number, text: string): Promise<void> {
       await runPronosticPipeline(chatId, num);
       return;
     }
-    if (/^(oui|ok|yes|vas[- ]?y|go|allez|top|super|parfait)$/i.test(raw)) {
+    // "oui" / "ok" → défaut 5 matchs
+    if (/^(oui|ok|yes|vas[- ]?y|go|allez|top|super|parfait|let'?s?\s?go|yep|yup|bien\s?sûr|bah\s?oui)$/i.test(raw)) {
       await savePhase(chatId, "idle");
       await runPronosticPipeline(chatId, 5);
       return;
     }
-    if (/^(non|no|annule|stop|cancel)$/i.test(raw)) {
+    // "non" → annulation silencieuse
+    if (/^(non|no|annule|stop|cancel|rien|nope|nan)$/i.test(raw)) {
       await savePhase(chatId, "idle");
-      await send(chatId, "Annulé. Tapez /pronos quand vous voulez.");
+      await send(chatId, "Pas de souci 👌 Dis-moi quand tu veux des pronostics.");
       return;
     }
-    await send(chatId, "Donnez un nombre entre 1 et 10 :");
+    // Salutation dans la phase → redemander poliment
+    if (GREETING.test(raw)) {
+      await send(chatId, "😄 Tu veux combien de matchs ? Donne-moi un chiffre entre 1 et 10.");
+      return;
+    }
+    // Chiffre en toutes lettres
+    const words: Record<string, number> = { un:1, une:1, deux:2, trois:3, quatre:4, cinq:5, six:6, sept:7, huit:8, neuf:9, dix:10 };
+    const wordNum = words[lower.trim()];
+    if (wordNum) {
+      await savePhase(chatId, "idle");
+      await runPronosticPipeline(chatId, wordNum);
+      return;
+    }
+    await send(chatId, "Donne-moi un chiffre entre 1 et 10 👇");
     return;
   }
 
-  // Détection intention pronostic
+  // ── Salutation → démarrer le flow naturellement ───
+  if (GREETING.test(raw)) {
+    await savePhase(chatId, "awaiting_count");
+    await send(chatId, randomGreetReply());
+    return;
+  }
+
+  // ── Message avec intention pronostic ──────────────
   if (PRONOS_INTENT.test(lower)) {
     const num = extractNumber(raw);
     if (num !== null) {
@@ -591,12 +650,21 @@ async function handle(chatId: number, text: string): Promise<void> {
       await runPronosticPipeline(chatId, num);
       return;
     }
+    // Contient une intention mais pas de chiffre → demander
     await savePhase(chatId, "awaiting_count");
-    await send(chatId, "Combien de matchs voulez-vous analyser ? (1-10, défaut : 5)");
+    await send(chatId, "⚽ Sur combien de matchs tu veux que j'analyse ? (1 à 10)");
     return;
   }
 
-  await send(chatId, "Envoyez <b>/pronos</b> pour des pronostics ou <b>/help</b> pour les commandes.");
+  // ── Message court sans ponctuation = probablement une salutation ──
+  if (raw.length <= 15 && !/[/\\@#]/.test(raw)) {
+    await savePhase(chatId, "awaiting_count");
+    await send(chatId, randomGreetReply());
+    return;
+  }
+
+  // ── Fallback naturel — pas de commande robotique ──
+  await send(chatId, "⚽ Dis-moi combien de matchs tu veux analyser (ex: <b>5</b>) et je lance le scraping !");
 }
 
 // ══════════════════════════════════════════════════════
