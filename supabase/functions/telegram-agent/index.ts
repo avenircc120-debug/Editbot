@@ -30,8 +30,13 @@ const MAJOR = new Set([7, 17, 8, 34, 35, 23, 679, 44, 771, 242, 119]);
 async function sfFetch(path: string): Promise<any> {
   try {
     const r = await fetch(`https://api.sofascore.com/api/v1${path}`, { headers: SF });
-    return r.ok ? r.json() : null;
-  } catch { return null; }
+    if (r.ok) return r.json();
+    console.error(`SofaScore ${r.status} for ${path}`);
+    return null;
+  } catch (e) {
+    console.error(`SofaScore fetch error for ${path}:`, e);
+    return null;
+  }
 }
 
 const todayStr = () => new Date().toISOString().split("T")[0];
@@ -282,13 +287,21 @@ const addH = (s: Session, role: string, content: string) => {
 async function send(chatId: number, text: string) {
   const chunks = text.match(/[\s\S]{1,4000}/g) ?? [text];
   for (const c of chunks) {
-    await fetch(`${TG}/sendMessage`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: c, parse_mode: "Markdown" }),
-    }).catch(() => fetch(`${TG}/sendMessage`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: c }),
-    }));
+    try {
+      const r = await fetch(`${TG}/sendMessage`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text: c, parse_mode: "Markdown" }),
+      });
+      if (!r.ok) {
+        // Fallback: plain text (strips Markdown that may have caused the error)
+        await fetch(`${TG}/sendMessage`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: c.replace(/[*_`\[\]]/g, "") }),
+        });
+      }
+    } catch (e) {
+      console.error("Telegram send error:", e);
+    }
   }
 }
 
@@ -346,8 +359,20 @@ async function handle(chatId: number, text: string) {
 
 // ── Serveur ───────────────────────────────────────────
 
+const WEBHOOK_SECRET = Deno.env.get("TELEGRAM_WEBHOOK_SECRET") ?? "";
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return new Response("FootBot ⚽ — Analyse Football IA");
+
+  // Verify Telegram webhook secret token (if configured)
+  if (WEBHOOK_SECRET) {
+    const sig = req.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
+    if (sig !== WEBHOOK_SECRET) {
+      console.warn("Unauthorized webhook attempt");
+      return new Response("Unauthorized", { status: 401 });
+    }
+  }
+
   try {
     const b = await req.json(), m = b?.message;
     if (m?.text && m?.chat?.id) handle(m.chat.id, m.text.trim()).catch(console.error);
