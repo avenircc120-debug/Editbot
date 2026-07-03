@@ -425,7 +425,7 @@ async function groq(
 
 // ── Détection d'intention pronostic dans le texte libre ──
 
-const PRONO_INTENT_RE = /\b(pronostic|prono|paris?|mise|cote|côte|match|matchs|analyse|foot|football|soir|aujourd'?hui|ligue|ligue1|premier|laliga|bundesliga|seriea|ucl|gagnant|score|buts?|over|under|btts|1x2|pr[ée]vision|pr[ée]disct?ion)\b/i;
+const PRONO_INTENT_RE = /\b(pronostic|prono|paris?|mise|cote|côte|match|matchs|analyse|foot|football|soir|aujourd'?hui|ligue|ligue1|premier|laliga|bundesliga|seriea|ucl|gagnant|score|buts?|over|under|btts|1x2|pr[ée]vision|pr[ée]diction)\b/i;
 const BULK_COUNT_RE   = /\b(\d{1,2})\s*(matchs?|pronostics?|pronos?|paris?)\b/i;
 
 function detectPronosticIntent(text: string): { isBulk: boolean; count: number } | null {
@@ -622,7 +622,10 @@ async function handle(chatId: number, text: string) {
     const result = await runBulkPredictions(slots);
     addHistory(s, "user", cmd);
     addHistory(s, "assistant", result);
-    transition(s, "awaiting_market");
+    // Bulk : pas de contexte unique → on reste en idle (pas de suivi de marché)
+    s.lastMatch   = undefined;
+    s.lastContext = undefined;
+    transition(s, "idle");
     return send(chatId, result);
   }
 
@@ -648,13 +651,16 @@ async function handle(chatId: number, text: string) {
       `⚙️ *Défaut appliqué* — Compétitions majeures · Marchés mixtes\n` +
       `🔍 Collecte des meilleurs matchs du moment...`
     );
-    const slots = await getDefaultMatches(intent.count);
-    if (slots.length) {
-      await send(chatId, `🧠 Analyse de *${slots.length}* match(s)...`);
-      const result = await runBulkPredictions(slots);
+    const intentSlots = await getDefaultMatches(intent.count);
+    if (intentSlots.length) {
+      await send(chatId, `🧠 Analyse de *${intentSlots.length}* match(s)...`);
+      const result = await runBulkPredictions(intentSlots);
       addHistory(s, "user", cmd);
       addHistory(s, "assistant", result);
-      transition(s, "awaiting_market");
+      // Bulk : pas de contexte unique → idle, pas de suivi de marché
+      s.lastMatch   = undefined;
+      s.lastContext = undefined;
+      transition(s, "idle");
       return send(chatId, result);
     }
   }
