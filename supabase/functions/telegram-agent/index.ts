@@ -96,6 +96,11 @@ async function loadSession(chatId: number): Promise<Session> {
       `${SB_URL}/rest/v1/bot_sessions?chat_id=eq.${chatId}&select=*`,
       { headers: sbHeaders() }
     );
+    if (!r.ok) {
+      console.error(`loadSession: DB returned ${r.status}`, await r.text().catch(() => ""));
+      cache.set(chatId, blank);
+      return blank;
+    }
     const rows: any[] = await r.json();
     if (rows?.length) {
       const row = rows[0];
@@ -121,7 +126,7 @@ async function saveSession(s: Session): Promise<void> {
   if (!SB_URL || !SB_KEY) return;
 
   try {
-    await fetch(`${SB_URL}/rest/v1/bot_sessions`, {
+    const r = await fetch(`${SB_URL}/rest/v1/bot_sessions`, {
       method : "POST",
       headers: { ...sbHeaders(), "Prefer": "resolution=merge-duplicates,return=minimal" },
       body   : JSON.stringify({
@@ -134,6 +139,9 @@ async function saveSession(s: Session): Promise<void> {
         updated_at  : new Date().toISOString(),
       }),
     });
+    if (!r.ok) {
+      console.error(`saveSession: DB returned ${r.status}`, await r.text().catch(() => ""));
+    }
   } catch (e) { console.error("saveSession:", e); }
 }
 
@@ -552,8 +560,11 @@ async function handle(chatId: number, text: string) {
 
   // ── Effacer la mémoire ────────────────────────────
   if (cmd === "/oublie") {
-    s.memory  = "";
-    s.history = [];
+    s.memory      = "";
+    s.history     = [];
+    s.phase       = "idle";
+    s.lastMatch   = undefined;
+    s.lastContext = undefined;
     await saveSession(s);
     return send(chatId, "🗑 Mémoire effacée. Je repars de zéro.");
   }
@@ -692,7 +703,7 @@ async function handle(chatId: number, text: string) {
   const MEMORY_TRIGGER = /\b(j'aime|je préfère|mon équipe|je mise|toujours|jamais|je veux|habituellement|je suis fan|ma ligue)\b/i;
   if (MEMORY_TRIGGER.test(cmd) && cmd.length > 10) {
     extractMemory(cmd, s.memory)
-      .then(updated => { if (updated) { s.memory = updated.slice(0, 400); saveSession(s); } })
+      .then(updated => { if (updated) { s.memory = updated.slice(0, 300); saveSession(s); } })
       .catch(() => {});
   }
 
