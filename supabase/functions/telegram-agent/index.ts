@@ -529,28 +529,7 @@ async function cmdHelp(chatId: number): Promise<void> {
 // ══════════════════════════════════════════════════════
 
 // Salutations dans toutes les langues + messages courts sans ponctuation
-const GREETING = /^(
-  # Français
-  salut|slt|cc|coucou|bonjour|bonsoir|bonne\s?nuit|yo|eh|hey|cava|ça\s?va|quoi\s?de\s?neuf|
-  # Anglais
-  hi|hello|hey|howdy|sup|what'?s\s?up|good\s?(morning|evening|night|day)|hiya|greetings|
-  # Arabe / Maghrébin
-  salam|slam|salam\s?aleykoum|wa?\s?aleykoum|sabah\s?al?\s?kheir|msa\s?lkhir|labas|wach|wsh|wc|
-  # Espagnol
-  hola|buenas|buenos\s?(días|tardes|noches)|
-  # Italien
-  ciao|salve|buongiorno|buonasera|
-  # Portugais
-  olá|oi|bom\s?(dia|tarde|noite)|
-  # Allemand
-  hallo|guten\s?(tag|morgen|abend)|servus|moin|
-  # Turc
-  merhaba|selam|
-  # Russe / Est
-  privet|zdravo|
-  # Divers
-  allo|allô|nsm|nss|slt\s?bb|bb|frero|frr|frère
-)[\s!?.]*$/ix;
+const GREETING = /^(salut|slt|cc|coucou|bonjour|bonsoir|bonnenuit|yo|hey|cava|cavabien|quoideneuf|hi|hello|howdy|sup|whatsup|goodmorning|goodevening|goodnight|hiya|greetings|salam|slam|salamaleykoum|waaleykoum|sabahalkheir|msalkhir|labas|wach|wsh|hola|buenas|buenosdias|ciao|salve|buongiorno|buonasera|ola|oi|bonjour|hallo|servus|moin|merhaba|selam|privet|zdravo|allo|nsm|nss|bb|frero|frr|frere|wesh|wech|saga|sag|hey|yo|ey)[\s!?.🙂👋😊]*$/i;
 
 const PRONOS_INTENT = /pronos|pronostic|predict|paris|mise|bet|côte|cote|analyse|tip|match|foot|football|pari/i;
 
