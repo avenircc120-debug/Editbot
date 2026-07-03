@@ -1,62 +1,57 @@
-# Editbot — Agent IA de développement autonome
+# FootBot — Analyse Football IA
 
-Bot Telegram propulsé par Groq (llama3-70b-8192) pour modifier votre projet GitHub via langage naturel et déployer automatiquement sur Supabase.
+    Bot Telegram expert football propulse par l'IA (Groq + SofaScore), pour des analyses, classements, stats et pronostics en temps reel.
 
-## Architecture
+    ## Architecture
 
-```
-Telegram → Edge Function (Supabase/Deno) → Groq AI → GitHub API → GitHub Actions → Supabase Deploy
-                                                                          ↓
-                                                               Notification Telegram (succès/échec)
-```
+    ```
+    Telegram → Edge Function (Supabase/Deno) → SofaScore API (scraping)
+                                           → Groq AI (llama-3.3-70b) → analyses & pronostics
+    ```
 
-## Commandes
+    ## Commandes
 
-| Commande | Description |
-|----------|-------------|
-| `/start` | Présentation du bot |
-| `/ls` | Lister tous les fichiers du projet |
-| `/read [fichier]` | Lire un fichier spécifique |
-| `/status` | Statut du dernier déploiement GitHub Actions |
-| Texte libre | L'agent analyse et modifie le code selon votre intention |
+    | Commande | Description |
+    |----------|-------------|
+    | `/live` | Matchs en direct |
+    | `/aujourd'hui` | Matchs du jour |
+    | `/classement [ligue]` | Classement d'une ligue |
+    | `/equipe [nom]` | Infos + forme d'une equipe |
+    | `/joueur [nom]` | Stats d'un joueur |
+    | `/h2h [e1] vs [e2]` | Historique confrontations |
+    | `/pronostic [e1] vs [e2]` | Pronostic IA detaille |
+    | Texte libre | Question football → reponse IA |
 
-## Setup
+    ## Ligues supportees
 
-### 1. Secrets GitHub Actions à configurer
+    `premier` · `laliga` · `ligue1` · `bundesliga` · `seriea` · `ucl`
 
-Dans `Settings → Secrets and variables → Actions` du repo GitHub :
+    ## Source de donnees
 
-| Secret | Description |
-|--------|-------------|
-| `SUPABASE_ACCESS_TOKEN` | Token d'accès Supabase |
-| `SUPABASE_PROJECT_REF` | `jxrwgcsbomqvvchvkkdt` |
-| `TELEGRAM_BOT_TOKEN` | Token du bot Telegram |
-| `TELEGRAM_CHAT_ID` | Votre chat ID Telegram (obtenez-le via @userinfobot) |
-| `GROQ_API_KEY` | Clé API Groq |
-| `GITHUB_ACCESS_TOKEN` | Token GitHub (déjà utilisé par le bot) |
-| `GITHUB_REPO` | `avenircc120-debug/Editbot` |
+    **SofaScore** (API non-officielle) — headers navigateur pour eviter le blocage, aucune cle requise.
 
-### 2. Configurer le Webhook Telegram
+    ## Setup Supabase
 
-Après le premier déploiement, exécutez :
+    Secrets dans le projet `jxrwgcsbomqvvchvkkdt`:
 
-```bash
-curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://jxrwgcsbomqvvchvkkdt.supabase.co/functions/v1/telegram-agent"}'
-```
+    | Secret | Description |
+    |--------|-------------|
+    | `TELEGRAM_BOT_TOKEN` | Token du bot Telegram |
+    | `GROQ_API_KEY` | Cle API Groq |
 
-### 3. Permissions GitHub Token
+    ## Deploiement
 
-Le token GitHub doit avoir les permissions :
-- `repo` (lecture/écriture sur les repos)
-- `workflow` (déclencher GitHub Actions)
+    ```bash
+    supabase functions deploy telegram-agent --project-ref jxrwgcsbomqvvchvkkdt
+    ```
 
-## Flux de travail
+    Ou automatiquement via GitHub Actions au push sur `main`.
 
-1. Envoyez un message naturel au bot : *"Ajoute une route /health dans le serveur Express"*
-2. Le bot scanne l'arborescence GitHub, lit les fichiers clés
-3. Groq génère les modifications en JSON structuré
-4. Le bot applique les changements via l'API GitHub (avec SHA correct)
-5. GitHub Actions détecte le push → déploie sur Supabase
-6. Le bot vous notifie du résultat (succès ✅ ou échec ❌ avec analyse IA)
+    ## Webhook Telegram
+
+    ```bash
+    curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
+    -H "Content-Type: application/json" \
+    -d '{"url": "https://jxrwgcsbomqvvchvkkdt.supabase.co/functions/v1/telegram-agent"}'
+    ```
+    
