@@ -275,39 +275,31 @@ MATCH ${i + 1}: ${m.homeTeam} vs ${m.awayTeam}
 - H2H stats: ${m.homeTeam} gagne ${m.homeWinPct}% | Nul ${m.drawPct}% | ${m.awayTeam} gagne ${m.awayWinPct}%
 `.trim()).join("\n\n");
 
-  const systemPrompt = `Tu es un analyste sportif expert en paris sportifs.
-Tu reçois des données réelles (forme, h2h, statistiques) pour plusieurs matchs.
-Pour chaque match, identifie le marché avec la PLUS FORTE probabilité statistique parmi :
-  - Résultat 1X2 (Victoire domicile / Nul / Victoire extérieur)
-  - Les deux équipes marquent (BTTS Oui/Non)
-  - Plus/Moins de 2.5 buts
-  - Double chance (1X / X2 / 12)
+  // Prompt compact pour minimiser les tokens consommés
+  const systemPrompt = `Expert paris sportifs. Pour chaque match donné, choisis le marché le plus probable (1X2, BTTS, +/-2.5 buts, Double chance). Réponds UNIQUEMENT en JSON, sans texte autour :
+[{"index":1,"homeTeam":"X","awayTeam":"Y","market":"Marché","choice":"Pronostic","confidence":75}]`;
 
-RÈGLES STRICTES :
-1. Analyse les stats réelles fournies.
-2. Un seul marché par match — celui avec la probabilité la plus élevée.
-3. Confiance entre 55% et 92% selon la force du signal statistique.
-4. Réponds UNIQUEMENT avec un JSON valide, aucun autre texte :
-[
-  {"index":1,"homeTeam":"Nom","awayTeam":"Nom","market":"Marché","choice":"Pronostic","confidence":XX},
-  ...
-]`;
+  // Données compressées : seulement l'essentiel pour l'IA
+  const compactBlock = matches.map((m, i) =>
+    `M${i + 1}:${m.homeTeam} vs ${m.awayTeam}(${m.league}) forme:${m.homeForm}/${m.awayForm} h2h:${m.homeWinPct}%/${m.drawPct}%/${m.awayWinPct}% buts:${m.homeGoalsAvg}/${m.awayGoalsAvg}`
+  ).join(" | ");
 
   try {
     const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method : "POST",
       headers: { "Authorization": `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" },
       body   : JSON.stringify({
-        model      : "llama-3.3-70b-versatile",
-        temperature: 0.2,
-        max_tokens : 1500,
+        model      : "llama-3.1-8b-instant", // Modèle léger — 8× moins de crédits
+        temperature: 0.1,
+        max_tokens : 300,                    // Juste assez pour le JSON de sortie
         messages   : [
           { role: "system", content: systemPrompt },
-          { role: "user",   content: `Analyse ces ${matches.length} matchs :\n\n${matchesBlock}` },
+          { role: "user",   content: compactBlock },
         ],
       }),
     });
     const json = await r.json();
+    if (json.error) { console.error("Groq error:", json.error.message); return []; }
     const raw  = json.choices?.[0]?.message?.content ?? "[]";
     const m    = raw.match(/\[[\s\S]*\]/);
     if (!m) return [];
