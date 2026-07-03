@@ -118,33 +118,52 @@ RÈGLES DE FONCTIONNEMENT (OBLIGATOIRES) :
 
 Réponds UNIQUEMENT avec les lignes de format ci-dessus ou le message d'erreur. Rien d'autre.`;
 
-// ── Détection du match par défaut (compétition majeure du jour) ──
+// ── Récupération de N matchs majeurs du jour (pour prédictions en masse) ──
 
-async function getDefaultMatch(): Promise<{ match: string; context: string } | null> {
-  // 1. Matchs en direct d'abord
-  const live = await sfFetch("/sport/football/events/live");
+interface MatchSlot {
+  label  : string;   // "Équipe A vs Équipe B (Ligue)"
+  context: string;   // résumé textuel pour l'IA
+}
+
+async function getDefaultMatches(max = 10): Promise<MatchSlot[]> {
+  const slots: MatchSlot[] = [];
+
+  // 1. Matchs en direct (prioritaires)
+  const live    = await sfFetch("/sport/football/events/live");
   const liveEvs = live?.events?.filter((e: any) => MAJOR.has(e.tournament?.uniqueTournament?.id)) ?? [];
-  if (liveEvs.length > 0) {
-    const e = liveEvs[0];
-    return {
-      match  : `${e.homeTeam?.name} vs ${e.awayTeam?.name} (${e.tournament?.name})`,
-      context: `Match en direct: ${e.homeTeam?.name} ${e.homeScore?.current ?? 0}-${e.awayScore?.current ?? 0} ${e.awayTeam?.name} (${e.tournament?.name})`,
-    };
+  for (const e of liveEvs) {
+    if (slots.length >= max) break;
+    slots.push({
+      label  : `${e.homeTeam?.name} vs ${e.awayTeam?.name} (${e.tournament?.name})`,
+      context: `EN DIRECT: ${e.homeTeam?.name} ${e.homeScore?.current ?? 0}-${e.awayScore?.current ?? 0} ${e.awayTeam?.name} (${e.tournament?.name})`,
+    });
   }
 
-  // 2. Prochain match du jour
-  const day = await sfFetch(`/sport/football/scheduled-events/${todayStr()}`);
-  const dayEvs = day?.events
-    ?.filter((e: any) => MAJOR.has(e.tournament?.uniqueTournament?.id) && e.status?.type !== "finished")
-    ?.sort((a: any, b: any) => a.startTimestamp - b.startTimestamp) ?? [];
-  if (dayEvs.length > 0) {
-    const e = dayEvs[0];
-    return {
-      match  : `${e.homeTeam?.name} vs ${e.awayTeam?.name} (${e.tournament?.name})`,
-      context: `Match du jour à ${fmtTime(e.startTimestamp)}: ${e.homeTeam?.name} vs ${e.awayTeam?.name} (${e.tournament?.name})`,
-    };
+  // 2. Matchs du jour non encore joués
+  if (slots.length < max) {
+    const day    = await sfFetch(`/sport/football/scheduled-events/${todayStr()}`);
+    const dayEvs = day?.events
+      ?.filter((e: any) => MAJOR.has(e.tournament?.uniqueTournament?.id) && e.status?.type !== "finished")
+      ?.sort((a: any, b: any) => a.startTimestamp - b.startTimestamp) ?? [];
+    for (const e of dayEvs) {
+      if (slots.length >= max) break;
+      // Éviter les doublons avec les matchs en direct
+      const label = `${e.homeTeam?.name} vs ${e.awayTeam?.name} (${e.tournament?.name})`;
+      if (!slots.some(s => s.label === label)) {
+        slots.push({
+          label,
+          context: `Match à ${fmtTime(e.startTimestamp)}: ${e.homeTeam?.name} vs ${e.awayTeam?.name} (${e.tournament?.name})`,
+        });
+      }
+    }
   }
-  return null;
+  return slots;
+}
+
+// Compatibilité ascendante (1 match pour /pronostic équipe vs équipe)
+async function getDefaultMatch(): Promise<MatchSlot | null> {
+  const slots = await getDefaultMatches(1);
+  return slots[0] ?? null;
 }
 
 // ── Extraction et filtrage de la confiance ────────────
@@ -404,19 +423,63 @@ async function groq(
   return "";
 }
 
+// ── Détection d'intention pronostic dans le texte libre ──
+
+const PRONO_INTENT_RE = /\b(pronostic|prono|paris?|mise|cote|côte|match|matchs|analyse|foot|football|soir|aujourd'?hui|ligue|ligue1|premier|laliga|bundesliga|seriea|ucl|gagnant|score|buts?|over|under|btts|1x2|pr[ée]vision|pr[ée]disct?ion)\b/i;
+const BULK_COUNT_RE   = /\b(\d{1,2})\s*(matchs?|pronostics?|pronos?|paris?)\b/i;
+
+function detectPronosticIntent(text: string): { isBulk: boolean; count: number } | null {
+  const bulk = text.match(BULK_COUNT_RE);
+  if (bulk) return { isBulk: true, count: Math.min(parseInt(bulk[1], 10), 20) };
+  if (PRONO_INTENT_RE.test(text)) return { isBulk: false, count: 5 };
+  return null;
+}
+
+// ── Prédictions en masse sur N matchs ────────────────
+
+async function runBulkPredictions(slots: MatchSlot[], market?: string): Promise<string> {
+  if (!slots.length) return "❌ Aucun match majeur trouvé en ce moment.";
+
+  // Construire un prompt unique listant tous les matchs
+  const matchList = slots
+    .map((s, i) => `${i + 1}. ${s.context}`)
+    .join("\n");
+
+  const marketLine = market
+    ? `Marchés demandés : ${market}`
+    : "Marchés : mélange de Résultat 1X2, BTTS, Over/Under 2.5 (varie selon chaque match).";
+
+  const raw = await groq(
+    [
+      { role: "system", content: PREDICTION_SYSTEM },
+      {
+        role   : "user",
+        content : `Génère des pronostics pour ces matchs des compétitions majeures.\n${marketLine}\n\n=== MATCHS ===\n${matchList}\n\nFournis une ligne par marché rentable par match. Varie les types de marchés.`,
+      },
+    ],
+    { temperature: 0.2, max_tokens: 2000 }
+  );
+  return applyConfidenceFilter(raw);
+}
+
 async function aiChat(q: string, hist: Message[]): Promise<string> {
   return groq(
     [
       {
         role   : "system",
-        content: `Tu es FootBot, expert analyste football IA. Tu maîtrises tous les championnats, équipes, joueurs, tactiques et statistiques. Réponds en français avec précision.
-Commandes: /live, /auj, /classement [ligue], /equipe [nom], /joueur [nom], /h2h [e1] vs [e2], /pronostic [e1] vs [e2]
-Ligues: premier · laliga · ligue1 · bundesliga · seriea · ucl`,
+        content : `Tu es FootBot, système expert d'analyse football IA.
+RÈGLES ABSOLUES :
+- Tu réponds TOUJOURS par une action ou une information concrète — JAMAIS par une question.
+- Si la demande est vague, tu fournis immédiatement une réponse utile en appliquant des défauts intelligents.
+- Tes réponses sont courtes, directes et en français.
+- Tu ne termines JAMAIS par une question ("Que voulez-vous ?", "Puis-je vous aider ?", etc.).
+- Si l'utilisateur te salue, réponds brièvement et donne directement le statut du moment (matchs en cours, prochain match majeur, etc.)
+Données disponibles: SofaScore (temps réel) · Groq AI · Commandes: /live /auj /classement /equipe /joueur /h2h /pronostic`,
       },
       ...hist.slice(-10),
       { role: "user", content: q },
     ],
-    { temperature: 0.5 }
+    { temperature: 0.4 }
   );
 }
 
@@ -526,49 +589,49 @@ async function handle(chatId: number, text: string) {
   if (pm) {
     transition(s, "predicting");
     const arg = pm[1]?.trim() ?? "";
+
+    // Scénario 1 — Match précis : /pronostic PSG vs Real Madrid
     const matchParts = arg.match(/^(.+)\s+vs\.?\s+(.+)$/i);
-
-    let matchLabel: string;
-    let dataCtx   : string;
-    let notif     = "";
-
     if (matchParts) {
-      // Match explicite fourni
       const [, teamA, teamB] = matchParts;
-      matchLabel = arg;
       await send(chatId, `🔍 Collecte des données : *${teamA.trim()}* vs *${teamB.trim()}*...`);
-      dataCtx = await buildMatchContext(teamA.trim(), teamB.trim());
-    } else {
-      // AUTO-COMPLÉTION : pas de match précis → détection automatique
-      await send(chatId, "⚙️ Aucun match spécifié — détection automatique de la compétition majeure du moment...");
-      const def = await getDefaultMatch();
-      if (!def) {
-        transition(s, "idle");
-        return send(chatId, "❌ Aucun match majeur trouvé en ce moment. Spécifiez un match : `/pronostic Équipe1 vs Équipe2`");
-      }
-      matchLabel = def.match;
-      dataCtx    = def.context;
-      notif      = `⚙️ *Défaut appliqué* : ${def.match}, marchés mixtes\n\n`;
+      const dataCtx = await buildMatchContext(teamA.trim(), teamB.trim());
+      s.lastMatch   = arg;
+      s.lastContext = dataCtx;
+      await send(chatId, "🧠 Analyse prédictive en cours...");
+      const result = await runPrediction(arg, dataCtx);
+      addHistory(s, "user", cmd);
+      addHistory(s, "assistant", result);
+      transition(s, "awaiting_market");
+      return send(chatId, result);
     }
 
-    s.lastMatch   = matchLabel;
-    s.lastContext = dataCtx;
-
-    await send(chatId, `${notif}🧠 Analyse prédictive en cours...`);
-
-    const result = await runPrediction(matchLabel, dataCtx);
+    // Scénario 2 — Vague ou en masse : /pronostic | /pronostic 10 matchs
+    const bulkMatch = arg.match(BULK_COUNT_RE);
+    const count     = bulkMatch ? Math.min(parseInt(bulkMatch[1], 10), 20) : 5;
+    await send(chatId,
+      `⚙️ *Défaut appliqué* — Compétitions majeures du moment · Marchés mixtes\n` +
+      `🔍 Collecte des ${count} meilleurs matchs...`
+    );
+    const slots = await getDefaultMatches(count);
+    if (!slots.length) {
+      transition(s, "idle");
+      return send(chatId, "❌ Aucun match majeur en ce moment. Précisez : `/pronostic Équipe1 vs Équipe2`");
+    }
+    await send(chatId, `🧠 Analyse de *${slots.length}* match(s)...`);
+    const result = await runBulkPredictions(slots);
     addHistory(s, "user", cmd);
     addHistory(s, "assistant", result);
     transition(s, "awaiting_market");
     return send(chatId, result);
   }
 
-  // ── Marché additionnel (si en état awaiting_market) ───
-  // L'utilisateur peut demander un marché supplémentaire sur le dernier match analysé
-  if (s.phase === "awaiting_market" && s.lastMatch && /^(over|under|btts|score|double|1x2|résultat|mi-temps)/i.test(cmd)) {
+  // ── Marché additionnel (état awaiting_market) ─────────
+  if (s.phase === "awaiting_market" && s.lastMatch &&
+      /^(over|under|btts|score|double|1x2|r[ée]sultat|mi-temps|1n2)/i.test(cmd)) {
     transition(s, "predicting");
-    await send(chatId, `🧠 Analyse du marché "${cmd}" sur ${s.lastMatch}...`);
-    const extraCtx = `${s.lastContext ?? s.lastMatch}\n\nMarché demandé spécifiquement: ${cmd}`;
+    await send(chatId, `🧠 Analyse du marché *${cmd}* sur ${s.lastMatch}...`);
+    const extraCtx = `${s.lastContext ?? s.lastMatch}\n\nMarché demandé: ${cmd}`;
     const result   = await runPrediction(s.lastMatch, extraCtx);
     addHistory(s, "user", cmd);
     addHistory(s, "assistant", result);
@@ -576,11 +639,31 @@ async function handle(chatId: number, text: string) {
     return send(chatId, result);
   }
 
-  // ── Conversation libre ────────────────────────────
+  // ── Texte libre — détection d'intention pronostic ─────
+  // Mot-clé foot/paris détecté → prédictions auto, SANS demander de précision
+  const intent = detectPronosticIntent(cmd);
+  if (intent) {
+    transition(s, "predicting");
+    await send(chatId,
+      `⚙️ *Défaut appliqué* — Compétitions majeures · Marchés mixtes\n` +
+      `🔍 Collecte des meilleurs matchs du moment...`
+    );
+    const slots = await getDefaultMatches(intent.count);
+    if (slots.length) {
+      await send(chatId, `🧠 Analyse de *${slots.length}* match(s)...`);
+      const result = await runBulkPredictions(slots);
+      addHistory(s, "user", cmd);
+      addHistory(s, "assistant", result);
+      transition(s, "awaiting_market");
+      return send(chatId, result);
+    }
+  }
+
+  // ── Conversation générale (salutation, info) ──────────
   transition(s, "idle");
   addHistory(s, "user", cmd);
-  const r = await aiChat(cmd, s.history.slice(0, -1));
-  const resp = r || "⚽ Je n'ai pas pu traiter ça. Essayez /help.";
+  const r    = await aiChat(cmd, s.history.slice(0, -1));
+  const resp = r || "⚽ Aucune donnée disponible. Essayez /live ou /auj.";
   addHistory(s, "assistant", resp);
   return send(chatId, resp);
 }
