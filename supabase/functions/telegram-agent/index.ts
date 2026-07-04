@@ -36,8 +36,16 @@ const LEAGUES: Record<string, string> = {
 
 function detectLeague(text: string): string {
   const lower = text.toLowerCase();
-  for (const [key, slug] of Object.entries(LEAGUES)) {
-    if (lower.includes(key)) return slug;
+  // Long keys first (to avoid "el" matching before "europa league")
+  const sorted = Object.entries(LEAGUES).sort((a, b) => b[0].length - a[0].length);
+  for (const [key, slug] of sorted) {
+    // Short keys (≤4 chars) require word boundaries to avoid false matches
+    if (key.length <= 4) {
+      const re = new RegExp(`(?<![a-z])${key}(?![a-z])`, "i");
+      if (re.test(lower)) return slug;
+    } else {
+      if (lower.includes(key)) return slug;
+    }
   }
   return "fra.1"; // défaut Ligue 1
 }
@@ -193,7 +201,24 @@ Réponds UNIQUEMENT avec le JSON, exemple:
     const data: any = await r.json();
     const raw = data.choices?.[0]?.message?.content?.trim() ?? "{}";
     const jsonStr = raw.match(/\{[\s\S]*\}/)?.[0] ?? "{}";
-    return JSON.parse(jsonStr) as Intent;
+    const parsed = JSON.parse(jsonStr);
+
+    // ── Validation + normalisation du schéma ──────────
+    const VALID_INTENTS = ["pronostics","classement","scores_live","programme","equipe","joueur","actualites","h2h","general","salutation","nombre"];
+    const intent = VALID_INTENTS.includes(parsed.intent) ? parsed.intent : "general";
+    const count  = typeof parsed.count === "number" && parsed.count >= 1 && parsed.count <= 10
+      ? Math.round(parsed.count)
+      : typeof parsed.count === "string" && /^\d+$/.test(parsed.count) && parseInt(parsed.count) >= 1
+      ? parseInt(parsed.count)
+      : undefined;
+    return {
+      intent,
+      league: typeof parsed.league === "string" ? parsed.league : undefined,
+      team  : typeof parsed.team   === "string" ? parsed.team   : undefined,
+      team2 : typeof parsed.team2  === "string" ? parsed.team2  : undefined,
+      player: typeof parsed.player === "string" ? parsed.player : undefined,
+      count,
+    } as Intent;
   } catch {
     return { intent: "general" };
   }
@@ -251,12 +276,17 @@ async function handleClassement(chatId: number, leagueSlug: string, originalText
       return;
     }
 
-    const groups = data.children ?? data.standings?.entries ? [data] : (data.children ?? []);
+    // ── Standings parsing — parenthèses explicites pour éviter bug de précédence ──
+    // ESPN renvoie soit data.children[] (groupes) soit data.standings.entries (flat)
+    const hasChildren  = Array.isArray(data.children) && data.children.length > 0 && data.children[0]?.standings?.entries;
+    const hasFlat      = Array.isArray(data.standings?.entries) && data.standings.entries.length > 0;
+    const groups: any[] = hasChildren ? data.children : (hasFlat ? [data] : []);
+
     let lines: string[] = [];
     const leagueName = data.name ?? data.abbreviation ?? slug;
     lines.push(`🏆 <b>Classement ${leagueName}</b>\n`);
 
-    const addEntries = (entries: any[]) => {
+    const addEntries = (entries: any[], offset = 0) => {
       entries.slice(0, 20).forEach((entry: any, i: number) => {
         const team = entry.team?.displayName ?? entry.team?.shortDisplayName ?? "?";
         const stats = entry.stats ?? [];
@@ -266,23 +296,25 @@ async function handleClassement(chatId: number, leagueSlug: string, originalText
         const d    = stats.find((s: any) => s.name === "ties")?.value ?? stats.find((s: any) => s.abbreviation === "D")?.value ?? "";
         const l    = stats.find((s: any) => s.name === "losses")?.value ?? stats.find((s: any) => s.abbreviation === "L")?.value ?? "";
         const gd   = stats.find((s: any) => s.name === "goalDifference")?.value ?? "";
-        const pos  = i + 1;
+        const pos  = offset + i + 1;
         const medal = pos === 1 ? "🥇" : pos === 2 ? "🥈" : pos === 3 ? "🥉" : `${pos}.`;
-        const gdStr = gd !== "" ? ` (${gd > 0 ? "+" : ""}${gd})` : "";
+        const gdStr = gd !== "" ? ` (${Number(gd) > 0 ? "+" : ""}${gd})` : "";
         lines.push(`${medal} <b>${team}</b> — ${pts}pts | ${pld}J ${w}V${d}N${l}D${gdStr}`);
       });
     };
 
-    if (groups.length > 0 && groups[0].standings?.entries) {
-      for (const group of groups) {
-        if (group.name) lines.push(`\n<b>${group.name}</b>`);
-        addEntries(group.standings.entries ?? []);
-      }
-    } else if (data.standings?.entries) {
-      addEntries(data.standings.entries);
-    } else {
+    if (!groups.length) {
       await groqGeneralQA(chatId, originalText);
       return;
+    }
+
+    if (hasChildren) {
+      for (const group of groups) {
+        if (group.name) lines.push(`\n<b>${group.name}</b>`);
+        addEntries(group.standings?.entries ?? []);
+      }
+    } else {
+      addEntries(data.standings.entries);
     }
 
     await send(chatId, lines.join("\n"));
