@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════
-//  FOOTBOT v8 — Google Sheets OAuth2 + Groq + ESPN Live
+//  FOOTBOT v9 — Google Sheets OAuth2 + Groq + ESPN Live
 //  ┌─────────────────────────────────────────────────────┐
 //  │  Stats      → Google Sheets API v4 (OAuth 2.0)     │
 //  │  Live       → ESPN API (API publique, jamais bannie)│
@@ -200,6 +200,21 @@ async function getSheetsPronoMatches(count: number): Promise<MatchProno[]> {
     }));
 }
 
+/** Lit TOUS les matchs disponibles dans l'onglet Pronostics (max 30). */
+async function getAllSheetsPronoMatches(): Promise<MatchProno[]> {
+  return getSheetsPronoMatches(30);
+}
+
+/** Résumé court pour l'outil Groq (liste des matchs dispo). */
+async function toolSheetsPronoBrief(): Promise<string> {
+  const matches = await getAllSheetsPronoMatches();
+  if (!matches.length) return "Aucun match disponible dans l'onglet Pronostics Google Sheets.";
+  const lines = matches.map((m, i) =>
+    `${i + 1}. ${m.home} vs ${m.away}${m.league ? " · " + m.league : ""}${m.date ? " (" + m.date + ")" : ""}`
+  );
+  return `📋 <b>${matches.length} match${matches.length > 1 ? "s" : ""} disponibles</b> dans Google Sheets :\n${lines.join("\n")}`;
+}
+
 // ══════════════════════════════════════════════════════
 //  COUCHE 2 : ESPN API — Live & planning (temps réel)
 // ══════════════════════════════════════════════════════
@@ -337,7 +352,7 @@ function keepTyping(chatId: number, maxMs: number): CancelToken {
 const TOOLS = [
   { type: "function", function: {
     name: "get_live_scores",
-    description: "Scores des matchs en direct (temps réel ESPN). Pour /live ou questions sur matchs en cours.",
+    description: "Scores des matchs en direct (temps réel ESPN). Pour questions sur matchs en cours.",
     parameters: { type: "object", properties: {} },
   }},
   { type: "function", function: {
@@ -363,18 +378,41 @@ const TOOLS = [
       away: { type: "string", description: "Deuxième équipe" },
     }, required: ["home","away"] },
   }},
+  { type: "function", function: {
+    name: "get_pronostics",
+    description: "À appeler SYSTÉMATIQUEMENT quand l'utilisateur demande des pronostics, des tips, des paris, des prédictions, ou 'qui va gagner' sans préciser d'équipes. Renvoie la liste des matchs disponibles dans Google Sheets pour analyse IA.",
+    parameters: { type: "object", properties: {} },
+  }},
 ];
 
-const SYSTEM_PROMPT = `Tu es FootBot ⚽, expert en analyse football. Tu réponds toujours en français.
-Sources de données :
-- Google Sheets (classements, forme équipes, H2H, matchs programmés) — données IMPORTHTML automatiques
-- ESPN API (scores en direct uniquement) — temps réel
+const SYSTEM_PROMPT = `Tu es FootBot ⚽, assistant football expert. Tu réponds TOUJOURS en français.
 
-Règles absolues :
-1. Ne fabrique JAMAIS de scores, classements ou statistiques.
-2. Si les données Sheets sont vides, dis-le clairement — ne suppose rien.
-3. Pour les pronostics : utilise uniquement les données des outils.
-4. Sois concis, précis, utilise des emojis football.`;
+FLUX DE DONNÉES :
+  Google Sheets → Bot → Groq AI → Telegram
+  1. Les stats viennent de Google Sheets (formules IMPORTHTML automatiques — jamais de scraping direct)
+  2. L'IA (toi) reçoit ces données et génère l'analyse
+  3. Les scores live viennent d'ESPN API en temps réel
+
+COMPORTEMENT PRONOSTICS (PRIORITÉ HAUTE) :
+- Si l'utilisateur demande des pronostics, des tips, des paris, des prédictions, "qui va gagner", une analyse de match → appelle IMMÉDIATEMENT l'outil get_pronostics
+- Ne demande pas confirmation, ne pose pas de question — agis directement
+- Après avoir reçu la liste des matchs Sheets, explique que le bot va lancer l'analyse complète
+
+FORMAT DE RÉPONSE TYPE pour un pronostic :
+⚽ PSG vs Marseille
+🏆 Ligue 1 · Samedi 5 juillet
+📊 Forme : VVNVV / NVVDV
+───────────────────────
+📌 Marché : 1X2
+✅ Pronostic : Victoire PSG
+📈 Confiance : ████████░░ 80%
+💬 Le PSG domine à domicile, 8 victoires en 10 derniers H2H.
+
+RÈGLES ABSOLUES :
+1. Ne fabrique JAMAIS de chiffres, scores ou stats — utilise uniquement les données des outils.
+2. Si les données Sheets sont vides, dis-le clairement sans inventer.
+3. Sois concis, utilise des emojis football. Maximum 3 phrases d'explication.
+4. Pour toute question football → utilise systématiquement les outils disponibles.`;
 
 async function executeTool(name: string, args: Record<string, any>): Promise<string> {
   switch (name) {
@@ -383,6 +421,7 @@ async function executeTool(name: string, args: Record<string, any>): Promise<str
     case "get_standings":     return toolSheetsStandings(detectLeague(args.league ?? ""));
     case "get_team_info":     return toolSheetsTeam(args.team ?? "");
     case "get_h2h":           return toolSheetsH2H(args.home ?? "", args.away ?? "");
+    case "get_pronostics":    return toolSheetsPronoBrief();
     default:                  return "Outil inconnu.";
   }
 }
@@ -506,6 +545,21 @@ async function runPipeline(chatId: number, count: number): Promise<void> {
 
 const MATCH_COUNT_RE = /(\d+)\s*match/i;
 
+// ── Détection d'intention ─────────────────────────────
+/** Retourne true si le message demande des pronostics en langage naturel. */
+function isPronoIntent(text: string): boolean {
+  return /\b(pronostic|prono|pronos|tip\b|tips|pari\b|paris|prédiction|prediction|prédire|predire|analyse(r)?|qui va gagner|winner|pick\b|picks|coup sûr|valeur|value bet|oddset|forecast)\b/i.test(text);
+}
+
+/** Extrait les deux équipes si le message contient "X vs Y" (langage naturel, sans slash). */
+function extractVsTeams(text: string): [string, string] | null {
+  const m = text.match(/([A-ZÀ-Ÿa-zà-ÿ\s'\-\.]{2,}?)\s+vs\.?\s+([A-ZÀ-Ÿa-zà-ÿ\s'\-\.]{2,})/i);
+  if (!m) return null;
+  const home = m[1].trim(), away = m[2].trim();
+  if (home.length < 2 || away.length < 2) return null;
+  return [home, away];
+}
+
 function extractNumber(text: string): number | null {
   const m = text.match(/\d+/);
   if (!m) return null;
@@ -513,37 +567,68 @@ function extractNumber(text: string): number | null {
   return n >= 1 && n <= 20 ? n : null;
 }
 
+/** Envoie un pronostic unique formaté pour un match. */
+async function sendSingleProno(chatId: number, m: MatchProno, a: { market: string; choice: string; confidence: number; reason: string }): Promise<void> {
+  await send(chatId,
+    `⚽ <b>${m.home} vs ${m.away}</b>\n` +
+    `🏆 ${m.league || "?"} · ${m.date || "Prochain match"}\n` +
+    `📊 Forme : ${m.homeForm ? m.homeForm.replace(/\n[\s\S]*/,"").slice(0,80) : "N/A"} / ${m.awayForm ? m.awayForm.replace(/\n[\s\S]*/,"").slice(0,80) : "N/A"}\n` +
+    `───────────────────────\n` +
+    `📌 Marché : <b>${a.market}</b>\n` +
+    `✅ Pronostic : <b>${a.choice}</b>\n` +
+    `📈 Confiance : ${confBar(a.confidence)}\n` +
+    `💬 ${a.reason}`
+  );
+}
+
 async function handle(chatId: number, raw: string, firstName?: string): Promise<void> {
   const lower = raw.toLowerCase().trim();
   const { phase, history } = await loadSession(chatId);
 
+  // ── Phase en attente d'un nombre ─────────────────────
   if (phase === "awaiting_count") {
     const num = extractNumber(raw);
     await saveSession(chatId, "idle", history);
     if (num !== null) { await runPipeline(chatId, num); return; }
   }
 
-  // Salutation
+  // ── Salutation / /start ───────────────────────────────
   if (/^(salut|bonjour|hello|bonsoir|hi|coucou|start|\/start)$/i.test(lower)) {
     const name = firstName ? ` ${firstName}` : "";
     await send(chatId,
-      `⚽ Bienvenue${name} sur <b>FootBot v8</b> !\n\n` +
-      `📡 Données : Google Sheets + ESPN Live\n\n` +
-      `<b>Commandes :</b>\n` +
-      `/live — Matchs en direct\n/auj — Matchs du jour\n` +
-      `/classement [ligue] — Classement\n/equipe [nom] — Infos équipe\n` +
-      `/h2h [e1] vs [e2] — Confrontations\n/pronostic [e1] vs [e2] — Analyse IA\n\n` +
-      `💡 Envoie un chiffre (ex: <b>3</b>) pour 3 pronostics depuis Google Sheets !`
+      `⚽ Bienvenue${name} sur <b>FootBot v9</b> !\n\n` +
+      `📡 Données en temps réel : Google Sheets + ESPN Live\n\n` +
+      `<b>Commandes rapides :</b>\n` +
+      `/live — Scores en direct\n` +
+      `/auj — Matchs du jour\n` +
+      `/classement Ligue 1 — Classement\n` +
+      `/equipe PSG — Infos équipe\n` +
+      `/h2h PSG vs OM — Historique\n` +
+      `/pronostic PSG vs OM — Analyse IA\n\n` +
+      `💡 <b>Parle naturellement !</b> Exemples :\n` +
+      `• "<i>donne-moi des pronostics</i>" → analyse auto depuis Sheets\n` +
+      `• "<i>3 matchs</i>" ou juste "<i>3</i>" → 3 pronostics\n` +
+      `• "<i>PSG vs OM analyse</i>" → pronostic immédiat\n` +
+      `• "<i>qui va gagner en Premier League ?</i>" → réponse IA\n\n` +
+      `📊 <b>Exemple de pronostic :</b>\n` +
+      `⚽ <b>PSG vs Marseille</b>\n` +
+      `🏆 Ligue 1 · Samedi\n` +
+      `📌 Marché : <b>1X2</b>\n` +
+      `✅ Pronostic : <b>Victoire PSG</b>\n` +
+      `📈 Confiance : ████████░░ 80%\n` +
+      `💬 PSG dominant à domicile, 8V en 10 H2H.`
     );
     return;
   }
 
+  // ── /live ─────────────────────────────────────────────
   if (/^\/live/i.test(lower) || lower === "live") {
     const tok = keepTyping(chatId, 30_000);
     const res = await toolEspnLiveScores();
     tok.cancel(); await send(chatId, res); return;
   }
 
+  // ── /auj ─────────────────────────────────────────────
   if (/^\/auj/i.test(lower) || lower === "auj") {
     const tok = keepTyping(chatId, 30_000);
     const sheetsData = await toolSheetsMatchsToday();
@@ -551,13 +636,15 @@ async function handle(chatId: number, raw: string, firstName?: string): Promise<
     tok.cancel(); await send(chatId, res); return;
   }
 
+  // ── /classement ───────────────────────────────────────
   if (/^\/classement/i.test(lower)) {
-    const query  = raw.replace(/\/classement/i, "").trim() || "ligue 1";
-    const tok    = keepTyping(chatId, 30_000);
-    const res    = await toolSheetsStandings(detectLeague(query));
+    const query = raw.replace(/\/classement/i, "").trim() || "ligue 1";
+    const tok   = keepTyping(chatId, 30_000);
+    const res   = await toolSheetsStandings(detectLeague(query));
     tok.cancel(); await send(chatId, res); return;
   }
 
+  // ── /equipe ───────────────────────────────────────────
   if (/^\/equipe/i.test(lower)) {
     const team = raw.replace(/\/equipe/i, "").trim();
     if (!team) { await send(chatId, "Usage : /equipe PSG"); return; }
@@ -566,6 +653,7 @@ async function handle(chatId: number, raw: string, firstName?: string): Promise<
     tok.cancel(); await send(chatId, res); return;
   }
 
+  // ── /h2h ─────────────────────────────────────────────
   if (/^\/h2h/i.test(lower)) {
     const parts = raw.replace(/\/h2h/i, "").trim().split(/\s+vs\s+/i);
     if (parts.length < 2) { await send(chatId, "Usage : /h2h PSG vs OM"); return; }
@@ -574,41 +662,78 @@ async function handle(chatId: number, raw: string, firstName?: string): Promise<
     tok.cancel(); await send(chatId, res); return;
   }
 
-  if (/^\/pronostic/i.test(lower)) {
-    const parts = raw.replace(/\/pronostic/i, "").trim().split(/\s+vs\s+/i);
-    if (parts.length < 2) { await send(chatId, "Usage : /pronostic PSG vs OM"); return; }
-    const tok = keepTyping(chatId, 60_000);
-    const [h2h, teamA, teamB] = await Promise.all([
-      toolSheetsH2H(parts[0].trim(), parts[1].trim()),
-      toolSheetsTeam(parts[0].trim()),
-      toolSheetsTeam(parts[1].trim()),
-    ]);
-    tok.cancel();
-    const m: MatchProno = { home: parts[0].trim(), away: parts[1].trim(), league: "?", date: "Prochain match", homeForm: teamA, awayForm: teamB, stats: h2h };
-    const tok2 = keepTyping(chatId, 30_000);
-    const a    = await analyseMatchGroq(m);
-    tok2.cancel();
-    await send(chatId,
-      `⚽ <b>${m.home} vs ${m.away}</b>\n` +
-      `📌 Marché : <b>${a.market}</b>\n` +
-      `✅ Pronostic : <b>${a.choice}</b>\n` +
-      `📈 Confiance : ${confBar(a.confidence)}\n` +
-      `💬 ${a.reason}`
-    );
-    return;
+  // ── /pronostic + "X vs Y" en langage naturel ─────────
+  const isSlashProno = /^\/pronostic/i.test(lower);
+  const vsTeams      = !isSlashProno ? extractVsTeams(raw) : null;
+  const pronoQuery   = isSlashProno
+    ? raw.replace(/\/pronostic/i, "").trim()
+    : (vsTeams ? raw : null);
+
+  if (isSlashProno || vsTeams) {
+    const parts = isSlashProno
+      ? pronoQuery!.split(/\s+vs\s+/i)
+      : [vsTeams![0], vsTeams![1]];
+
+    if (parts.length >= 2 && parts[0] && parts[1]) {
+      const tok = keepTyping(chatId, 60_000);
+      const [h2h, teamA, teamB] = await Promise.all([
+        toolSheetsH2H(parts[0].trim(), parts[1].trim()),
+        toolSheetsTeam(parts[0].trim()),
+        toolSheetsTeam(parts[1].trim()),
+      ]);
+      tok.cancel();
+      const m: MatchProno = {
+        home: parts[0].trim(), away: parts[1].trim(),
+        league: detectLeague(raw) !== "fra.1" ? raw : "?",
+        date: "Prochain match", homeForm: teamA, awayForm: teamB, stats: h2h,
+      };
+      const tok2 = keepTyping(chatId, 30_000);
+      const a    = await analyseMatchGroq(m);
+      tok2.cancel();
+      await sendSingleProno(chatId, m, a);
+      return;
+    }
+    // /pronostic sans équipes → déclenche pipeline Sheets complet
+    if (isSlashProno) {
+      const tok     = keepTyping(chatId, 180_000);
+      const matches = await getAllSheetsPronoMatches();
+      tok.cancel();
+      if (matches.length) { await runPipeline(chatId, matches.length); return; }
+      await send(chatId,
+        "❌ <b>Onglet Pronostics vide.</b>\n\n" +
+        "Remplis l'onglet <b>Pronostics</b> dans Google Sheets :\n" +
+        "A=Domicile | B=Extérieur | C=Ligue | D=Date | E=Forme Dom | F=Forme Ext"
+      );
+      return;
+    }
   }
 
+  // ── "X matchs" ou simple chiffre ─────────────────────
   if (MATCH_COUNT_RE.test(lower)) {
     const num = extractNumber(raw);
     if (num !== null) { await runPipeline(chatId, num); return; }
   }
-
   if (/^\d+$/.test(lower)) {
     const num = extractNumber(raw);
     if (num !== null) { await runPipeline(chatId, num); return; }
   }
 
-  // Agent Groq
+  // ── Détection d'intention pronostics en langage naturel ─
+  // Déclenche AUTOMATIQUEMENT le pipeline Sheets si l'utilisateur
+  // demande des pronostics sans préciser d'équipes.
+  if (isPronoIntent(lower) && !extractVsTeams(raw)) {
+    const tok     = keepTyping(chatId, 30_000);
+    const matches = await getAllSheetsPronoMatches();
+    tok.cancel();
+    if (matches.length) {
+      await send(chatId, `🔍 <b>${matches.length} match${matches.length > 1 ? "s" : ""} trouvé${matches.length > 1 ? "s" : ""} dans Google Sheets.</b>\nLancement de l'analyse IA…`);
+      await runPipeline(chatId, matches.length);
+      return;
+    }
+    // Pas de données Sheets → passe au Groq agent qui expliquera
+  }
+
+  // ── Agent Groq (toutes les autres questions football) ─
   const tok    = keepTyping(chatId, 60_000);
   const answer = await groqAgentLoop(chatId, raw, history, firstName);
   tok.cancel();
