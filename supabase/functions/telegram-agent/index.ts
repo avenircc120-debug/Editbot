@@ -1,42 +1,52 @@
 // ═══════════════════════════════════════════════════════
-//  FOOTBOT v7 — Agent Groq avec Tool Calling
-//  Groq choisit ses propres outils : web search, ESPN data, etc.
-//  Pipeline pronostics complet conservé (ESPN stats + IA)
+//  FOOTBOT v8 — Architecture Google Sheets + Groq + ESPN Live
+//  ┌─────────────────────────────────────────────────────┐
+//  │  Données stats  → Google Sheets (IMPORTHTML)        │
+//  │  Scores live    → ESPN API (jamais banni)           │
+//  │  Analyse IA     → Groq llama-3.3-70b               │
+//  │  Sortie         → Telegram                         │
+//  └─────────────────────────────────────────────────────┘
 // ═══════════════════════════════════════════════════════
 
-const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
-const GROQ_KEY = Deno.env.get("GROQ_API_KEY") ?? "";
-const SB_URL   = Deno.env.get("SUPABASE_URL") ?? "";
-const SB_KEY   = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const TG       = `https://api.telegram.org/bot${TG_TOKEN}`;
+const TG_TOKEN   = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
+const GROQ_KEY   = Deno.env.get("GROQ_API_KEY") ?? "";
+const SB_URL     = Deno.env.get("SUPABASE_URL") ?? "";
+const SB_KEY     = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+const SHEETS_KEY = Deno.env.get("GOOGLE_SHEETS_API_KEY") ?? "";
+const SHEETS_ID  = Deno.env.get("GOOGLE_SHEETS_ID") ?? "";
+const TG         = `https://api.telegram.org/bot${TG_TOKEN}`;
 
-const ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer";
-const ESPN_V2   = "https://site.api.espn.com/apis/v2/sports/soccer";
-const ESPN_HDR  = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" };
-
-// Modèle Groq pour le tool calling (supporte les function calls)
 const GROQ_MODEL = "llama-3.3-70b-versatile";
-// Modèle rapide pour l'analyse pronostics
 const GROQ_FAST  = "llama-3.1-8b-instant";
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-// ── ESPN leagues slug mapping ─────────────────────────
+// ── Mapping ligues ────────────────────────────────────
 const LEAGUES: Record<string, string> = {
-  "premier league": "eng.1",  "pl": "eng.1",         "angleterre": "eng.1", "epl": "eng.1",
-  "la liga": "esp.1",         "liga": "esp.1",        "espagne": "esp.1",
-  "ligue 1": "fra.1",         "ligue1": "fra.1",      "france": "fra.1",
+  "premier league": "eng.1",  "pl": "eng.1",    "angleterre": "eng.1", "epl": "eng.1",
+  "la liga": "esp.1",         "liga": "esp.1",   "espagne": "esp.1",
+  "ligue 1": "fra.1",         "ligue1": "fra.1", "france": "fra.1",
   "bundesliga": "ger.1",      "allemagne": "ger.1",
   "serie a": "ita.1",         "italie": "ita.1",
-  "champions league": "uefa.champions", "ldc": "uefa.champions",  "ucl": "uefa.champions", "ligue des champions": "uefa.champions",
-  "europa league": "uefa.europa", "ligue europa": "uefa.europa", "el": "uefa.europa",
+  "champions league": "uefa.champions", "ldc": "uefa.champions",
+  "ucl": "uefa.champions",    "ligue des champions": "uefa.champions",
+  "europa league": "uefa.europa", "el": "uefa.europa", "ligue europa": "uefa.europa",
   "conference league": "uefa.europa.conf", "uecl": "uefa.europa.conf",
-  "mls": "usa.1",
-  "eredivisie": "ned.1",      "pays-bas": "ned.1",
-  "liga portugal": "por.1",   "portugal": "por.1",
-  "world cup": "fifa.world",  "coupe du monde": "fifa.world", "cdm": "fifa.world",
-  "afcon": "caf.nations",     "coupe d'afrique": "caf.nations", "can": "caf.nations",
-  "nations league": "uefa.nations", "ligue des nations": "uefa.nations",
+  "mls": "usa.1",             "eredivisie": "ned.1", "pays-bas": "ned.1",
+};
+
+// Nom de l'onglet Google Sheets pour chaque ligue
+const LEAGUE_TABS: Record<string, string> = {
+  "eng.1":            "PL_Stand",
+  "esp.1":            "Liga_Stand",
+  "fra.1":            "L1_Stand",
+  "ger.1":            "Bund_Stand",
+  "ita.1":            "SA_Stand",
+  "uefa.champions":   "UCL_Stand",
+  "uefa.europa":      "EL_Stand",
+  "uefa.europa.conf": "UECL_Stand",
+  "usa.1":            "MLS_Stand",
+  "ned.1":            "Eredivisie_Stand",
 };
 
 function detectLeague(text: string): string {
@@ -44,8 +54,7 @@ function detectLeague(text: string): string {
   const sorted = Object.entries(LEAGUES).sort((a, b) => b[0].length - a[0].length);
   for (const [key, slug] of sorted) {
     if (key.length <= 4) {
-      const re = new RegExp(`(?<![a-z])${key}(?![a-z])`, "i");
-      if (re.test(lower)) return slug;
+      if (new RegExp(`(?<![a-z])${key}(?![a-z])`, "i").test(lower)) return slug;
     } else {
       if (lower.includes(key)) return slug;
     }
@@ -53,7 +62,95 @@ function detectLeague(text: string): string {
   return "fra.1";
 }
 
-// ── Fetch ESPN avec timeout + retry ──────────────────
+// ══════════════════════════════════════════════════════
+//  COUCHE 1 : GOOGLE SHEETS API v4
+//  Le bot ne scrape jamais les sites de stats directement.
+//  Il lit les données déjà extraites par Google Sheets
+//  via ses formules IMPORTHTML / IMPORTXML.
+// ══════════════════════════════════════════════════════
+
+/**
+ * Lit une plage d'un onglet Google Sheets via l'API v4.
+ * Retourne [] si non configuré ou erreur réseau.
+ */
+async function sheetsRead(tab: string, range = "A1:Z100"): Promise<string[][]> {
+  if (!SHEETS_KEY || !SHEETS_ID) return [];
+  const enc = encodeURIComponent(`${tab}!${range}`);
+  const url  = `https://sheets.googleapis.com/v4/spreadsheets/${SHEETS_ID}/values/${enc}?key=${SHEETS_KEY}`;
+  try {
+    const ctrl  = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12_000);
+    const r     = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!r.ok) return [];
+    const d = await r.json();
+    return (d.values ?? []) as string[][];
+  } catch {
+    return [];
+  }
+}
+
+/** Formate les lignes d'un tableau Sheets en texte lisible. */
+function sheetToText(rows: string[][], sep = " | "): string {
+  if (!rows.length) return "Données non disponibles.";
+  return rows.map(r => r.join(sep)).join("\n");
+}
+
+// ── Classement depuis Sheets ──────────────────────────
+async function toolSheetsStandings(league: string): Promise<string> {
+  const tab  = LEAGUE_TABS[league] ?? "L1_Stand";
+  const rows = await sheetsRead(tab, "A1:K25");
+  if (!rows.length) {
+    return `❌ Classement indisponible pour cet onglet (${tab}).\nVérifie que l'onglet existe dans ton Google Sheets.`;
+  }
+  return `📊 <b>Classement</b>\n<pre>${sheetToText(rows)}</pre>`;
+}
+
+// ── Matchs du jour depuis Sheets ─────────────────────
+async function toolSheetsMatchsToday(): Promise<string> {
+  const rows = await sheetsRead("Matchs_Auj", "A1:H60");
+  if (!rows.length) return "❌ Aucun match trouvé dans l'onglet <b>Matchs_Auj</b>.";
+  return `📅 <b>Matchs du jour</b>\n<pre>${sheetToText(rows)}</pre>`;
+}
+
+// ── Infos équipe depuis Sheets ────────────────────────
+async function toolSheetsTeam(teamName: string): Promise<string> {
+  const rows  = await sheetsRead("Equipes", "A1:J200");
+  if (!rows.length) return "❌ Onglet <b>Equipes</b> introuvable dans Google Sheets.";
+  const lower  = teamName.toLowerCase();
+  const header = rows[0];
+  const found  = rows.slice(1).filter(r => r[0]?.toLowerCase().includes(lower));
+  if (!found.length) return `❓ Équipe "<b>${teamName}</b>" non trouvée dans l'onglet Equipes.`;
+  const formatted = found.map(r =>
+    header.map((h, i) => `${h}: ${r[i] ?? "-"}`).join(" | ")
+  ).join("\n");
+  return `🏟️ <b>${teamName}</b>\n<pre>${formatted}</pre>`;
+}
+
+// ── H2H depuis Sheets ─────────────────────────────────
+async function toolSheetsH2H(home: string, away: string): Promise<string> {
+  const rows  = await sheetsRead("H2H", "A1:J200");
+  if (!rows.length) return "❌ Onglet <b>H2H</b> introuvable dans Google Sheets.";
+  const lh = home.toLowerCase();
+  const la = away.toLowerCase();
+  const found = rows.filter(r =>
+    (r[0]?.toLowerCase().includes(lh) && r[2]?.toLowerCase().includes(la)) ||
+    (r[0]?.toLowerCase().includes(la) && r[2]?.toLowerCase().includes(lh))
+  );
+  if (!found.length) return `❓ Pas d'historique H2H pour <b>${home} vs ${away}</b>.`;
+  return `🆚 <b>H2H ${home} vs ${away}</b>\n<pre>${sheetToText(found)}</pre>`;
+}
+
+// ══════════════════════════════════════════════════════
+//  COUCHE 2 : ESPN API — Scores live uniquement
+//  L'API ESPN est publique et non bloquée.
+//  On l'utilise UNIQUEMENT pour les données temps réel
+//  (matchs en direct, résultats du jour).
+// ══════════════════════════════════════════════════════
+
+const ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer";
+const ESPN_HDR  = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" };
+
 async function espnFetch(url: string, attempt = 0): Promise<any> {
   try {
     const ctrl  = new AbortController();
@@ -69,32 +166,61 @@ async function espnFetch(url: string, attempt = 0): Promise<any> {
   }
 }
 
-// ── Fetch générique avec timeout (pour DuckDuckGo etc.) ─
-async function safeFetch(url: string, attempt = 0): Promise<any> {
-  try {
-    const ctrl  = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8_000);
-    const r     = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; FootBot/7.0)" },
-      signal: ctrl.signal
-    });
-    clearTimeout(timer);
-    if (r.ok) return r.json();
-    return null;
-  } catch {
-    if (attempt < 1) { await sleep(800); return safeFetch(url, attempt + 1); }
-    return null;
-  }
+async function toolEspnLiveScores(): Promise<string> {
+  const leagues = ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1", "uefa.champions", "uefa.europa"];
+  const lines: string[] = [];
+  await Promise.all(leagues.map(async (l) => {
+    const d = await espnFetch(`${ESPN_BASE}/${l}/scoreboard`);
+    if (!d?.events) return;
+    for (const ev of d.events) {
+      const status = ev.status?.type;
+      const live   = ["STATUS_IN_PROGRESS", "STATUS_HALFTIME"].includes(status?.name ?? "");
+      if (!live) continue;
+      const c    = ev.competitions?.[0];
+      const home = c?.competitors?.find((x: any) => x.homeAway === "home");
+      const away = c?.competitors?.find((x: any) => x.homeAway === "away");
+      if (!home || !away) continue;
+      const clock = status?.shortDetail ?? "";
+      lines.push(`⚽ ${home.team.shortDisplayName} ${home.score}–${away.score} ${away.team.shortDisplayName} (${clock})`);
+    }
+  }));
+  return lines.length
+    ? `🔴 <b>En direct</b>\n${lines.join("\n")}`
+    : "Aucun match en direct actuellement.";
 }
 
-const todayESPN = () => new Date().toISOString().slice(0, 10).replace(/-/g, "");
-const fmtTime   = (d: string) => new Date(d).toLocaleTimeString("fr-FR", { timeZone: "Europe/Paris", hour: "2-digit", minute: "2-digit" });
+async function toolEspnScheduleToday(): Promise<string> {
+  const leagues = ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1", "uefa.champions", "uefa.europa"];
+  const lines: string[] = [];
+  await Promise.all(leagues.map(async (l) => {
+    const d = await espnFetch(`${ESPN_BASE}/${l}/scoreboard`);
+    if (!d?.events) return;
+    for (const ev of d.events) {
+      const c      = ev.competitions?.[0];
+      const home   = c?.competitors?.find((x: any) => x.homeAway === "home");
+      const away   = c?.competitors?.find((x: any) => x.homeAway === "away");
+      if (!home || !away) continue;
+      const status = ev.status?.type?.name ?? "";
+      const time   = ev.date ? new Date(ev.date).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Paris" }) : "";
+      if (status === "STATUS_FINAL") {
+        lines.push(`✅ ${home.team.shortDisplayName} ${home.score}–${away.score} ${away.team.shortDisplayName} (FT)`);
+      } else if (["STATUS_IN_PROGRESS", "STATUS_HALFTIME"].includes(status)) {
+        lines.push(`🔴 ${home.team.shortDisplayName} ${home.score}–${away.score} ${away.team.shortDisplayName} (Live)`);
+      } else {
+        lines.push(`🕐 ${time} — ${home.team.shortDisplayName} vs ${away.team.shortDisplayName}`);
+      }
+    }
+  }));
+  return lines.length
+    ? `📅 <b>Matchs du jour</b>\n${lines.join("\n")}`
+    : "Aucun match programmé aujourd'hui.";
+}
 
 // ══════════════════════════════════════════════════════
-//  SESSION Supabase — phase + historique conversation
+//  SUPABASE SESSION
 // ══════════════════════════════════════════════════════
+
 type Phase = "idle" | "awaiting_count";
-
 interface ChatMessage { role: "user" | "assistant"; content: string; }
 
 function sbH(): Record<string, string> {
@@ -107,10 +233,10 @@ function sbH(): Record<string, string> {
 async function loadSession(chatId: number): Promise<{ phase: Phase; history: ChatMessage[] }> {
   if (!SB_URL || !SB_KEY) return { phase: "idle", history: [] };
   try {
-    const r = await fetch(`${SB_URL}/rest/v1/bot_sessions?chat_id=eq.${chatId}&select=phase,history`, { headers: sbH() });
+    const r    = await fetch(`${SB_URL}/rest/v1/bot_sessions?chat_id=eq.${chatId}&select=phase,history`, { headers: sbH() });
     if (!r.ok) return { phase: "idle", history: [] };
-    const rows: any[] = await r.json();
-    const row = rows?.[0];
+    const rows = await r.json() as any[];
+    const row  = rows?.[0];
     let history: ChatMessage[] = [];
     try { history = row?.history ? JSON.parse(row.history) : []; } catch { history = []; }
     return { phase: (row?.phase as Phase) ?? "idle", history };
@@ -120,39 +246,29 @@ async function loadSession(chatId: number): Promise<{ phase: Phase; history: Cha
 async function saveSession(chatId: number, phase: Phase, history: ChatMessage[]): Promise<void> {
   if (!SB_URL || !SB_KEY) return;
   try {
-    // Garde seulement les 10 derniers messages (5 échanges)
-    const trimmed = history.slice(-10);
     await fetch(`${SB_URL}/rest/v1/bot_sessions`, {
       method: "POST", headers: sbH(),
-      body: JSON.stringify({ chat_id: chatId, phase, history: JSON.stringify(trimmed) }),
+      body: JSON.stringify({ chat_id: chatId, phase, history: JSON.stringify(history.slice(-10)) }),
     });
   } catch { /* non bloquant */ }
-}
-
-// Compatibilité avec le code existant
-async function loadPhase(chatId: number): Promise<Phase> {
-  return (await loadSession(chatId)).phase;
-}
-async function savePhase(chatId: number, phase: Phase): Promise<void> {
-  await saveSession(chatId, phase, []);
 }
 
 // ══════════════════════════════════════════════════════
 //  TELEGRAM
 // ══════════════════════════════════════════════════════
+
 async function send(chatId: number, text: string): Promise<void> {
-  if (text.length > 4000) {
-    await send(chatId, text.slice(0, 4000));
-    await sleep(300);
-    await send(chatId, text.slice(4000));
-    return;
+  const chunks = text.match(/[\s\S]{1,4000}/g) ?? [text];
+  for (const chunk of chunks) {
+    await fetch(`${TG}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text: chunk, parse_mode: "HTML" }),
+    }).catch(() => {});
+    if (chunks.length > 1) await sleep(300);
   }
-  await fetch(`${TG}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
-  }).catch(console.error);
 }
+
 async function typing(chatId: number): Promise<void> {
   await fetch(`${TG}/sendChatAction`, {
     method: "POST",
@@ -161,8 +277,6 @@ async function typing(chatId: number): Promise<void> {
   }).catch(() => {});
 }
 
-// Token annulable — appelé keepTyping() mais retourne un objet { cancel() }
-// Le typing s'arrête dès que cancel() est appelé (max 4s de délai)
 interface CancelToken { cancel: () => void }
 
 function keepTyping(chatId: number, maxMs: number): CancelToken {
@@ -174,940 +288,397 @@ function keepTyping(chatId: number, maxMs: number): CancelToken {
       await sleep(4000);
       elapsed += 4000;
     }
-  })().catch(() => {});
+  })();
   return { cancel: () => { done = true; } };
 }
 
 // ══════════════════════════════════════════════════════
-//  OUTILS GROQ — Implémentations
+//  COUCHE 3 : GROQ AGENT — Tool calling
 // ══════════════════════════════════════════════════════
 
-/** Recherche web via DuckDuckGo Instant Answer (sans clé API) */
-async function toolWebSearch(query: string): Promise<string> {
-  // DuckDuckGo Instant Answer — requête simple sans site: (non supporté par cet endpoint)
-  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1&kl=fr-fr`;
-  const data = await safeFetch(url);
-  if (!data) return "Aucun résultat trouvé pour cette recherche.";
-
-  const parts: string[] = [];
-  if (data.AbstractText)  parts.push(data.AbstractText);
-  if (data.Answer)        parts.push(`Réponse directe: ${data.Answer}`);
-  if (data.Definition)    parts.push(data.Definition);
-
-  const topics: any[] = data.RelatedTopics ?? [];
-  for (const t of topics.slice(0, 6)) {
-    if (t.Text && t.Text.length > 10) parts.push(t.Text);
-    else if (t.Topics) {
-      for (const sub of (t.Topics ?? []).slice(0, 3)) {
-        if (sub.Text) parts.push(sub.Text);
-      }
-    }
-  }
-
-  const results: any[] = data.Results ?? [];
-  for (const r of results.slice(0, 3)) {
-    if (r.Text) parts.push(r.Text);
-  }
-
-  if (!parts.length) return `Aucun résultat web pertinent trouvé pour "${query}".`;
-  return parts.slice(0, 8).join("\n\n").slice(0, 2000);
-}
-
-/** Classement d'une ligue ESPN */
-async function toolEspnStandings(league: string): Promise<string> {
-  const slug = LEAGUES[league.toLowerCase()] ?? league;
-  const data = await espnFetch(`${ESPN_V2}/${slug}/standings`);
-  if (!data) return `Impossible de charger le classement pour ${league}.`;
-
-  const hasChildren = Array.isArray(data.children) && data.children.length > 0 && data.children[0]?.standings?.entries;
-  const hasFlat     = Array.isArray(data.standings?.entries) && data.standings.entries.length > 0;
-  const leagueName  = data.name ?? slug;
-
-  const formatEntry = (entry: any, pos: number): string => {
-    const team  = entry.team?.displayName ?? entry.team?.shortDisplayName ?? "?";
-    const stats = entry.stats ?? [];
-    const get   = (names: string[]) => names.map(n => stats.find((s: any) => s.name === n || s.abbreviation === n)?.value).find(v => v !== undefined) ?? "?";
-    const pts   = get(["points", "PTS"]);
-    const pld   = get(["gamesPlayed", "GP"]);
-    const w     = get(["wins", "W"]);
-    const d     = get(["ties", "D"]);
-    const l     = get(["losses", "L"]);
-    const gd    = get(["goalDifference"]);
-    const gdStr = gd !== "?" ? ` GD:${Number(gd) > 0 ? "+" : ""}${gd}` : "";
-    return `${pos}. ${team} | ${pts}pts | ${pld}J ${w}V${d}N${l}D${gdStr}`;
-  };
-
-  const lines: string[] = [`=== Classement ${leagueName} ===`];
-
-  if (hasChildren) {
-    for (const group of data.children) {
-      if (group.name) lines.push(`\n-- ${group.name} --`);
-      (group.standings?.entries ?? []).slice(0, 20).forEach((e: any, i: number) => lines.push(formatEntry(e, i + 1)));
-    }
-  } else if (hasFlat) {
-    data.standings.entries.slice(0, 20).forEach((e: any, i: number) => lines.push(formatEntry(e, i + 1)));
-  } else {
-    return `Classement non disponible pour ${league}.`;
-  }
-
-  return lines.join("\n").slice(0, 2000);
-}
-
-/** Scores en direct */
-async function toolEspnLiveScores(): Promise<string> {
-  const slugs = ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1", "uefa.champions", "uefa.europa"];
-  const results: string[] = [];
-
-  await Promise.all(slugs.map(async (slug) => {
-    const data = await espnFetch(`${ESPN_BASE}/${slug}/scoreboard?dates=${todayESPN()}`);
-    for (const ev of data?.events ?? []) {
-      const comp  = ev.competitions?.[0];
-      if (comp?.status?.type?.state !== "in") continue;
-      const home  = comp?.competitors?.find((c: any) => c.homeAway === "home");
-      const away  = comp?.competitors?.find((c: any) => c.homeAway === "away");
-      const clock = comp?.status?.displayClock ?? "";
-      const league = data?.leagues?.[0]?.abbreviation ?? slug;
-      results.push(`[${league}] ${home?.team?.displayName ?? "?"} ${home?.score ?? 0}-${away?.score ?? 0} ${away?.team?.displayName ?? "?"} (${clock})`);
-    }
-  }));
-
-  return results.length ? `=== Scores Live ===\n${results.join("\n")}` : "Aucun match en direct en ce moment.";
-}
-
-/** Programme du jour */
-async function toolEspnSchedule(league?: string): Promise<string> {
-  const slugs = league
-    ? [LEAGUES[league.toLowerCase()] ?? league]
-    : ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1", "uefa.champions", "uefa.europa", "caf.nations", "fifa.world"];
-
-  const lines: string[] = ["=== Programme du jour ==="];
-
-  await Promise.all(slugs.map(async (slug) => {
-    const data = await espnFetch(`${ESPN_BASE}/${slug}/scoreboard?dates=${todayESPN()}`);
-    const events: any[] = (data?.events ?? []).filter((e: any) =>
-      ["pre", "in"].includes(e.competitions?.[0]?.status?.type?.state)
-    );
-    if (!events.length) return;
-    const leagueName = data?.leagues?.[0]?.name ?? slug;
-    lines.push(`\n[${leagueName}]`);
-    for (const ev of events) {
-      const comp  = ev.competitions?.[0];
-      const state = comp?.status?.type?.state;
-      const home  = comp?.competitors?.find((c: any) => c.homeAway === "home");
-      const away  = comp?.competitors?.find((c: any) => c.homeAway === "away");
-      const time  = comp?.startDate ? fmtTime(comp.startDate) : "?";
-      const score = state === "in"
-        ? `${home?.score ?? 0}-${away?.score ?? 0} (LIVE)`
-        : time;
-      lines.push(`  ${score} — ${home?.team?.displayName ?? "?"} vs ${away?.team?.displayName ?? "?"}`);
-    }
-  }));
-
-  return lines.join("\n").slice(0, 2000) || "Aucun match programmé aujourd'hui.";
-}
-
-/** Actualités ESPN */
-async function toolEspnNews(): Promise<string> {
-  const data = await espnFetch(`${ESPN_BASE}/news?limit=8`);
-  const articles: any[] = data?.articles ?? [];
-  if (!articles.length) return "Impossible de charger les actualités ESPN.";
-
-  const lines = ["=== Actualités Football ==="];
-  articles.slice(0, 6).forEach((a, i) => {
-    const title = a.headline ?? a.title ?? "?";
-    const desc  = (a.description ?? a.summary ?? "").slice(0, 120);
-    lines.push(`\n${i + 1}. ${title}`);
-    if (desc) lines.push(`   ${desc}${desc.length >= 120 ? "..." : ""}`);
-  });
-  return lines.join("\n").slice(0, 2000);
-}
-
-/** Info équipe ESPN */
-async function toolEspnTeam(teamName: string): Promise<string> {
-  const slugs = ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1"];
-  for (const slug of slugs) {
-    const data = await espnFetch(`${ESPN_BASE}/${slug}/teams`);
-    const teams: any[] = data?.sports?.[0]?.leagues?.[0]?.teams ?? [];
-    const match = teams.find((t: any) => {
-      const name = (t.team?.displayName ?? t.team?.name ?? "").toLowerCase();
-      return name.includes(teamName.toLowerCase()) || teamName.toLowerCase().includes(name.split(" ")[0]);
-    });
-    if (match) {
-      const team = match.team;
-      const info = [
-        `=== ${team.displayName} ===`,
-        `Abréviation: ${team.abbreviation ?? "?"}`,
-        team.venue?.fullName ? `Stade: ${team.venue.fullName}` : "",
-        team.location ? `Ville: ${team.location}` : "",
-      ].filter(Boolean).join("\n");
-
-      // Récupère les stats de la saison
-      const teamData = await espnFetch(`${ESPN_BASE}/${slug}/teams/${team.id}`);
-      const record = teamData?.team?.record?.items?.[0];
-      const stats  = record?.stats ?? [];
-      const get    = (n: string) => stats.find((s: any) => s.name === n)?.value ?? "?";
-      const statsStr = `Saison: ${get("wins")}V-${get("ties")}N-${get("losses")}D`;
-
-      return `${info}\n${statsStr}`;
-    }
-    await sleep(100);
-  }
-  return `Équipe "${teamName}" non trouvée dans les principales ligues.`;
-}
-
-/** Recherche joueur ESPN */
-async function toolEspnPlayer(playerName: string): Promise<string> {
-  const data = await safeFetch(
-    `https://site.web.api.espn.com/apis/common/v3/sports/soccer/athletes?limit=5&search=${encodeURIComponent(playerName)}`
-  );
-  const athletes: any[] = data?.athletes ?? [];
-  if (!athletes.length) return `Joueur "${playerName}" non trouvé sur ESPN.`;
-
-  const p     = athletes[0];
-  const lines = [
-    `=== ${p.displayName ?? p.fullName ?? playerName} ===`,
-    p.position?.displayName ? `Poste: ${p.position.displayName}` : "",
-    p.team?.displayName     ? `Club: ${p.team.displayName}`       : "",
-    p.age                   ? `Âge: ${p.age} ans`                 : "",
-    p.nationality           ? `Nationalité: ${p.nationality}`      : "",
-    p.height                ? `Taille: ${p.height}`               : "",
-    p.weight                ? `Poids: ${p.weight}`                : "",
-  ].filter(Boolean);
-  return lines.join("\n");
-}
-
-/** Stats détaillées d'un match ESPN (pour H2H ou analyse) */
-async function toolEspnMatchDetails(homeTeam: string, awayTeam: string): Promise<string> {
-  // Cherche l'event du jour correspondant
-  const data = await espnFetch(`${ESPN_BASE}/all/scoreboard?dates=${todayESPN()}`);
-  const events: any[] = data?.events ?? [];
-
-  const match = events.find((ev: any) => {
-    const name = (ev.name ?? ev.shortName ?? "").toLowerCase();
-    return name.includes(homeTeam.toLowerCase()) || name.includes(awayTeam.toLowerCase());
-  });
-
-  if (!match) return `Match ${homeTeam} vs ${awayTeam} non trouvé sur ESPN aujourd'hui.`;
-
-  const summary = await espnFetch(`${ESPN_BASE}/all/summary?event=${match.id}`);
-  if (!summary) return "Détails du match non disponibles.";
-
-  const lastFive: any[] = summary.lastFiveGames ?? [];
-  const h2h    : any[] = summary.headToHeadGames ?? [];
-
-  const lines = [`=== ${match.name} ===`];
-
-  for (const team of lastFive.slice(0, 2)) {
-    const teamName = team.team?.displayName ?? "?";
-    const events5  = (team.events ?? []).slice(0, 5).map((ev: any) => {
-      const comp = ev.competitions?.[0] ?? ev;
-      const me   = comp?.competitors?.find((c: any) => c.team?.id === team.team?.id);
-      const opp  = comp?.competitors?.find((c: any) => c.team?.id !== team.team?.id);
-      if (!me || !opp) return "?";
-      const ms = parseInt(me.score ?? "0", 10);
-      const os = parseInt(opp.score ?? "0", 10);
-      return ms > os ? `V(${ms}-${os})` : ms === os ? `N(${ms}-${os})` : `D(${ms}-${os})`;
-    });
-    lines.push(`${teamName} forme récente: ${events5.join(" ")}`);
-  }
-
-  const h2hSummary = h2h.slice(0, 5).map((ev: any) => {
-    const comp = ev.competitions?.[0] ?? ev;
-    const home = comp?.competitors?.find((c: any) => c.homeAway === "home");
-    const away = comp?.competitors?.find((c: any) => c.homeAway === "away");
-    if (!home || !away) return "";
-    return `${home.team?.displayName ?? "?"} ${home.score ?? 0}-${away.score ?? 0} ${away.team?.displayName ?? "?"}`;
-  }).filter(Boolean);
-
-  if (h2hSummary.length) {
-    lines.push(`\nH2H récents:`);
-    lines.push(...h2hSummary);
-  }
-
-  return lines.join("\n").slice(0, 2000);
-}
-
-// ══════════════════════════════════════════════════════
-//  DÉFINITIONS OUTILS GROQ (OpenAI Function Calling)
-// ══════════════════════════════════════════════════════
-const GROQ_TOOLS = [
+const TOOLS = [
   {
     type: "function",
     function: {
-      name: "web_search",
-      description: "Recherche sur le web des infos football actuelles : transferts, résultats récents, mercato, classements, records, règles, actualités. Utilise cet outil si tu as besoin de données récentes ou si tu n'es pas sûr d'une information.",
+      name: "get_live_scores",
+      description: "Matchs de football en direct (temps réel via ESPN). Utiliser pour /live ou questions sur matchs en cours.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_matches_today",
+      description: "Tous les matchs du jour (résultats + en cours + à venir). Utiliser pour /auj.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_standings",
+      description: "Classement d'une ligue depuis Google Sheets. Disponible : Premier League, La Liga, Ligue 1, Bundesliga, Serie A, Champions League, Europa League.",
+      parameters: {
+        type: "object",
+        properties: { league: { type: "string", description: "Nom de la ligue (français ou anglais)" } },
+        required: ["league"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_team_info",
+      description: "Infos et forme récente d'une équipe depuis Google Sheets.",
+      parameters: {
+        type: "object",
+        properties: { team: { type: "string", description: "Nom de l'équipe" } },
+        required: ["team"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_h2h",
+      description: "Historique des confrontations directes (H2H) entre deux équipes depuis Google Sheets.",
       parameters: {
         type: "object",
         properties: {
-          query: { type: "string", description: "Requête de recherche (ex: 'meilleur buteur Premier League 2025', 'transfert Mbappé')" }
+          home: { type: "string", description: "Première équipe" },
+          away: { type: "string", description: "Deuxième équipe" },
         },
-        required: ["query"]
-      }
-    }
+        required: ["home", "away"],
+      },
+    },
   },
-  {
-    type: "function",
-    function: {
-      name: "espn_standings",
-      description: "Classement officiel d'une ligue de football via ESPN. Utilise pour: 'classement Premier League', 'tableau Ligue 1', etc.",
-      parameters: {
-        type: "object",
-        properties: {
-          league: { type: "string", description: "Slug ESPN de la ligue. Options: eng.1 (Premier League), esp.1 (La Liga), fra.1 (Ligue 1), ger.1 (Bundesliga), ita.1 (Serie A), uefa.champions (UCL), uefa.europa (Europa League), caf.nations (CAN), fifa.world (CM)" }
-        },
-        required: ["league"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "espn_live_scores",
-      description: "Scores des matchs en direct en ce moment dans les principales ligues européennes.",
-      parameters: { type: "object", properties: {} }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "espn_schedule",
-      description: "Programme des matchs du jour (ou en cours) dans les ligues de football.",
-      parameters: {
-        type: "object",
-        properties: {
-          league: { type: "string", description: "Optionnel: slug ESPN pour filtrer une ligue spécifique. Laisser vide pour toutes les ligues." }
-        }
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "espn_news",
-      description: "Dernières actualités football ESPN : news récentes, résultats importants.",
-      parameters: { type: "object", properties: {} }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "espn_team",
-      description: "Informations sur une équipe de football : stade, ville, bilan saison.",
-      parameters: {
-        type: "object",
-        properties: {
-          team_name: { type: "string", description: "Nom de l'équipe (ex: 'PSG', 'Arsenal', 'Real Madrid')" }
-        },
-        required: ["team_name"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "espn_player",
-      description: "Profil d'un joueur de football : poste, club, âge, nationalité.",
-      parameters: {
-        type: "object",
-        properties: {
-          player_name: { type: "string", description: "Nom du joueur (ex: 'Mbappé', 'Bellingham', 'Haaland')" }
-        },
-        required: ["player_name"]
-      }
-    }
-  },
-  {
-    type: "function",
-    function: {
-      name: "espn_match_details",
-      description: "Détails d'un match spécifique : forme récente des deux équipes, historique H2H. Utile pour analyser un match particulier.",
-      parameters: {
-        type: "object",
-        properties: {
-          home_team: { type: "string", description: "Nom de l'équipe à domicile" },
-          away_team: { type: "string", description: "Nom de l'équipe à l'extérieur" }
-        },
-        required: ["home_team", "away_team"]
-      }
-    }
-  }
 ];
 
-// ══════════════════════════════════════════════════════
-//  EXÉCUTEUR D'OUTILS
-// ══════════════════════════════════════════════════════
+const SYSTEM_PROMPT = `Tu es FootBot ⚽, expert en analyse football. Tu réponds toujours en français.
+Tes données viennent de deux sources fiables :
+- Google Sheets (classements, form, H2H, stats équipes) — mis à jour automatiquement via IMPORTHTML
+- ESPN API (scores en direct) — temps réel
+
+Règles absolues :
+1. Ne fabrique JAMAIS de scores, classements ou stats. Si les données manquent, dis-le clairement.
+2. Pour les pronostics : base-toi uniquement sur les données des outils, jamais sur ta mémoire.
+3. Sois concis, précis et utilise des emojis football pour la lisibilité.
+4. Évite les listes interminables — va droit au but.`;
+
 async function executeTool(name: string, args: Record<string, any>): Promise<string> {
-  try {
-    switch (name) {
-      case "web_search":        return await toolWebSearch(args.query ?? "");
-      case "espn_standings":    return await toolEspnStandings(args.league ?? "fra.1");
-      case "espn_live_scores":  return await toolEspnLiveScores();
-      case "espn_schedule":     return await toolEspnSchedule(args.league);
-      case "espn_news":         return await toolEspnNews();
-      case "espn_team":         return await toolEspnTeam(args.team_name ?? "");
-      case "espn_player":       return await toolEspnPlayer(args.player_name ?? "");
-      case "espn_match_details":return await toolEspnMatchDetails(args.home_team ?? "", args.away_team ?? "");
-      default: return `Outil inconnu: ${name}`;
-    }
-  } catch (e) {
-    return `Erreur lors de l'appel à l'outil ${name}: ${e}`;
+  switch (name) {
+    case "get_live_scores":   return toolEspnLiveScores();
+    case "get_matches_today": return toolEspnScheduleToday();
+    case "get_standings":     return toolSheetsStandings(detectLeague(args.league ?? ""));
+    case "get_team_info":     return toolSheetsTeam(args.team ?? "");
+    case "get_h2h":           return toolSheetsH2H(args.home ?? "", args.away ?? "");
+    default:                  return "Outil inconnu.";
   }
 }
-
-// ══════════════════════════════════════════════════════
-//  AGENT GROQ — BOUCLE TOOL CALLING
-// ══════════════════════════════════════════════════════
 
 async function groqAgentLoop(
-  chatId    : number,
-  userMessage: string,
-  history   : ChatMessage[] = [],
-  firstName ?: string,
+  chatId: number,
+  userMsg: string,
+  history: ChatMessage[],
+  firstName?: string
 ): Promise<string> {
-  const typingToken = keepTyping(chatId, 90_000);
-
-  const userName = firstName ? ` Tu t'adresses à ${firstName}.` : "";
-
-  const systemPrompt = `Tu es FootBot ⚽, un assistant football passionné et expert.${userName}
-
-━━ LANGUE & TON ━━
-• Détecte automatiquement la langue de l'utilisateur et réponds DANS CETTE MÊME LANGUE.
-  - Message en français → réponds en français
-  - Message en anglais → réponds en anglais
-  - Message en arabe → réponds en arabe
-  - Message en wolof, lingala, etc. → fais de ton mieux dans cette langue
-• Adapte ton style au message :
-  - Message court/informel ("c'est quoi le score ?", "qui a gagné ?") → réponse courte, détendue, emojis
-  - Question détaillée ou technique → réponse structurée et complète
-  - Demande de liste/classement → format tabulaire lisible
-  - Question de passion ("tu penses que le PSG va gagner ?") → donne ton avis de fan passionné !
-
-━━ INTENTION ━━
-• Comprends CE QUE L'UTILISATEUR VEUT VRAIMENT :
-  - "le score" → scores live en ce moment
-  - "les matchs" / "c'est quoi ce soir" → programme du jour
-  - "le classement" → standings de la ligue la plus probable selon le contexte
-  - "les transferts" / "le mercato" → web_search pour infos récentes
-  - "qui joue pour X" → infos équipe
-  - "comment se porte Y" / "Y il est où" → infos joueur
-  - Question vague sur le foot → réponds depuis ta connaissance + vérifie avec outils si nécessaire
-• Si la question est ambiguë, choisis l'interprétation la plus probable et réponds directement (ne demande pas de clarification à moins d'être vraiment bloqué).
-
-━━ OUTILS ━━
-• Utilise les outils ESPN pour données structurées fraîches (classements, scores, matchs, équipes, joueurs)
-• Utilise web_search pour : transferts récents, mercato, nouvelles de la semaine, déclarations, records
-• Tu PEUX appeler plusieurs outils en parallèle
-• Ne jamais inventer de chiffres ou dates — si tu ne sais pas, cherche
-
-━━ FORMAT (Telegram HTML) ━━
-• <b>texte</b> pour les titres et éléments importants
-• <i>texte</i> pour les notes secondaires
-• Emojis appropriés (⚽🏆🔴🟢📊👤🎯 etc.)
-• Maximum 300 mots sauf si l'utilisateur demande clairement plus
-• Pas de markdown (* # ##) — seulement HTML Telegram`;
-
-  // Reconstruit l'historique pour Groq (uniquement role user/assistant, sans les tool messages)
-  const historyMessages: any[] = history.slice(-6).map(m => ({
-    role   : m.role,
-    content: m.content,
-  }));
-
   const messages: any[] = [
-    { role: "system", content: systemPrompt },
-    ...historyMessages,
-    { role: "user", content: userMessage },
+    { role: "system", content: SYSTEM_PROMPT + (firstName ? `\nL'utilisateur s'appelle ${firstName}.` : "") },
+    ...history.slice(-8),
+    { role: "user", content: userMsg },
   ];
 
-  const MAX_ITERATIONS = 4;
-
-  for (let i = 0; i < MAX_ITERATIONS; i++) {
-    let resp: Response;
-    try {
-      resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model       : GROQ_MODEL,
-          messages,
-          tools       : GROQ_TOOLS,
-          tool_choice : "auto",
-          max_tokens  : 800,
-          temperature : 0.4,
-        }),
-      });
-    } catch {
-      await send(chatId, "❌ Erreur de connexion à l'IA. Réessaie dans un instant !");
-      return;
-    }
-
-    if (!resp.ok) {
-      typingToken.cancel();
-      const errText = await resp.text().catch(() => "");
-      console.error("[GROQ ERROR]", resp.status, errText);
-      if (resp.status === 429 || resp.status === 503) {
-        await send(chatId, "⏳ Groq est surchargé. Réessaie dans quelques secondes !");
-      } else {
-        await send(chatId, "❌ Erreur IA. Réessaie !");
-      }
-      return "";
-    }
-
-    const data: any = await resp.json();
-    const choice     = data.choices?.[0];
-    if (!choice) { await send(chatId, "❌ Réponse IA vide."); return; }
-
-    const finishReason = choice.finish_reason;
-    const message      = choice.message;
-
-    // ── Réponse finale ───────────────────────────────
-    if (finishReason === "stop" || finishReason === "length") {
-      typingToken.cancel();
-      const answer = message?.content?.trim();
-      if (answer) {
-        await send(chatId, answer);
-        return answer;
-      }
-      await send(chatId, "⚽ Je n'ai pas pu formuler une réponse. Reformule ta question !");
-      return "";
-    }
-
-    // ── Tool calls ───────────────────────────────────
-    if (finishReason === "tool_calls") {
-      const toolCalls: any[] = message?.tool_calls ?? [];
-      messages.push({ role: "assistant", content: message.content ?? null, tool_calls: toolCalls });
-
-      // Exécute tous les outils en parallèle
-      const toolResults: { id: string; content: string }[] = await Promise.all(
-        toolCalls.map(async (call: any) => {
-          const toolName = call.function?.name ?? "";
-          let argsObj: Record<string, any> = {};
-          try { argsObj = JSON.parse(call.function?.arguments ?? "{}"); } catch { /* keep empty */ }
-          console.log(`[TOOL] ${toolName}`, JSON.stringify(argsObj));
-          const result = await executeTool(toolName, argsObj);
-          return { id: call.id, content: result };
-        })
-      );
-
-      for (const { id, content } of toolResults) {
-        messages.push({ role: "tool", tool_call_id: id, content });
-      }
-
-      continue; // prochaine itération avec les résultats d'outils
-    }
-
-    // Fin inattendue
-    typingToken.cancel();
-    const fallback = message?.content?.trim() ?? "";
-    if (fallback) await send(chatId, fallback);
-    else await send(chatId, "⚽ Pas de réponse. Réessaie !");
-    return fallback;
-  }
-
-  typingToken.cancel();
-  await send(chatId, "⚽ J'ai cherché mais je n'ai pas trouvé de réponse claire. Reformule ta question !");
-  return "";
-}
-
-// ══════════════════════════════════════════════════════
-//  PIPELINE PRONOSTICS (ESPN stats complètes + IA)
-// ══════════════════════════════════════════════════════
-
-interface TeamStats {
-  form5       : string;
-  wins5       : number;
-  draws5      : number;
-  losses5     : number;
-  scored5     : number;
-  conceded5   : number;
-  avgScored   : number;
-  avgConceded : number;
-  over25Count : number;
-  bttsCount   : number;
-  cleanSheets : number;
-  failedScore : number;
-}
-interface H2HStats {
-  totalMatches : number;
-  homeWinPct   : number;
-  awayWinPct   : number;
-  drawPct      : number;
-  over25H2H    : number;
-  bttsH2H      : number;
-}
-interface MatchData {
-  id       : string;
-  homeTeam : string;
-  awayTeam : string;
-  homeId   : string;
-  awayId   : string;
-  league   : string;
-  kickoff  : string;
-  homeStats: TeamStats;
-  awayStats: TeamStats;
-  h2h      : H2HStats;
-  overUnder: number;
-  homeML   : number;
-  awayML   : number;
-}
-
-function extractFormESPN(events: any[], teamId: string): TeamStats {
-  let wins5 = 0, draws5 = 0, losses5 = 0, scored5 = 0, conceded5 = 0;
-  let over25Count = 0, bttsCount = 0, cleanSheets = 0, failedScore = 0;
-  const formArr: string[] = [];
-  for (const ev of events.slice(0, 5)) {
-    const comp = ev.competitions?.[0] ?? ev;
-    const me   = comp?.competitors?.find((c: any) => c.team?.id === teamId);
-    const opp  = comp?.competitors?.find((c: any) => c.team?.id !== teamId);
-    if (!me || !opp) continue;
-    const ms = parseInt(me.score ?? "0", 10) || 0;
-    const os = parseInt(opp.score ?? "0", 10) || 0;
-    scored5 += ms; conceded5 += os;
-    if (ms + os > 2.5) over25Count++;
-    if (ms > 0 && os > 0) bttsCount++;
-    if (os === 0) cleanSheets++;
-    if (ms === 0) failedScore++;
-    if (me.winner === true || ms > os) { wins5++;  formArr.push("V"); }
-    else if (ms === os)                { draws5++; formArr.push("N"); }
-    else                               { losses5++;formArr.push("D"); }
-  }
-  const played = wins5 + draws5 + losses5 || 1;
-  return {
-    form5: formArr.join("-") || "-",
-    wins5, draws5, losses5, scored5, conceded5,
-    avgScored   : Math.round((scored5 / played) * 10) / 10,
-    avgConceded : Math.round((conceded5 / played) * 10) / 10,
-    over25Count, bttsCount, cleanSheets, failedScore,
-  };
-}
-
-function extractH2HESPN(h2hGames: any[], homeId: string): H2HStats {
-  let total = 0, homeWins = 0, awayWins = 0, draws = 0, over25 = 0, btts = 0;
-  for (const ev of h2hGames.slice(0, 10)) {
-    const comp = ev.competitions?.[0] ?? ev;
-    const home = comp?.competitors?.find((c: any) => c.homeAway === "home");
-    const away = comp?.competitors?.find((c: any) => c.homeAway === "away");
-    if (!home || !away) continue;
-    total++;
-    const hs = parseInt(home.score ?? "0", 10) || 0;
-    const as_ = parseInt(away.score ?? "0", 10) || 0;
-    if (hs > as_) { home.team?.id === homeId ? homeWins++ : awayWins++; }
-    else if (as_ > hs) { away.team?.id === homeId ? homeWins++ : awayWins++; }
-    else draws++;
-    if (hs + as_ > 2.5) over25++;
-    if (hs > 0 && as_ > 0) btts++;
-  }
-  return {
-    totalMatches: total,
-    homeWinPct  : total ? Math.round((homeWins / total) * 100) : 50,
-    awayWinPct  : total ? Math.round((awayWins / total) * 100) : 50,
-    drawPct     : total ? Math.round((draws / total) * 100) : 25,
-    over25H2H   : over25,
-    bttsH2H     : btts,
-  };
-}
-
-// Stats vides par défaut pour les matchs sans données ESPN
-function emptyStats(): TeamStats {
-  return { form5: "?", wins5: 0, draws5: 0, losses5: 0, scored5: 0, conceded5: 0,
-           avgScored: 0, avgConceded: 0, over25Count: 0, bttsCount: 0, cleanSheets: 0, failedScore: 0 };
-}
-
-async function scrapeMatchESPN(event: any): Promise<MatchData | null> {
-  try {
-    const comp  = event.competitions?.[0];
-    const homeC = comp?.competitors?.find((c: any) => c.homeAway === "home");
-    const awayC = comp?.competitors?.find((c: any) => c.homeAway === "away");
-    if (!homeC || !awayC) return null;
-
-    const homeTeam = homeC.team?.displayName ?? "?";
-    const awayTeam = awayC.team?.displayName ?? "?";
-    const homeId   = homeC.team?.id ?? "";
-    const awayId   = awayC.team?.id ?? "";
-    const league   = event.league?.name ?? comp?.notes?.[0]?.headline ?? "Football";
-    const kickoff  = comp?.startDate ? fmtTime(comp.startDate) : "?";
-
-    // Tente de récupérer le summary ESPN (form + H2H + cotes)
-    const summary = await espnFetch(`${ESPN_BASE}/all/summary?event=${event.id}`);
-    await sleep(250);
-
-    let homeStats = emptyStats();
-    let awayStats = emptyStats();
-    let h2h: H2HStats = { totalMatches: 0, homeWinPct: 50, awayWinPct: 50, drawPct: 25, over25H2H: 0, bttsH2H: 0 };
-    let overUnder = 2.5, homeML = 0, awayML = 0;
-
-    if (summary) {
-      const lastFive: any[] = summary.lastFiveGames ?? [];
-      const h2hData : any[] = summary.headToHeadGames ?? [];
-      const oddsArr : any[] = summary.pickcenter ?? summary.odds ?? [];
-
-      homeStats = extractFormESPN(lastFive.find((t: any) => t.team?.id === homeId)?.events ?? [], homeId);
-      awayStats = extractFormESPN(lastFive.find((t: any) => t.team?.id === awayId)?.events ?? [], awayId);
-      h2h       = extractH2HESPN(h2hData, homeId);
-
-      const odds = oddsArr[0];
-      overUnder  = odds?.overUnder ?? 2.5;
-      homeML     = odds?.homeTeamOdds?.moneyLine ?? 0;
-      awayML     = odds?.awayTeamOdds?.moneyLine ?? 0;
-    }
-
-    // Accepte le match même sans form — l'IA analysera avec les données disponibles
-    // (cotes ESPN ou signaux neutres 50/50)
-    return { id: event.id, homeTeam, awayTeam, homeId, awayId, league, kickoff,
-             homeStats, awayStats, h2h, overUnder, homeML, awayML };
-  } catch (e) { console.error("[SCRAPE]", e); return null; }
-}
-
-async function scrapeUpcomingMatches(count: number, onProgress: (m: string) => Promise<void>): Promise<MatchData[]> {
-  // Cherche d'abord dans le scoreboard global ESPN, puis dans les principales ligues
-  const allEvents: any[] = [];
-
-  const globalData = await espnFetch(`${ESPN_BASE}/all/scoreboard?dates=${todayESPN()}`);
-  allEvents.push(...(globalData?.events ?? []));
-
-  // Si peu de matchs trouvés, complète avec les ligues majeures
-  if (allEvents.length < count) {
-    const slugs = ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1", "uefa.champions", "uefa.europa"];
-    await Promise.all(slugs.map(async (slug) => {
-      const d = await espnFetch(`${ESPN_BASE}/${slug}/scoreboard?dates=${todayESPN()}`);
-      for (const ev of d?.events ?? []) {
-        if (!allEvents.find((e: any) => e.id === ev.id)) allEvents.push(ev);
-      }
-    }));
-  }
-
-  const candidates = allEvents.filter((e: any) => e.competitions?.[0]?.status?.type?.state === "pre");
-
-  const results: MatchData[] = [];
-  for (const event of candidates) {
-    if (results.length >= count) break;
-    await onProgress(`🔍 ${results.length + 1}/${count} — <b>${event.name ?? "..."}</b>`);
-    const m = await scrapeMatchESPN(event);
-    if (m) results.push(m);
-  }
-  return results;
-}
-
-function computeSignals(m: MatchData): Record<string, number> {
-  const h = m.homeStats, a = m.awayStats, x = m.h2h;
-  const homeDom = (h.wins5 * 3 + h.draws5) / Math.max((h.wins5 + h.draws5 + h.losses5) * 3, 1);
-  const awayDom = (a.wins5 * 3 + a.draws5) / Math.max((a.wins5 + a.draws5 + a.losses5) * 3, 1);
-  let homeProb = 33, awayProb = 33;
-  if (m.homeML > 0) homeProb = Math.round(100 / (m.homeML / 100 + 1));
-  else if (m.homeML < 0) homeProb = Math.round(Math.abs(m.homeML) / (Math.abs(m.homeML) + 100) * 100);
-  if (m.awayML > 0) awayProb = Math.round(100 / (m.awayML / 100 + 1));
-  else if (m.awayML < 0) awayProb = Math.round(Math.abs(m.awayML) / (Math.abs(m.awayML) + 100) * 100);
-  const homeWin = Math.round(homeDom * 50 + (x.homeWinPct / 100) * 25 + (homeProb / 100) * 25);
-  const awayWin = Math.round(awayDom * 50 + (x.awayWinPct / 100) * 25 + (awayProb / 100) * 25);
-  const draw    = Math.round(x.drawPct * 0.6 + 15);
-  const over25total = (h.over25Count + a.over25Count) / Math.max(h.wins5+h.draws5+h.losses5+a.wins5+a.draws5+a.losses5, 1);
-  const overOULine  = m.overUnder <= 2.0 ? 10 : m.overUnder >= 3.0 ? -10 : 0;
-  const over25 = Math.round(over25total * 80 + (x.over25H2H / Math.max(x.totalMatches, 1)) * 20 + overOULine);
-  const homeSR = 1 - h.failedScore / Math.max(h.wins5+h.draws5+h.losses5, 1);
-  const awaySR = 1 - a.failedScore / Math.max(a.wins5+a.draws5+a.losses5, 1);
-  const homeCR = 1 - h.cleanSheets / Math.max(h.wins5+h.draws5+h.losses5, 1);
-  const awayCR = 1 - a.cleanSheets / Math.max(a.wins5+a.draws5+a.losses5, 1);
-  const btts   = Math.round(((homeSR * awayCR + awaySR * homeCR) / 2) * 70 + (x.bttsH2H / Math.max(x.totalMatches, 1)) * 30);
-  return {
-    homeWin: Math.min(Math.max(homeWin, 5), 90),
-    awayWin: Math.min(Math.max(awayWin, 5), 90),
-    draw   : Math.min(Math.max(draw,    5), 60),
-    over25 : Math.min(Math.max(over25,  5), 90),
-    under25: Math.min(Math.max(100 - over25, 5), 90),
-    btts   : Math.min(Math.max(btts,    5), 90),
-    noBtts : Math.min(Math.max(100 - btts, 5), 90),
-  };
-}
-
-function buildStatsBlock(m: MatchData): string {
-  const h = m.homeStats, a = m.awayStats, x = m.h2h, sig = computeSignals(m);
-  return [
-    `MATCH: ${m.homeTeam} vs ${m.awayTeam} [${m.league}] ${m.kickoff}`,
-    `HOME: forme=${h.form5} V${h.wins5}N${h.draws5}D${h.losses5} +${h.avgScored}/-${h.avgConceded} Over25:${h.over25Count} BTTS:${h.bttsCount} CS:${h.cleanSheets}`,
-    `AWAY: forme=${a.form5} V${a.wins5}N${a.draws5}D${a.losses5} +${a.avgScored}/-${a.avgConceded} Over25:${a.over25Count} BTTS:${a.bttsCount} CS:${a.cleanSheets}`,
-    `H2H: ${x.totalMatches}M homeWin=${x.homeWinPct}% draw=${x.drawPct}% awayWin=${x.awayWinPct}% Over25:${x.over25H2H} BTTS:${x.bttsH2H}`,
-    `ODDS: homeML=${m.homeML} awayML=${m.awayML} OU=${m.overUnder}`,
-    `SIG: homeWin=${sig.homeWin} awayWin=${sig.awayWin} draw=${sig.draw} o25=${sig.over25} u25=${sig.under25} btts=${sig.btts} noBtts=${sig.noBtts}`,
-  ].join("\n");
-}
-
-function localFallback(m: MatchData): { market: string; choice: string; confidence: number; reason: string } {
-  const sig = computeSignals(m);
-  const candidates = [
-    { market: "1X2",                        choice: `Victoire ${m.homeTeam}`, confidence: sig.homeWin, key: "homeWin" },
-    { market: "1X2",                        choice: `Victoire ${m.awayTeam}`, confidence: sig.awayWin, key: "awayWin" },
-    { market: "1X2",                        choice: "Match nul",              confidence: sig.draw,    key: "draw" },
-    { market: "Plus/Moins buts",            choice: "Plus de 2.5 buts",       confidence: sig.over25,  key: "over25" },
-    { market: "Plus/Moins buts",            choice: "Moins de 2.5 buts",      confidence: sig.under25, key: "under25" },
-    { market: "Les deux équipes marquent",  choice: "Oui",                    confidence: sig.btts,    key: "btts" },
-    { market: "Les deux équipes marquent",  choice: "Non",                    confidence: sig.noBtts,  key: "noBtts" },
-  ];
-  const best = candidates.reduce((a, b) => a.confidence >= b.confidence ? a : b);
-  const h = m.homeStats, a_ = m.awayStats, x = m.h2h;
-  const reasons: Record<string, string> = {
-    homeWin : `${m.homeTeam} forme ${h.form5}, ${h.wins5}V/5`, awayWin: `${m.awayTeam} forme ${a_.form5}, ${a_.wins5}V/5`,
-    draw    : `H2H ${x.drawPct}% nuls`,                        over25 : `Moy. buts ${h.avgScored}+${a_.avgScored}`,
-    under25 : `CS dom.${h.cleanSheets}/5 ext.${a_.cleanSheets}/5`, btts: `BTTS ${(h.bttsCount+a_.bttsCount)/2}/5`,
-    noBtts  : `CS fréquents ${h.cleanSheets}+${a_.cleanSheets}`,
-  };
-  return { ...best, reason: reasons[best.key] ?? "" };
-}
-
-async function analyseWithAI(m: MatchData): Promise<{ market: string; choice: string; confidence: number; reason: string }> {
-  if (!GROQ_KEY) return localFallback(m);
-  const prompt = `Analyste football expert. Stats du match:\n${buildStatsBlock(m)}\n\nRetourne UNIQUEMENT ce JSON:\n{"market":"Plus/Moins buts","choice":"Plus de 2.5 buts","confidence":72,"reason":"Over25 7/10, moy. 3.1 buts"}\n\nMarché le plus fiable. Confiance 51-89. JSON uniquement.`;
-  try {
-    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  for (let i = 0; i < 5; i++) {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
-      headers: { "Authorization": `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: GROQ_FAST, messages: [{ role: "user", content: prompt }], temperature: 0.2, max_tokens: 150 }),
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_KEY}` },
+      body: JSON.stringify({ model: GROQ_MODEL, messages, tools: TOOLS, tool_choice: "auto", max_tokens: 1024 }),
     });
-    if (!r.ok) return localFallback(m);
-    const data: any = await r.json();
-    const raw    = data.choices?.[0]?.message?.content?.trim() ?? "{}";
-    const parsed = JSON.parse(raw.match(/\{[\s\S]*?\}/)?.[0] ?? "{}");
-    if (!parsed.market || !parsed.choice || !parsed.confidence) return localFallback(m);
-    return parsed;
-  } catch { return localFallback(m); }
+    if (!res.ok) return "❌ Erreur IA. Réessaie dans quelques secondes.";
+    const data   = await res.json();
+    const choice = data.choices?.[0];
+    const msg    = choice?.message;
+    if (!msg) break;
+    messages.push(msg);
+
+    if (choice.finish_reason === "tool_calls" && msg.tool_calls?.length) {
+      for (const tc of msg.tool_calls) {
+        let args: Record<string, any> = {};
+        try { args = JSON.parse(tc.function.arguments ?? "{}"); } catch {}
+        const result = await executeTool(tc.function.name, args);
+        messages.push({ role: "tool", content: result, tool_call_id: tc.id });
+      }
+      continue;
+    }
+    return msg.content ?? "";
+  }
+  return "Je n'ai pas pu obtenir une réponse. Réessaie.";
+}
+
+// ══════════════════════════════════════════════════════
+//  PIPELINE PRONOSTICS
+//  Flux : Google Sheets (Pronostics) → Groq AI → Telegram
+//  L'onglet "Pronostics" contient les matchs à analyser
+//  avec leurs stats (forme, buts, cotes...).
+// ══════════════════════════════════════════════════════
+
+interface MatchProno {
+  home: string; away: string; league: string; date: string;
+  homeForm: string; awayForm: string; stats: string;
+}
+
+async function getSheetsPronoMatches(count: number): Promise<MatchProno[]> {
+  // Onglet "Pronostics" : colonnes A=Domicile, B=Extérieur, C=Ligue,
+  // D=Date, E=Forme Dom, F=Forme Ext, G...=Stats supp
+  const rows = await sheetsRead("Pronostics", `A2:J${count + 20}`);
+  return rows
+    .filter(r => r[0] && r[1]) // au moins domicile + extérieur
+    .slice(0, count)
+    .map(r => ({
+      home:     r[0] ?? "",
+      away:     r[1] ?? "",
+      league:   r[2] ?? "",
+      date:     r[3] ?? "",
+      homeForm: r[4] ?? "",
+      awayForm: r[5] ?? "",
+      stats:    r.slice(6).filter(Boolean).join(" | "),
+    }));
+}
+
+async function analyseMatchGroq(m: MatchProno): Promise<{ market: string; choice: string; confidence: number; reason: string }> {
+  const prompt = `Analyse ce match et fournis un pronostic :
+
+⚽ ${m.home} vs ${m.away}
+🏆 ${m.league || "Ligue inconnue"} — ${m.date || "Date inconnue"}
+📊 Forme ${m.home} : ${m.homeForm || "N/A"}
+📊 Forme ${m.away} : ${m.awayForm || "N/A"}
+📈 Stats : ${m.stats || "Aucune donnée supplémentaire"}
+
+Réponds UNIQUEMENT en JSON valide :
+{"market":"1X2 ou BTTS ou Over/Under 2.5","choice":"ta sélection précise","confidence":70,"reason":"2 phrases max justifiant le choix"}`;
+
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_KEY}` },
+    body: JSON.stringify({
+      model: GROQ_FAST,
+      messages: [
+        { role: "system", content: "Expert football. Réponds uniquement en JSON valide, sans commentaire." },
+        { role: "user", content: prompt },
+      ],
+      max_tokens: 220, temperature: 0.2,
+    }),
+  });
+  if (!res.ok) return { market: "1X2", choice: m.home, confidence: 55, reason: "Données insuffisantes." };
+  const d = await res.json();
+  try {
+    const txt  = d.choices?.[0]?.message?.content ?? "{}";
+    const json = txt.match(/\{[\s\S]*\}/)?.[0] ?? "{}";
+    return JSON.parse(json);
+  } catch {
+    return { market: "1X2", choice: m.home, confidence: 55, reason: "Analyse impossible." };
+  }
 }
 
 function confBar(pct: number): string {
-  const f = Math.round(pct / 10);
-  return "🟩".repeat(f) + "⬜".repeat(10 - f) + ` ${pct}%`;
+  const filled = Math.round(pct / 10);
+  return "█".repeat(Math.min(filled, 10)) + "░".repeat(Math.max(0, 10 - filled)) + ` ${pct}%`;
 }
 
 async function runPipeline(chatId: number, count: number): Promise<void> {
-  const n = Math.max(1, Math.min(10, count));
-  const typingToken = keepTyping(chatId, 180_000);
-  const matches = await scrapeUpcomingMatches(n, async (msg) => { await send(chatId, msg); });
-  if (!matches.length) {
-    typingToken.cancel();
-    await send(chatId, "😕 Aucun match à venir trouvé aujourd'hui avec suffisamment de données ESPN.\n\nEssaie de demander <b>programme</b> pour voir les matchs disponibles.");
-    return;
+  await send(chatId, `⏳ Analyse de <b>${count} match${count > 1 ? "s" : ""}</b> depuis Google Sheets...`);
+  const tok = keepTyping(chatId, 180_000);
+  try {
+    const matches = await getSheetsPronoMatches(count);
+    if (!matches.length) {
+      tok.cancel();
+      await send(chatId,
+        "❌ <b>Onglet Pronostics vide ou introuvable.</b>\n\n" +
+        "Assure-toi que l'onglet <b>Pronostics</b> de ton Google Sheets contient :\n" +
+        "Colonne A = Domicile | B = Extérieur | C = Ligue | D = Date | E = Forme Dom | F = Forme Ext"
+      );
+      return;
+    }
+
+    const analyses = await Promise.all(matches.map(m => analyseMatchGroq(m)));
+    tok.cancel();
+
+    for (let i = 0; i < matches.length; i++) {
+      const m = matches[i];
+      const a = analyses[i];
+      await send(chatId,
+        `⚽ <b>${m.home} vs ${m.away}</b>\n` +
+        `🏆 ${m.league || "?"} · ${m.date || "?"}\n` +
+        `📊 Forme : ${m.homeForm || "?"} / ${m.awayForm || "?"}\n` +
+        `───────────────────────\n` +
+        `📌 Marché : <b>${a.market}</b>\n` +
+        `✅ Pronostic : <b>${a.choice}</b>\n` +
+        `📈 Confiance : ${confBar(a.confidence)}\n` +
+        `💬 ${a.reason}`
+      );
+      if (i < matches.length - 1) await sleep(400);
+    }
+  } catch {
+    tok.cancel();
+    await send(chatId, "❌ Erreur lors de l'analyse. Réessaie.");
   }
-  await send(chatId, `🧠 Analyse IA en cours pour <b>${matches.length} match(s)</b>...`);
-  const pronos: string[] = [];
-  for (let i = 0; i < matches.length; i++) {
-    const m = matches[i], res = await analyseWithAI(m);
-    pronos.push(
-      `${i+1}. ⚽ <b>${m.homeTeam} vs ${m.awayTeam}</b>\n` +
-      `👉 ${res.market} → <b>${res.choice}</b>\n` +
-      confBar(res.confidence) + "\n" +
-      `📊 ${res.reason}`
-    );
-  }
-  typingToken.cancel();
-  await send(chatId,
-    `⚽ <b>PRONOSTICS DU JOUR — ${matches.length} match(s)</b>\n━━━━━━━━━━━━━━━━━━━━\n\n` +
-    pronos.join("\n\n") +
-    `\n━━━━━━━━━━━━━━━━━━━━\n⚠️ <i>Analyse ESPN + IA. Jouer responsable.</i>`
-  );
 }
 
 // ══════════════════════════════════════════════════════
-//  HANDLE — ROUTEUR PRINCIPAL
+//  HANDLER PRINCIPAL
 // ══════════════════════════════════════════════════════
 
-const GREETING = /^(bonjour|bonsoir|salut|hello|hi|hey|cc|coucou|yo|wesh|salam|bjr|bj|slt|ola|hola|gm|good\s?morning|bonne\s?nuit|bonne\s?journée|soir|jour|matin)[\s!.,?]*$/i;
-
-const GREET_REPLIES = [
-  "👋 Salut ! Je suis <b>FootBot ⚽</b>, ton assistant football IA.\n\nPose-moi <b>n'importe quelle question football</b> en langage naturel :\n\n• <i>\"Classement Premier League ?\"</i>\n• <i>\"Scores live ce soir\"</i>\n• <i>\"Stats de Mbappé\"</i>\n• <i>\"Transferts du mercato\"</i>\n• <i>\"Donne-moi 5 pronostics\"</i>\n• <i>\"Qui est le meilleur buteur de l'histoire ?\"</i>\n\nJe cherche les données réelles et je te réponds 🔥",
-  "⚽ Hey ! Prêt à parler foot ?\n\nJe peux répondre à <b>tout</b> : scores live, classements, actu, transferts, joueurs, équipes, règles, histoire... Pose ta question !",
-  "🔥 Salut ! Je suis FootBot, ton expert football IA.\n\nEnvoie ta question, je cherche les vraies données et je te réponds directement !",
-];
+const MATCH_COUNT_RE = /(\d+)\s*match/i;
 
 function extractNumber(text: string): number | null {
-  const m = text.match(/\b([1-9]|10)\b/);
-  return m ? parseInt(m[1], 10) : null;
+  const m = text.match(/\d+/);
+  if (!m) return null;
+  const n = parseInt(m[0], 10);
+  return n >= 1 && n <= 20 ? n : null;
 }
-
-// Détection rapide des pronostics/paris — inclut le langage africain courant (coupon, ticket, etc.)
-const PRONOS_REGEX = /\b(prono|pronostic|coupon|ticket\s+pari|tickets?|pari\s+sportif|predic|tip\s+du\s+jour|bet|coup\s?sûr|cote\s+du\s+jour|faire\s+un\s+coupon|faire\s+coupon)\b/i;
-
-// Détecte "Je veux X match" / "donne moi X" / "X matchs pour" sans le mot prono
-const MATCH_COUNT_REGEX = /\b(veux?|donnez?\s*moi|donne|fais?|analyse[rz]?|cherche)\b.{0,30}\b([1-9]|10)\b.{0,20}\b(match|jeu|coupon|ticket|sélection)/i;
 
 async function handle(chatId: number, raw: string, firstName?: string): Promise<void> {
   const lower = raw.toLowerCase().trim();
   const { phase, history } = await loadSession(chatId);
 
-  // ── Chiffre en attente de confirmation ───────────
+  // ── Attente confirmation nombre ───────────────────
   if (phase === "awaiting_count") {
     const num = extractNumber(raw);
-    if (num !== null) {
-      await saveSession(chatId, "idle", history);
-      await runPipeline(chatId, num);
-      return;
-    }
-    // L'utilisateur pose autre chose → on reset et on continue
     await saveSession(chatId, "idle", history);
+    if (num !== null) { await runPipeline(chatId, num); return; }
   }
 
-  // ── Salutation rapide (sans Groq) ────────────────
-  if (GREETING.test(lower)) {
-    const greeting = firstName
-      ? `👋 Salut <b>${firstName}</b> ! Je suis <b>FootBot ⚽</b>, ton assistant football IA.\n\nPose-moi <b>n'importe quelle question football</b> en langage naturel :\n\n• <i>"Classement Premier League ?"</i>\n• <i>"Score live ce soir"</i>\n• <i>"Stats de Mbappé"</i>\n• <i>"Transferts du mercato"</i>\n• <i>"Donne-moi 5 pronostics"</i>\n• <i>"Qui est le meilleur buteur de l'histoire ?"</i>\n\nJe cherche les données réelles et je te réponds 🔥`
-      : GREET_REPLIES[Math.floor(Math.random() * GREET_REPLIES.length)];
-    await send(chatId, greeting);
+  // ── Salutation ────────────────────────────────────
+  if (/^(salut|bonjour|hello|bonsoir|hi|coucou|start|\/start)$/i.test(lower)) {
+    const name = firstName ? ` ${firstName}` : "";
+    await send(chatId,
+      `⚽ Bienvenue${name} sur <b>FootBot v8</b> !\n\n` +
+      `📡 Données via Google Sheets + ESPN Live\n\n` +
+      `<b>Commandes :</b>\n` +
+      `/live — Matchs en direct\n` +
+      `/auj — Matchs du jour\n` +
+      `/classement [ligue] — Classement\n` +
+      `/equipe [nom] — Infos équipe\n` +
+      `/h2h [e1] vs [e2] — Confrontations\n` +
+      `/pronostic [e1] vs [e2] — Analyse IA\n\n` +
+      `💡 Envoie un chiffre (ex: <b>3</b>) pour 3 pronostics depuis le Sheets !`
+    );
     return;
   }
 
-  // ── Commandes slash de base ──────────────────────
-  if (lower.startsWith("/start") || lower.startsWith("/help") || lower === "/") {
-    await send(chatId, GREET_REPLIES[0]);
+  // ── Commandes slash ───────────────────────────────
+  if (/^\/live/i.test(lower) || lower === "live") {
+    const tok = keepTyping(chatId, 30_000);
+    const res = await toolEspnLiveScores();
+    tok.cancel();
+    await send(chatId, res);
     return;
   }
 
-  // ── Pronostics : mots-clés paris/coupon + nombre ──
-  if (PRONOS_REGEX.test(lower)) {
-    const num = extractNumber(raw);
-    if (num !== null) {
-      await runPipeline(chatId, num);
-    } else {
-      await saveSession(chatId, "awaiting_count", history);
-      await send(chatId, "⚽ Combien de matchs tu veux dans ton coupon ? (1 à 10)");
-    }
+  if (/^\/auj/i.test(lower) || lower === "auj") {
+    const tok = keepTyping(chatId, 30_000);
+    // Essaye d'abord les Sheets, sinon ESPN
+    const sheetsData = await toolSheetsMatchsToday();
+    const hasSheetsData = !sheetsData.includes("❌");
+    const res = hasSheetsData ? sheetsData : await toolEspnScheduleToday();
+    tok.cancel();
+    await send(chatId, res);
     return;
   }
 
-  // ── "Je veux X match" / "donne 5 matchs" → pronostics
-  const matchCountTest = raw.match(MATCH_COUNT_REGEX);
-  if (matchCountTest) {
-    const num = extractNumber(raw);
-    if (num !== null) {
-      await runPipeline(chatId, num);
-      return;
-    }
+  if (/^\/classement/i.test(lower)) {
+    const query  = raw.replace(/\/classement/i, "").trim() || "ligue 1";
+    const league = detectLeague(query);
+    const tok    = keepTyping(chatId, 30_000);
+    const res    = await toolSheetsStandings(league);
+    tok.cancel();
+    await send(chatId, res);
+    return;
   }
 
-  // ── Chiffre seul = pronostics ─────────────────────
-  if (/^\d+$/.test(lower.trim())) {
+  if (/^\/equipe/i.test(lower)) {
+    const team = raw.replace(/\/equipe/i, "").trim();
+    if (!team) { await send(chatId, "Usage : /equipe PSG"); return; }
+    const tok = keepTyping(chatId, 30_000);
+    const res = await toolSheetsTeam(team);
+    tok.cancel();
+    await send(chatId, res);
+    return;
+  }
+
+  if (/^\/h2h/i.test(lower)) {
+    const parts = raw.replace(/\/h2h/i, "").trim().split(/\s+vs\s+/i);
+    if (parts.length < 2) { await send(chatId, "Usage : /h2h PSG vs OM"); return; }
+    const tok = keepTyping(chatId, 30_000);
+    const res = await toolSheetsH2H(parts[0].trim(), parts[1].trim());
+    tok.cancel();
+    await send(chatId, res);
+    return;
+  }
+
+  if (/^\/pronostic/i.test(lower)) {
+    const parts = raw.replace(/\/pronostic/i, "").trim().split(/\s+vs\s+/i);
+    if (parts.length < 2) { await send(chatId, "Usage : /pronostic PSG vs OM"); return; }
+    const tok = keepTyping(chatId, 60_000);
+    const [h2h, teamA, teamB] = await Promise.all([
+      toolSheetsH2H(parts[0].trim(), parts[1].trim()),
+      toolSheetsTeam(parts[0].trim()),
+      toolSheetsTeam(parts[1].trim()),
+    ]);
+    tok.cancel();
+    const m: MatchProno = {
+      home: parts[0].trim(), away: parts[1].trim(),
+      league: "?", date: "Prochain match",
+      homeForm: teamA, awayForm: teamB, stats: h2h,
+    };
+    const tok2 = keepTyping(chatId, 30_000);
+    const a    = await analyseMatchGroq(m);
+    tok2.cancel();
+    await send(chatId,
+      `⚽ <b>${m.home} vs ${m.away}</b>\n` +
+      `───────────────────────\n` +
+      `📌 Marché : <b>${a.market}</b>\n` +
+      `✅ Pronostic : <b>${a.choice}</b>\n` +
+      `📈 Confiance : ${confBar(a.confidence)}\n` +
+      `💬 ${a.reason}`
+    );
+    return;
+  }
+
+  // ── Mots-clés paris + nombre ──────────────────────
+  if (MATCH_COUNT_RE.test(lower)) {
     const num = extractNumber(raw);
-    if (num !== null) {
-      await runPipeline(chatId, num);
-      return;
-    }
+    if (num !== null) { await runPipeline(chatId, num); return; }
+  }
+
+  // ── Chiffre seul → pronostics ─────────────────────
+  if (/^\d+$/.test(lower)) {
+    const num = extractNumber(raw);
+    if (num !== null) { await runPipeline(chatId, num); return; }
   }
 
   // ── Agent Groq avec outils + historique ──────────
+  const tok    = keepTyping(chatId, 60_000);
   const answer = await groqAgentLoop(chatId, raw, history, firstName);
+  tok.cancel();
 
-  // Sauvegarde l'échange dans l'historique
   if (answer) {
-    const newHistory: ChatMessage[] = [
+    await send(chatId, answer);
+    await saveSession(chatId, "idle", [
       ...history,
       { role: "user",      content: raw    },
       { role: "assistant", content: answer },
-    ];
-    await saveSession(chatId, "idle", newHistory);
+    ]);
   }
 }
 
 // ══════════════════════════════════════════════════════
 //  WEBHOOK
 // ══════════════════════════════════════════════════════
+
 Deno.serve(async (req) => {
   if (req.method !== "POST")
-    return new Response("FootBot v7 ⚽ Agent IA avec Tool Calling — ESPN + DuckDuckGo + Groq");
+    return new Response("FootBot v8 ⚽ Google Sheets + Groq + ESPN Live — Zéro scraping direct");
   try {
     const b = await req.json();
     const m = b?.message;
