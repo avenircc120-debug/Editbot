@@ -23,22 +23,20 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 // ── ESPN leagues slug mapping ─────────────────────────
 const LEAGUES: Record<string, string> = {
-  "premier league": "eng.1",  "angleterre": "eng.1", "epl": "eng.1",
+  "premier league": "eng.1",  "pl": "eng.1",         "angleterre": "eng.1", "epl": "eng.1",
   "la liga": "esp.1",         "liga": "esp.1",        "espagne": "esp.1",
   "ligue 1": "fra.1",         "ligue1": "fra.1",      "france": "fra.1",
   "bundesliga": "ger.1",      "allemagne": "ger.1",
   "serie a": "ita.1",         "italie": "ita.1",
   "champions league": "uefa.champions", "ldc": "uefa.champions",  "ucl": "uefa.champions", "ligue des champions": "uefa.champions",
-  "europa league": "uefa.europa", "ligue europa": "uefa.europa",
+  "europa league": "uefa.europa", "ligue europa": "uefa.europa", "el": "uefa.europa",
   "conference league": "uefa.europa.conf", "uecl": "uefa.europa.conf",
   "mls": "usa.1",
   "eredivisie": "ned.1",      "pays-bas": "ned.1",
   "liga portugal": "por.1",   "portugal": "por.1",
   "world cup": "fifa.world",  "coupe du monde": "fifa.world", "cdm": "fifa.world",
-  "afcon": "caf.nations",     "coupe d'afrique": "caf.nations",
+  "afcon": "caf.nations",     "coupe d'afrique": "caf.nations", "can": "caf.nations",
   "nations league": "uefa.nations", "ligue des nations": "uefa.nations",
-  "premier league": "eng.1",  "pl": "eng.1",
-  "el": "uefa.europa",        "can": "caf.nations",
 };
 
 function detectLeague(text: string): string {
@@ -163,7 +161,8 @@ function keepTyping(chatId: number, durationMs: number): void {
 
 /** Recherche web via DuckDuckGo Instant Answer (sans clé API) */
 async function toolWebSearch(query: string): Promise<string> {
-  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query + " football site:bbc.com OR site:goal.com OR site:lequipe.fr OR site:skysports.com")}&format=json&no_html=1&skip_disambig=1`;
+  // DuckDuckGo Instant Answer — requête simple sans site: (non supporté par cet endpoint)
+  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1&kl=fr-fr`;
   const data = await safeFetch(url);
   if (!data) return "Aucun résultat trouvé pour cette recherche.";
 
@@ -914,8 +913,9 @@ function extractNumber(text: string): number | null {
   return m ? parseInt(m[1], 10) : null;
 }
 
-// Détection rapide de l'intention pronostics (sans appel IA)
-const PRONOS_REGEX = /\b(prono|pronostic|pari|paris|analyse|predic|tip|bet|coup\s?sûr|mise|cote)\b/i;
+// Détection rapide des pronostics/paris (termes clairement liés aux paris sportifs)
+// "analyse" seul est trop large — on ne le met pas pour éviter "analyse Ligue 1" → pipeline pronostics
+const PRONOS_REGEX = /\b(prono|pronostic|pari\s+sportif|predic|tip\s+du\s+jour|bet|coup\s?sûr|mise|cote\s+du\s+jour)\b/i;
 
 async function handle(chatId: number, raw: string): Promise<void> {
   const lower = raw.toLowerCase().trim();
