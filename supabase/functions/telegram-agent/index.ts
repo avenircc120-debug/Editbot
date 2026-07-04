@@ -378,41 +378,33 @@ const TOOLS = [
       away: { type: "string", description: "Deuxième équipe" },
     }, required: ["home","away"] },
   }},
-  { type: "function", function: {
-    name: "get_pronostics",
-    description: "À appeler SYSTÉMATIQUEMENT quand l'utilisateur demande des pronostics, des tips, des paris, des prédictions, ou 'qui va gagner' sans préciser d'équipes. Renvoie la liste des matchs disponibles dans Google Sheets pour analyse IA.",
-    parameters: { type: "object", properties: {} },
-  }},
 ];
 
 const SYSTEM_PROMPT = `Tu es FootBot ⚽, assistant football expert. Tu réponds TOUJOURS en français.
 
-FLUX DE DONNÉES :
-  Google Sheets → Bot → Groq AI → Telegram
-  1. Les stats viennent de Google Sheets (formules IMPORTHTML automatiques — jamais de scraping direct)
-  2. L'IA (toi) reçoit ces données et génère l'analyse
-  3. Les scores live viennent d'ESPN API en temps réel
+FLUX DE DONNÉES (Google Sheets → Bot → Groq AI → Telegram) :
+- Les stats/classements/H2H viennent de Google Sheets (IMPORTHTML automatique — jamais de scraping direct)
+- Les scores live viennent d'ESPN API en temps réel
+- Tu reçois les données des outils et génères l'analyse
 
-COMPORTEMENT PRONOSTICS (PRIORITÉ HAUTE) :
-- Si l'utilisateur demande des pronostics, des tips, des paris, des prédictions, "qui va gagner", une analyse de match → appelle IMMÉDIATEMENT l'outil get_pronostics
-- Ne demande pas confirmation, ne pose pas de question — agis directement
-- Après avoir reçu la liste des matchs Sheets, explique que le bot va lancer l'analyse complète
+OUTILS DISPONIBLES :
+- get_live_scores : scores en direct
+- get_matches_today : matchs du jour
+- get_standings : classement d'une ligue
+- get_team_info : forme et infos d'une équipe
+- get_h2h : historique confrontations directes
 
-FORMAT DE RÉPONSE TYPE pour un pronostic :
-⚽ PSG vs Marseille
-🏆 Ligue 1 · Samedi 5 juillet
-📊 Forme : VVNVV / NVVDV
-───────────────────────
-📌 Marché : 1X2
-✅ Pronostic : Victoire PSG
-📈 Confiance : ████████░░ 80%
-💬 Le PSG domine à domicile, 8 victoires en 10 derniers H2H.
+RÈGLES DE COMPORTEMENT :
+1. Pour toute question football → utilise SYSTÉMATIQUEMENT les outils disponibles avant de répondre.
+2. Ne fabrique JAMAIS de chiffres, scores ou stats — utilise uniquement les données reçues des outils.
+3. Si les données Sheets sont vides, dis-le clairement sans inventer.
+4. Sois concis, précis, utilise des emojis football.
+5. Si l'utilisateur demande des pronostics → réponds : "Envoie /pronostic [équipe1] vs [équipe2] pour une analyse IA, ou un chiffre (ex: 3) pour analyser les matchs du jour depuis Google Sheets."
 
-RÈGLES ABSOLUES :
-1. Ne fabrique JAMAIS de chiffres, scores ou stats — utilise uniquement les données des outils.
-2. Si les données Sheets sont vides, dis-le clairement sans inventer.
-3. Sois concis, utilise des emojis football. Maximum 3 phrases d'explication.
-4. Pour toute question football → utilise systématiquement les outils disponibles.`;
+FORMAT DE RÉPONSE pour un pronostic (quand demandé via /pronostic) :
+⚽ PSG vs Marseille · Ligue 1
+📌 Marché : 1X2 | ✅ Pronostic : Victoire PSG | 📈 ████████░░ 80%
+💬 PSG domine à domicile, 8V en 10 H2H.`;
 
 async function executeTool(name: string, args: Record<string, any>): Promise<string> {
   switch (name) {
@@ -421,7 +413,6 @@ async function executeTool(name: string, args: Record<string, any>): Promise<str
     case "get_standings":     return toolSheetsStandings(detectLeague(args.league ?? ""));
     case "get_team_info":     return toolSheetsTeam(args.team ?? "");
     case "get_h2h":           return toolSheetsH2H(args.home ?? "", args.away ?? "");
-    case "get_pronostics":    return toolSheetsPronoBrief();
     default:                  return "Outil inconnu.";
   }
 }
@@ -546,16 +537,28 @@ async function runPipeline(chatId: number, count: number): Promise<void> {
 const MATCH_COUNT_RE = /(\d+)\s*match/i;
 
 // ── Détection d'intention ─────────────────────────────
-/** Retourne true si le message demande des pronostics en langage naturel. */
+/**
+ * Retourne true uniquement si le message contient un mot-clé prono/paris EXPLICITE.
+ * Intentionnellement restrictif pour éviter les faux positifs hors football.
+ */
 function isPronoIntent(text: string): boolean {
-  return /\b(pronostic|prono|pronos|tip\b|tips|pari\b|paris|prédiction|prediction|prédire|predire|analyse(r)?|qui va gagner|winner|pick\b|picks|coup sûr|valeur|value bet|oddset|forecast)\b/i.test(text);
+  // Mots-clés paris/pronostics explicites uniquement — pas "analyse", "valeur", "winner", etc.
+  return /\b(pronostic|prono|pronos|tip\b|tips\b|pari\b|mise\b|prédiction|prediction|predire|prédire|coup sûr|pick\b|picks\b)\b/i.test(text);
 }
 
-/** Extrait les deux équipes si le message contient "X vs Y" (langage naturel, sans slash). */
-function extractVsTeams(text: string): [string, string] | null {
-  const m = text.match(/([A-ZÀ-Ÿa-zà-ÿ\s'\-\.]{2,}?)\s+vs\.?\s+([A-ZÀ-Ÿa-zà-ÿ\s'\-\.]{2,})/i);
+/**
+ * Extrait deux équipes d'un "X vs Y" uniquement si :
+ * 1. Le message contient aussi une intention prono explicite OU est très court (juste "X vs Y").
+ * 2. Les noms d'équipes ne sont pas des mots courants hors foot.
+ */
+const NOT_TEAM = /^(react|vue|angular|node|python|java|php|sql|html|css|typescript|javascript|le|la|les|des|un|une|qui|que|comment|pourquoi|quand|où|oui|non|ok|yes|no)$/i;
+function extractVsTeams(text: string, requirePronoIntent = true): [string, string] | null {
+  if (requirePronoIntent && !isPronoIntent(text)) return null;
+  // Ancre chaque équipe à 2-25 caractères, démarre par une majuscule ou lettre
+  const m = text.match(/\b([A-ZÀ-Ÿa-zà-ÿ][A-ZÀ-Ÿa-zà-ÿ\s'\-]{1,23}?)\s+vs\.?\s+([A-ZÀ-Ÿa-zà-ÿ][A-ZÀ-Ÿa-zà-ÿ\s'\-]{1,23})\b/i);
   if (!m) return null;
   const home = m[1].trim(), away = m[2].trim();
+  if (NOT_TEAM.test(home) || NOT_TEAM.test(away)) return null;
   if (home.length < 2 || away.length < 2) return null;
   return [home, away];
 }
@@ -662,9 +665,10 @@ async function handle(chatId: number, raw: string, firstName?: string): Promise<
     tok.cancel(); await send(chatId, res); return;
   }
 
-  // ── /pronostic + "X vs Y" en langage naturel ─────────
+  // ── /pronostic + "X vs Y" avec intention prono explicite ─
   const isSlashProno = /^\/pronostic/i.test(lower);
-  const vsTeams      = !isSlashProno ? extractVsTeams(raw) : null;
+  // extractVsTeams avec requirePronoIntent=true — n'active que si mot-clé prono présent
+  const vsTeams      = !isSlashProno ? extractVsTeams(raw, true) : null;
   const pronoQuery   = isSlashProno
     ? raw.replace(/\/pronostic/i, "").trim()
     : (vsTeams ? raw : null);
