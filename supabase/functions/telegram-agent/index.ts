@@ -74,50 +74,63 @@ function detectLeague(text: string): string {
 let _cachedToken: { token: string; expiresAt: number } | null = null;
 
 /** Obtient un access token Google via le refresh token OAuth 2.0 */
-async function getGoogleAccessToken(): Promise<string> {
-  const now = Date.now();
-  if (_cachedToken && _cachedToken.expiresAt > now + 60_000) {
-    return _cachedToken.token;
-  }
+async function fetchGoogleAccessToken(): Promise<string> {
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REFRESH_TOKEN) return "";
-  try {
-    const res = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id:     GOOGLE_CLIENT_ID,
-        client_secret: GOOGLE_CLIENT_SECRET,
-        refresh_token: GOOGLE_REFRESH_TOKEN,
-        grant_type:    "refresh_token",
-      }),
-    });
-    if (!res.ok) return "";
-    const d = await res.json();
-    if (!d.access_token) return "";
-    _cachedToken = { token: d.access_token, expiresAt: now + (d.expires_in ?? 3600) * 1000 };
-    return d.access_token;
-  } catch { return ""; }
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id:     GOOGLE_CLIENT_ID,
+      client_secret: GOOGLE_CLIENT_SECRET,
+      refresh_token: GOOGLE_REFRESH_TOKEN,
+      grant_type:    "refresh_token",
+    }),
+  });
+  if (!res.ok) return "";
+  const d = await res.json();
+  if (!d.access_token) return "";
+  _cachedToken = { token: d.access_token, expiresAt: Date.now() + (d.expires_in ?? 3600) * 1000 };
+  return d.access_token;
 }
 
-/** Lit une plage d'un onglet Google Sheets via l'API v4 (OAuth 2.0). */
+async function getGoogleAccessToken(forceRefresh = false): Promise<string> {
+  if (!forceRefresh && _cachedToken && _cachedToken.expiresAt > Date.now() + 60_000) {
+    return _cachedToken.token;
+  }
+  _cachedToken = null;
+  try { return await fetchGoogleAccessToken(); } catch { return ""; }
+}
+
+/** Lit une plage d'un onglet Google Sheets via l'API v4 (OAuth 2.0).
+ *  Sur 401/403 : invalide le cache et retente une seule fois. */
 async function sheetsRead(tab: string, range = "A1:Z100"): Promise<string[][]> {
   if (!SHEETS_ID) return [];
-  const token = await getGoogleAccessToken();
-  if (!token) return [];
-  const enc = encodeURIComponent(`${tab}!${range}`);
-  const url  = `https://sheets.googleapis.com/v4/spreadsheets/${SHEETS_ID}/values/${enc}`;
-  try {
-    const ctrl  = new AbortController();
+
+  const doFetch = async (token: string): Promise<Response | null> => {
+    const enc  = encodeURIComponent(`${tab}!${range}`);
+    const url  = `https://sheets.googleapis.com/v4/spreadsheets/${SHEETS_ID}/values/${enc}`;
+    const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 12_000);
-    const r     = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: ctrl.signal,
-    });
-    clearTimeout(timer);
-    if (!r.ok) return [];
-    const d = await r.json();
-    return (d.values ?? []) as string[][];
-  } catch { return []; }
+    try {
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: ctrl.signal });
+      clearTimeout(timer);
+      return r;
+    } catch { clearTimeout(timer); return null; }
+  };
+
+  let token = await getGoogleAccessToken();
+  if (!token) return [];
+
+  let r = await doFetch(token);
+  // Si le token est expiré / rejeté, on force un refresh et on retente une fois
+  if (r && (r.status === 401 || r.status === 403)) {
+    token = await getGoogleAccessToken(true);
+    if (!token) return [];
+    r = await doFetch(token);
+  }
+  if (!r || !r.ok) return [];
+  const d = await r.json();
+  return (d.values ?? []) as string[][];
 }
 
 function sheetToText(rows: string[][], sep = " | "): string {
@@ -458,7 +471,14 @@ async function runPipeline(chatId: number, count: number): Promise<void> {
       );
       return;
     }
-    const analyses = await Promise.all(matches.map(m => analyseMatchGroq(m)));
+    // Concurrence limitée à 3 appels Groq simultanés pour éviter 429/timeouts
+    const analyses: Awaited<ReturnType<typeof analyseMatchGroq>>[] = [];
+    const CONCURRENCY = 3;
+    for (let j = 0; j < matches.length; j += CONCURRENCY) {
+      const batch = await Promise.all(matches.slice(j, j + CONCURRENCY).map(m => analyseMatchGroq(m)));
+      analyses.push(...batch);
+      if (j + CONCURRENCY < matches.length) await sleep(500);
+    }
     tok.cancel();
     for (let i = 0; i < matches.length; i++) {
       const m = matches[i], a = analyses[i];
@@ -602,9 +622,20 @@ async function handle(chatId: number, raw: string, firstName?: string): Promise<
 //  WEBHOOK
 // ══════════════════════════════════════════════════════
 
+const WEBHOOK_SECRET = Deno.env.get("TELEGRAM_WEBHOOK_SECRET") ?? "";
+
 Deno.serve(async (req) => {
   if (req.method !== "POST")
-    return new Response("FootBot v8 ⚽ Google Sheets OAuth2 + Groq + ESPN Live — Zéro scraping direct");
+    return new Response("FootBot v8 ⚽ Google Sheets OAuth2 + Groq + ESPN Live");
+
+  // Vérifie le secret webhook Telegram (protection contre les requêtes forgées)
+  if (WEBHOOK_SECRET) {
+    const incoming = req.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
+    if (incoming !== WEBHOOK_SECRET) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+  }
+
   try {
     const b = await req.json();
     const m = b?.message;
