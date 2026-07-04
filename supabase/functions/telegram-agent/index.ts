@@ -91,9 +91,11 @@ const todayESPN = () => new Date().toISOString().slice(0, 10).replace(/-/g, "");
 const fmtTime   = (d: string) => new Date(d).toLocaleTimeString("fr-FR", { timeZone: "Europe/Paris", hour: "2-digit", minute: "2-digit" });
 
 // ══════════════════════════════════════════════════════
-//  SESSION Supabase
+//  SESSION Supabase — phase + historique conversation
 // ══════════════════════════════════════════════════════
 type Phase = "idle" | "awaiting_count";
+
+interface ChatMessage { role: "user" | "assistant"; content: string; }
 
 function sbH(): Record<string, string> {
   return {
@@ -101,23 +103,38 @@ function sbH(): Record<string, string> {
     "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal",
   };
 }
-async function loadPhase(chatId: number): Promise<Phase> {
-  if (!SB_URL || !SB_KEY) return "idle";
+
+async function loadSession(chatId: number): Promise<{ phase: Phase; history: ChatMessage[] }> {
+  if (!SB_URL || !SB_KEY) return { phase: "idle", history: [] };
   try {
-    const r = await fetch(`${SB_URL}/rest/v1/bot_sessions?chat_id=eq.${chatId}&select=phase`, { headers: sbH() });
-    if (!r.ok) return "idle";
+    const r = await fetch(`${SB_URL}/rest/v1/bot_sessions?chat_id=eq.${chatId}&select=phase,history`, { headers: sbH() });
+    if (!r.ok) return { phase: "idle", history: [] };
     const rows: any[] = await r.json();
-    return (rows?.[0]?.phase as Phase) ?? "idle";
-  } catch { return "idle"; }
+    const row = rows?.[0];
+    let history: ChatMessage[] = [];
+    try { history = row?.history ? JSON.parse(row.history) : []; } catch { history = []; }
+    return { phase: (row?.phase as Phase) ?? "idle", history };
+  } catch { return { phase: "idle", history: [] }; }
 }
-async function savePhase(chatId: number, phase: Phase): Promise<void> {
+
+async function saveSession(chatId: number, phase: Phase, history: ChatMessage[]): Promise<void> {
   if (!SB_URL || !SB_KEY) return;
   try {
+    // Garde seulement les 10 derniers messages (5 échanges)
+    const trimmed = history.slice(-10);
     await fetch(`${SB_URL}/rest/v1/bot_sessions`, {
       method: "POST", headers: sbH(),
-      body: JSON.stringify({ chat_id: chatId, phase }),
+      body: JSON.stringify({ chat_id: chatId, phase, history: JSON.stringify(trimmed) }),
     });
   } catch { /* non bloquant */ }
+}
+
+// Compatibilité avec le code existant
+async function loadPhase(chatId: number): Promise<Phase> {
+  return (await loadSession(chatId)).phase;
+}
+async function savePhase(chatId: number, phase: Phase): Promise<void> {
+  await saveSession(chatId, phase, []);
 }
 
 // ══════════════════════════════════════════════════════
@@ -535,24 +552,63 @@ async function executeTool(name: string, args: Record<string, any>): Promise<str
 //  AGENT GROQ — BOUCLE TOOL CALLING
 // ══════════════════════════════════════════════════════
 
-async function groqAgentLoop(chatId: number, userMessage: string): Promise<void> {
+async function groqAgentLoop(
+  chatId    : number,
+  userMessage: string,
+  history   : ChatMessage[] = [],
+  firstName ?: string,
+): Promise<string> {
   keepTyping(chatId, 60_000);
 
-  const messages: any[] = [
-    {
-      role: "system",
-      content: `Tu es FootBot ⚽, un assistant football expert qui répond UNIQUEMENT en français.
-Tu as accès à des outils pour récupérer des données réelles et actuelles du football.
+  const userName = firstName ? ` Tu t'adresses à ${firstName}.` : "";
 
-RÈGLES:
-- Utilise les outils ESPN pour les données structurées (classements, scores, équipes, joueurs)
-- Utilise web_search pour les transferts, mercato, news, records, infos récentes
-- Tu peux appeler plusieurs outils en parallèle si nécessaire
-- Réponds de façon concise (max 300 mots) et bien formatée pour Telegram (HTML: <b>texte</b> pour gras, <i>texte</i> pour italique)
-- Utilise des emojis pertinents pour rendre la réponse vivante
-- Si tu n'es pas sûr d'une info, dis-le et cherche
-- Pour les pronostics/paris, utilise le pipeline dédié (l'utilisateur doit demander explicitement)`,
-    },
+  const systemPrompt = `Tu es FootBot ⚽, un assistant football passionné et expert.${userName}
+
+━━ LANGUE & TON ━━
+• Détecte automatiquement la langue de l'utilisateur et réponds DANS CETTE MÊME LANGUE.
+  - Message en français → réponds en français
+  - Message en anglais → réponds en anglais
+  - Message en arabe → réponds en arabe
+  - Message en wolof, lingala, etc. → fais de ton mieux dans cette langue
+• Adapte ton style au message :
+  - Message court/informel ("c'est quoi le score ?", "qui a gagné ?") → réponse courte, détendue, emojis
+  - Question détaillée ou technique → réponse structurée et complète
+  - Demande de liste/classement → format tabulaire lisible
+  - Question de passion ("tu penses que le PSG va gagner ?") → donne ton avis de fan passionné !
+
+━━ INTENTION ━━
+• Comprends CE QUE L'UTILISATEUR VEUT VRAIMENT :
+  - "le score" → scores live en ce moment
+  - "les matchs" / "c'est quoi ce soir" → programme du jour
+  - "le classement" → standings de la ligue la plus probable selon le contexte
+  - "les transferts" / "le mercato" → web_search pour infos récentes
+  - "qui joue pour X" → infos équipe
+  - "comment se porte Y" / "Y il est où" → infos joueur
+  - Question vague sur le foot → réponds depuis ta connaissance + vérifie avec outils si nécessaire
+• Si la question est ambiguë, choisis l'interprétation la plus probable et réponds directement (ne demande pas de clarification à moins d'être vraiment bloqué).
+
+━━ OUTILS ━━
+• Utilise les outils ESPN pour données structurées fraîches (classements, scores, matchs, équipes, joueurs)
+• Utilise web_search pour : transferts récents, mercato, nouvelles de la semaine, déclarations, records
+• Tu PEUX appeler plusieurs outils en parallèle
+• Ne jamais inventer de chiffres ou dates — si tu ne sais pas, cherche
+
+━━ FORMAT (Telegram HTML) ━━
+• <b>texte</b> pour les titres et éléments importants
+• <i>texte</i> pour les notes secondaires
+• Emojis appropriés (⚽🏆🔴🟢📊👤🎯 etc.)
+• Maximum 300 mots sauf si l'utilisateur demande clairement plus
+• Pas de markdown (* # ##) — seulement HTML Telegram`;
+
+  // Reconstruit l'historique pour Groq (uniquement role user/assistant, sans les tool messages)
+  const historyMessages: any[] = history.slice(-6).map(m => ({
+    role   : m.role,
+    content: m.content,
+  }));
+
+  const messages: any[] = [
+    { role: "system", content: systemPrompt },
+    ...historyMessages,
     { role: "user", content: userMessage },
   ];
 
@@ -600,9 +656,12 @@ RÈGLES:
     // ── Réponse finale ───────────────────────────────
     if (finishReason === "stop" || finishReason === "length") {
       const answer = message?.content?.trim();
-      if (answer) await send(chatId, answer);
-      else await send(chatId, "⚽ Je n'ai pas pu formuler une réponse. Reformule ta question !");
-      return;
+      if (answer) {
+        await send(chatId, answer);
+        return answer;
+      }
+      await send(chatId, "⚽ Je n'ai pas pu formuler une réponse. Reformule ta question !");
+      return "";
     }
 
     // ── Tool calls ───────────────────────────────────
@@ -611,30 +670,33 @@ RÈGLES:
       messages.push({ role: "assistant", content: message.content ?? null, tool_calls: toolCalls });
 
       // Exécute tous les outils en parallèle
-      await Promise.all(toolCalls.map(async (call: any) => {
-        const toolName = call.function?.name ?? "";
-        let argsObj: Record<string, any> = {};
-        try { argsObj = JSON.parse(call.function?.arguments ?? "{}"); } catch { /* keep empty */ }
+      const toolResults: { id: string; content: string }[] = await Promise.all(
+        toolCalls.map(async (call: any) => {
+          const toolName = call.function?.name ?? "";
+          let argsObj: Record<string, any> = {};
+          try { argsObj = JSON.parse(call.function?.arguments ?? "{}"); } catch { /* keep empty */ }
+          console.log(`[TOOL] ${toolName}`, JSON.stringify(argsObj));
+          const result = await executeTool(toolName, argsObj);
+          return { id: call.id, content: result };
+        })
+      );
 
-        console.log(`[TOOL] ${toolName}`, JSON.stringify(argsObj));
-        const result = await executeTool(toolName, argsObj);
-
-        messages.push({
-          role        : "tool",
-          tool_call_id: call.id,
-          content     : result,
-        });
-      }));
+      for (const { id, content } of toolResults) {
+        messages.push({ role: "tool", tool_call_id: id, content });
+      }
 
       continue; // prochaine itération avec les résultats d'outils
     }
 
     // Fin inattendue
-    await send(chatId, message?.content?.trim() ?? "⚽ Pas de réponse. Réessaie !");
-    return;
+    const fallback = message?.content?.trim() ?? "";
+    if (fallback) await send(chatId, fallback);
+    else await send(chatId, "⚽ Pas de réponse. Réessaie !");
+    return fallback;
   }
 
   await send(chatId, "⚽ J'ai cherché mais je n'ai pas trouvé de réponse claire. Reformule ta question !");
+  return "";
 }
 
 // ══════════════════════════════════════════════════════
@@ -917,24 +979,28 @@ function extractNumber(text: string): number | null {
 // "analyse" seul est trop large — on ne le met pas pour éviter "analyse Ligue 1" → pipeline pronostics
 const PRONOS_REGEX = /\b(prono|pronostic|pari\s+sportif|predic|tip\s+du\s+jour|bet|coup\s?sûr|mise|cote\s+du\s+jour)\b/i;
 
-async function handle(chatId: number, raw: string): Promise<void> {
+async function handle(chatId: number, raw: string, firstName?: string): Promise<void> {
   const lower = raw.toLowerCase().trim();
-  const phase = await loadPhase(chatId);
+  const { phase, history } = await loadSession(chatId);
 
   // ── Chiffre en attente de confirmation ───────────
   if (phase === "awaiting_count") {
     const num = extractNumber(raw);
     if (num !== null) {
-      await savePhase(chatId, "idle");
+      await saveSession(chatId, "idle", history);
       await runPipeline(chatId, num);
       return;
     }
-    await savePhase(chatId, "idle");
+    // L'utilisateur pose autre chose → on reset et on continue
+    await saveSession(chatId, "idle", history);
   }
 
   // ── Salutation rapide (sans Groq) ────────────────
   if (GREETING.test(lower)) {
-    await send(chatId, GREET_REPLIES[Math.floor(Math.random() * GREET_REPLIES.length)]);
+    const greeting = firstName
+      ? `👋 Salut <b>${firstName}</b> ! Je suis <b>FootBot ⚽</b>, ton assistant football IA.\n\nPose-moi <b>n'importe quelle question football</b> en langage naturel :\n\n• <i>"Classement Premier League ?"</i>\n• <i>"Score live ce soir"</i>\n• <i>"Stats de Mbappé"</i>\n• <i>"Transferts du mercato"</i>\n• <i>"Donne-moi 5 pronostics"</i>\n• <i>"Qui est le meilleur buteur de l'histoire ?"</i>\n\nJe cherche les données réelles et je te réponds 🔥`
+      : GREET_REPLIES[Math.floor(Math.random() * GREET_REPLIES.length)];
+    await send(chatId, greeting);
     return;
   }
 
@@ -944,13 +1010,13 @@ async function handle(chatId: number, raw: string): Promise<void> {
     return;
   }
 
-  // ── Pronostics avec nombre (bypass Groq) ─────────
+  // ── Pronostics keyword + nombre (bypass Groq) ────
   if (PRONOS_REGEX.test(lower)) {
     const num = extractNumber(raw);
     if (num !== null) {
       await runPipeline(chatId, num);
     } else {
-      await savePhase(chatId, "awaiting_count");
+      await saveSession(chatId, "awaiting_count", history);
       await send(chatId, "⚽ Combien de matchs tu veux que j'analyse ? (1 à 10)");
     }
     return;
@@ -965,8 +1031,18 @@ async function handle(chatId: number, raw: string): Promise<void> {
     }
   }
 
-  // ── Tout le reste → Agent Groq avec outils ───────
-  await groqAgentLoop(chatId, raw);
+  // ── Agent Groq avec outils + historique ──────────
+  const answer = await groqAgentLoop(chatId, raw, history, firstName);
+
+  // Sauvegarde l'échange dans l'historique
+  if (answer) {
+    const newHistory: ChatMessage[] = [
+      ...history,
+      { role: "user",      content: raw    },
+      { role: "assistant", content: answer },
+    ];
+    await saveSession(chatId, "idle", newHistory);
+  }
 }
 
 // ══════════════════════════════════════════════════════
@@ -978,7 +1054,10 @@ Deno.serve(async (req) => {
   try {
     const b = await req.json();
     const m = b?.message;
-    if (m?.text && m?.chat?.id) handle(m.chat.id, m.text.trim()).catch(console.error);
+    if (m?.text && m?.chat?.id) {
+      const firstName = m.from?.first_name ?? m.chat?.first_name ?? undefined;
+      handle(m.chat.id, m.text.trim(), firstName).catch(console.error);
+    }
     return new Response("OK");
   } catch {
     return new Response("OK");
