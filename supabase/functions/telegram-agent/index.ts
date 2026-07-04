@@ -160,16 +160,22 @@ async function typing(chatId: number): Promise<void> {
     body: JSON.stringify({ chat_id: chatId, action: "typing" }),
   }).catch(() => {});
 }
-function keepTyping(chatId: number, durationMs: number): void {
-  // Fire-and-forget: maintient l'indicateur de frappe en boucle
+
+// Token annulable — appelé keepTyping() mais retourne un objet { cancel() }
+// Le typing s'arrête dès que cancel() est appelé (max 4s de délai)
+interface CancelToken { cancel: () => void }
+
+function keepTyping(chatId: number, maxMs: number): CancelToken {
+  let done = false;
   (async () => {
     let elapsed = 0;
-    while (elapsed < durationMs) {
+    while (!done && elapsed < maxMs) {
       await typing(chatId);
       await sleep(4000);
       elapsed += 4000;
     }
   })().catch(() => {});
+  return { cancel: () => { done = true; } };
 }
 
 // ══════════════════════════════════════════════════════
@@ -558,7 +564,7 @@ async function groqAgentLoop(
   history   : ChatMessage[] = [],
   firstName ?: string,
 ): Promise<string> {
-  keepTyping(chatId, 60_000);
+  const typingToken = keepTyping(chatId, 90_000);
 
   const userName = firstName ? ` Tu t'adresses à ${firstName}.` : "";
 
@@ -635,15 +641,15 @@ async function groqAgentLoop(
     }
 
     if (!resp.ok) {
+      typingToken.cancel();
       const errText = await resp.text().catch(() => "");
       console.error("[GROQ ERROR]", resp.status, errText);
-      // Fallback sur le modèle rapide si quota dépassé
       if (resp.status === 429 || resp.status === 503) {
-        await send(chatId, "⏳ Groq est surchargé en ce moment. Réessaie dans quelques secondes !");
+        await send(chatId, "⏳ Groq est surchargé. Réessaie dans quelques secondes !");
       } else {
         await send(chatId, "❌ Erreur IA. Réessaie !");
       }
-      return;
+      return "";
     }
 
     const data: any = await resp.json();
@@ -655,6 +661,7 @@ async function groqAgentLoop(
 
     // ── Réponse finale ───────────────────────────────
     if (finishReason === "stop" || finishReason === "length") {
+      typingToken.cancel();
       const answer = message?.content?.trim();
       if (answer) {
         await send(chatId, answer);
@@ -689,12 +696,14 @@ async function groqAgentLoop(
     }
 
     // Fin inattendue
+    typingToken.cancel();
     const fallback = message?.content?.trim() ?? "";
     if (fallback) await send(chatId, fallback);
     else await send(chatId, "⚽ Pas de réponse. Réessaie !");
     return fallback;
   }
 
+  typingToken.cancel();
   await send(chatId, "⚽ J'ai cherché mais je n'ai pas trouvé de réponse claire. Reformule ta question !");
   return "";
 }
@@ -797,43 +806,77 @@ function extractH2HESPN(h2hGames: any[], homeId: string): H2HStats {
   };
 }
 
+// Stats vides par défaut pour les matchs sans données ESPN
+function emptyStats(): TeamStats {
+  return { form5: "?", wins5: 0, draws5: 0, losses5: 0, scored5: 0, conceded5: 0,
+           avgScored: 0, avgConceded: 0, over25Count: 0, bttsCount: 0, cleanSheets: 0, failedScore: 0 };
+}
+
 async function scrapeMatchESPN(event: any): Promise<MatchData | null> {
   try {
     const comp  = event.competitions?.[0];
     const homeC = comp?.competitors?.find((c: any) => c.homeAway === "home");
     const awayC = comp?.competitors?.find((c: any) => c.homeAway === "away");
     if (!homeC || !awayC) return null;
+
     const homeTeam = homeC.team?.displayName ?? "?";
     const awayTeam = awayC.team?.displayName ?? "?";
     const homeId   = homeC.team?.id ?? "";
     const awayId   = awayC.team?.id ?? "";
     const league   = event.league?.name ?? comp?.notes?.[0]?.headline ?? "Football";
     const kickoff  = comp?.startDate ? fmtTime(comp.startDate) : "?";
-    const summary  = await espnFetch(`${ESPN_BASE}/all/summary?event=${event.id}`);
-    if (!summary) return null;
-    await sleep(300);
-    const lastFive: any[] = summary.lastFiveGames ?? [];
-    const h2hData : any[] = summary.headToHeadGames ?? [];
-    const oddsArr : any[] = summary.pickcenter ?? summary.odds ?? [];
-    const homeStats = extractFormESPN(lastFive.find((t: any) => t.team?.id === homeId)?.events ?? [], homeId);
-    const awayStats = extractFormESPN(lastFive.find((t: any) => t.team?.id === awayId)?.events ?? [], awayId);
-    if (homeStats.wins5 + homeStats.draws5 + homeStats.losses5 < 1 &&
-        awayStats.wins5 + awayStats.draws5 + awayStats.losses5 < 1) return null;
-    const h2h       = extractH2HESPN(h2hData, homeId);
-    const odds      = oddsArr[0];
-    return {
-      id: event.id, homeTeam, awayTeam, homeId, awayId, league, kickoff,
-      homeStats, awayStats, h2h,
-      overUnder: odds?.overUnder ?? 2.5,
-      homeML   : odds?.homeTeamOdds?.moneyLine ?? 0,
-      awayML   : odds?.awayTeamOdds?.moneyLine ?? 0,
-    };
+
+    // Tente de récupérer le summary ESPN (form + H2H + cotes)
+    const summary = await espnFetch(`${ESPN_BASE}/all/summary?event=${event.id}`);
+    await sleep(250);
+
+    let homeStats = emptyStats();
+    let awayStats = emptyStats();
+    let h2h: H2HStats = { totalMatches: 0, homeWinPct: 50, awayWinPct: 50, drawPct: 25, over25H2H: 0, bttsH2H: 0 };
+    let overUnder = 2.5, homeML = 0, awayML = 0;
+
+    if (summary) {
+      const lastFive: any[] = summary.lastFiveGames ?? [];
+      const h2hData : any[] = summary.headToHeadGames ?? [];
+      const oddsArr : any[] = summary.pickcenter ?? summary.odds ?? [];
+
+      homeStats = extractFormESPN(lastFive.find((t: any) => t.team?.id === homeId)?.events ?? [], homeId);
+      awayStats = extractFormESPN(lastFive.find((t: any) => t.team?.id === awayId)?.events ?? [], awayId);
+      h2h       = extractH2HESPN(h2hData, homeId);
+
+      const odds = oddsArr[0];
+      overUnder  = odds?.overUnder ?? 2.5;
+      homeML     = odds?.homeTeamOdds?.moneyLine ?? 0;
+      awayML     = odds?.awayTeamOdds?.moneyLine ?? 0;
+    }
+
+    // Accepte le match même sans form — l'IA analysera avec les données disponibles
+    // (cotes ESPN ou signaux neutres 50/50)
+    return { id: event.id, homeTeam, awayTeam, homeId, awayId, league, kickoff,
+             homeStats, awayStats, h2h, overUnder, homeML, awayML };
   } catch (e) { console.error("[SCRAPE]", e); return null; }
 }
 
 async function scrapeUpcomingMatches(count: number, onProgress: (m: string) => Promise<void>): Promise<MatchData[]> {
-  const data = await espnFetch(`${ESPN_BASE}/all/scoreboard?dates=${todayESPN()}`);
-  const candidates = (data?.events ?? []).filter((e: any) => e.competitions?.[0]?.status?.type?.state === "pre");
+  // Cherche d'abord dans le scoreboard global ESPN, puis dans les principales ligues
+  const allEvents: any[] = [];
+
+  const globalData = await espnFetch(`${ESPN_BASE}/all/scoreboard?dates=${todayESPN()}`);
+  allEvents.push(...(globalData?.events ?? []));
+
+  // Si peu de matchs trouvés, complète avec les ligues majeures
+  if (allEvents.length < count) {
+    const slugs = ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1", "uefa.champions", "uefa.europa"];
+    await Promise.all(slugs.map(async (slug) => {
+      const d = await espnFetch(`${ESPN_BASE}/${slug}/scoreboard?dates=${todayESPN()}`);
+      for (const ev of d?.events ?? []) {
+        if (!allEvents.find((e: any) => e.id === ev.id)) allEvents.push(ev);
+      }
+    }));
+  }
+
+  const candidates = allEvents.filter((e: any) => e.competitions?.[0]?.status?.type?.state === "pre");
+
   const results: MatchData[] = [];
   for (const event of candidates) {
     if (results.length >= count) break;
@@ -934,10 +977,11 @@ function confBar(pct: number): string {
 
 async function runPipeline(chatId: number, count: number): Promise<void> {
   const n = Math.max(1, Math.min(10, count));
-  keepTyping(chatId, 120_000);
+  const typingToken = keepTyping(chatId, 180_000);
   const matches = await scrapeUpcomingMatches(n, async (msg) => { await send(chatId, msg); });
   if (!matches.length) {
-    await send(chatId, "😕 Aucun match à venir trouvé aujourd'hui. Tape <b>programme</b> pour voir les matchs disponibles.");
+    typingToken.cancel();
+    await send(chatId, "😕 Aucun match à venir trouvé aujourd'hui avec suffisamment de données ESPN.\n\nEssaie de demander <b>programme</b> pour voir les matchs disponibles.");
     return;
   }
   await send(chatId, `🧠 Analyse IA en cours pour <b>${matches.length} match(s)</b>...`);
@@ -951,6 +995,7 @@ async function runPipeline(chatId: number, count: number): Promise<void> {
       `📊 ${res.reason}`
     );
   }
+  typingToken.cancel();
   await send(chatId,
     `⚽ <b>PRONOSTICS DU JOUR — ${matches.length} match(s)</b>\n━━━━━━━━━━━━━━━━━━━━\n\n` +
     pronos.join("\n\n") +
@@ -975,9 +1020,11 @@ function extractNumber(text: string): number | null {
   return m ? parseInt(m[1], 10) : null;
 }
 
-// Détection rapide des pronostics/paris (termes clairement liés aux paris sportifs)
-// "analyse" seul est trop large — on ne le met pas pour éviter "analyse Ligue 1" → pipeline pronostics
-const PRONOS_REGEX = /\b(prono|pronostic|pari\s+sportif|predic|tip\s+du\s+jour|bet|coup\s?sûr|mise|cote\s+du\s+jour)\b/i;
+// Détection rapide des pronostics/paris — inclut le langage africain courant (coupon, ticket, etc.)
+const PRONOS_REGEX = /\b(prono|pronostic|coupon|ticket\s+pari|tickets?|pari\s+sportif|predic|tip\s+du\s+jour|bet|coup\s?sûr|cote\s+du\s+jour|faire\s+un\s+coupon|faire\s+coupon)\b/i;
+
+// Détecte "Je veux X match" / "donne moi X" / "X matchs pour" sans le mot prono
+const MATCH_COUNT_REGEX = /\b(veux?|donnez?\s*moi|donne|fais?|analyse[rz]?|cherche)\b.{0,30}\b([1-9]|10)\b.{0,20}\b(match|jeu|coupon|ticket|sélection)/i;
 
 async function handle(chatId: number, raw: string, firstName?: string): Promise<void> {
   const lower = raw.toLowerCase().trim();
@@ -1010,16 +1057,26 @@ async function handle(chatId: number, raw: string, firstName?: string): Promise<
     return;
   }
 
-  // ── Pronostics keyword + nombre (bypass Groq) ────
+  // ── Pronostics : mots-clés paris/coupon + nombre ──
   if (PRONOS_REGEX.test(lower)) {
     const num = extractNumber(raw);
     if (num !== null) {
       await runPipeline(chatId, num);
     } else {
       await saveSession(chatId, "awaiting_count", history);
-      await send(chatId, "⚽ Combien de matchs tu veux que j'analyse ? (1 à 10)");
+      await send(chatId, "⚽ Combien de matchs tu veux dans ton coupon ? (1 à 10)");
     }
     return;
+  }
+
+  // ── "Je veux X match" / "donne 5 matchs" → pronostics
+  const matchCountTest = raw.match(MATCH_COUNT_REGEX);
+  if (matchCountTest) {
+    const num = extractNumber(raw);
+    if (num !== null) {
+      await runPipeline(chatId, num);
+      return;
+    }
   }
 
   // ── Chiffre seul = pronostics ─────────────────────
