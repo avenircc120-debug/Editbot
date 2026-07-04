@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════
-//  FOOTBOT v6 — Assistant Football Universel
-//  Groq détecte l'intention → ESPN fournit les données
-//  Pronostics | Classements | Scores | Équipes | Joueurs | Actu
+//  FOOTBOT v7 — Agent Groq avec Tool Calling
+//  Groq choisit ses propres outils : web search, ESPN data, etc.
+//  Pipeline pronostics complet conservé (ESPN stats + IA)
 // ═══════════════════════════════════════════════════════
 
 const TG_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
@@ -14,32 +14,37 @@ const ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer";
 const ESPN_V2   = "https://site.api.espn.com/apis/v2/sports/soccer";
 const ESPN_HDR  = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" };
 
+// Modèle Groq pour le tool calling (supporte les function calls)
+const GROQ_MODEL = "llama-3.3-70b-versatile";
+// Modèle rapide pour l'analyse pronostics
+const GROQ_FAST  = "llama-3.1-8b-instant";
+
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 // ── ESPN leagues slug mapping ─────────────────────────
 const LEAGUES: Record<string, string> = {
-  "premier league": "eng.1",  "pl": "eng.1",         "angleterre": "eng.1",  "epl": "eng.1",
+  "premier league": "eng.1",  "angleterre": "eng.1", "epl": "eng.1",
   "la liga": "esp.1",         "liga": "esp.1",        "espagne": "esp.1",
   "ligue 1": "fra.1",         "ligue1": "fra.1",      "france": "fra.1",
   "bundesliga": "ger.1",      "allemagne": "ger.1",
   "serie a": "ita.1",         "italie": "ita.1",
-  "champions league": "uefa.champions", "ldc": "uefa.champions", "ucl": "uefa.champions", "ligue des champions": "uefa.champions",
-  "europa league": "uefa.europa", "el": "uefa.europa", "ligue europa": "uefa.europa",
+  "champions league": "uefa.champions", "ldc": "uefa.champions",  "ucl": "uefa.champions", "ligue des champions": "uefa.champions",
+  "europa league": "uefa.europa", "ligue europa": "uefa.europa",
   "conference league": "uefa.europa.conf", "uecl": "uefa.europa.conf",
-  "mls": "usa.1",             "usa": "usa.1",
+  "mls": "usa.1",
   "eredivisie": "ned.1",      "pays-bas": "ned.1",
   "liga portugal": "por.1",   "portugal": "por.1",
   "world cup": "fifa.world",  "coupe du monde": "fifa.world", "cdm": "fifa.world",
-  "afcon": "caf.nations",     "can": "caf.nations",   "coupe d'afrique": "caf.nations",
+  "afcon": "caf.nations",     "coupe d'afrique": "caf.nations",
   "nations league": "uefa.nations", "ligue des nations": "uefa.nations",
+  "premier league": "eng.1",  "pl": "eng.1",
+  "el": "uefa.europa",        "can": "caf.nations",
 };
 
 function detectLeague(text: string): string {
   const lower = text.toLowerCase();
-  // Long keys first (to avoid "el" matching before "europa league")
   const sorted = Object.entries(LEAGUES).sort((a, b) => b[0].length - a[0].length);
   for (const [key, slug] of sorted) {
-    // Short keys (≤4 chars) require word boundaries to avoid false matches
     if (key.length <= 4) {
       const re = new RegExp(`(?<![a-z])${key}(?![a-z])`, "i");
       if (re.test(lower)) return slug;
@@ -47,18 +52,18 @@ function detectLeague(text: string): string {
       if (lower.includes(key)) return slug;
     }
   }
-  return "fra.1"; // défaut Ligue 1
+  return "fra.1";
 }
 
-// ── ESPN Fetch avec timeout + retry ──────────────────
+// ── Fetch ESPN avec timeout + retry ──────────────────
 async function espnFetch(url: string, attempt = 0): Promise<any> {
   try {
     const ctrl  = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 10_000);
+    const timer = setTimeout(() => ctrl.abort(), 12_000);
     const r     = await fetch(url, { headers: ESPN_HDR, signal: ctrl.signal });
     clearTimeout(timer);
     if (r.ok) return r.json();
-    if (r.status === 429 && attempt < 2) { await sleep(1200 * (attempt + 1)); return espnFetch(url, attempt + 1); }
+    if (r.status === 429 && attempt < 2) { await sleep(1500 * (attempt + 1)); return espnFetch(url, attempt + 1); }
     return null;
   } catch {
     if (attempt < 2) { await sleep(1000); return espnFetch(url, attempt + 1); }
@@ -66,10 +71,26 @@ async function espnFetch(url: string, attempt = 0): Promise<any> {
   }
 }
 
-const todayESPN = () => new Date().toISOString().slice(0, 10).replace(/-/g, "");
+// ── Fetch générique avec timeout (pour DuckDuckGo etc.) ─
+async function safeFetch(url: string, attempt = 0): Promise<any> {
+  try {
+    const ctrl  = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8_000);
+    const r     = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; FootBot/7.0)" },
+      signal: ctrl.signal
+    });
+    clearTimeout(timer);
+    if (r.ok) return r.json();
+    return null;
+  } catch {
+    if (attempt < 1) { await sleep(800); return safeFetch(url, attempt + 1); }
+    return null;
+  }
+}
 
-const fmtTime = (dateStr: string) =>
-  new Date(dateStr).toLocaleTimeString("fr-FR", { timeZone: "Europe/Paris", hour: "2-digit", minute: "2-digit" });
+const todayESPN = () => new Date().toISOString().slice(0, 10).replace(/-/g, "");
+const fmtTime   = (d: string) => new Date(d).toLocaleTimeString("fr-FR", { timeZone: "Europe/Paris", hour: "2-digit", minute: "2-digit" });
 
 // ══════════════════════════════════════════════════════
 //  SESSION Supabase
@@ -82,7 +103,6 @@ function sbH(): Record<string, string> {
     "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal",
   };
 }
-
 async function loadPhase(chatId: number): Promise<Phase> {
   if (!SB_URL || !SB_KEY) return "idle";
   try {
@@ -92,7 +112,6 @@ async function loadPhase(chatId: number): Promise<Phase> {
     return (rows?.[0]?.phase as Phase) ?? "idle";
   } catch { return "idle"; }
 }
-
 async function savePhase(chatId: number, phase: Phase): Promise<void> {
   if (!SB_URL || !SB_KEY) return;
   try {
@@ -107,7 +126,6 @@ async function savePhase(chatId: number, phase: Phase): Promise<void> {
 //  TELEGRAM
 // ══════════════════════════════════════════════════════
 async function send(chatId: number, text: string): Promise<void> {
-  // Telegram limite à 4096 chars par message
   if (text.length > 4000) {
     await send(chatId, text.slice(0, 4000));
     await sleep(300);
@@ -120,7 +138,6 @@ async function send(chatId: number, text: string): Promise<void> {
     body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
   }).catch(console.error);
 }
-
 async function typing(chatId: number): Promise<void> {
   await fetch(`${TG}/sendChatAction`, {
     method: "POST",
@@ -128,418 +145,501 @@ async function typing(chatId: number): Promise<void> {
     body: JSON.stringify({ chat_id: chatId, action: "typing" }),
   }).catch(() => {});
 }
+function keepTyping(chatId: number, durationMs: number): void {
+  // Fire-and-forget: maintient l'indicateur de frappe en boucle
+  (async () => {
+    let elapsed = 0;
+    while (elapsed < durationMs) {
+      await typing(chatId);
+      await sleep(4000);
+      elapsed += 4000;
+    }
+  })().catch(() => {});
+}
 
-async function keepTyping(chatId: number, durationMs: number): Promise<void> {
-  let elapsed = 0;
-  while (elapsed < durationMs) {
-    await typing(chatId);
-    await sleep(4000);
-    elapsed += 4000;
+// ══════════════════════════════════════════════════════
+//  OUTILS GROQ — Implémentations
+// ══════════════════════════════════════════════════════
+
+/** Recherche web via DuckDuckGo Instant Answer (sans clé API) */
+async function toolWebSearch(query: string): Promise<string> {
+  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query + " football site:bbc.com OR site:goal.com OR site:lequipe.fr OR site:skysports.com")}&format=json&no_html=1&skip_disambig=1`;
+  const data = await safeFetch(url);
+  if (!data) return "Aucun résultat trouvé pour cette recherche.";
+
+  const parts: string[] = [];
+  if (data.AbstractText)  parts.push(data.AbstractText);
+  if (data.Answer)        parts.push(`Réponse directe: ${data.Answer}`);
+  if (data.Definition)    parts.push(data.Definition);
+
+  const topics: any[] = data.RelatedTopics ?? [];
+  for (const t of topics.slice(0, 6)) {
+    if (t.Text && t.Text.length > 10) parts.push(t.Text);
+    else if (t.Topics) {
+      for (const sub of (t.Topics ?? []).slice(0, 3)) {
+        if (sub.Text) parts.push(sub.Text);
+      }
+    }
   }
+
+  const results: any[] = data.Results ?? [];
+  for (const r of results.slice(0, 3)) {
+    if (r.Text) parts.push(r.Text);
+  }
+
+  if (!parts.length) return `Aucun résultat web pertinent trouvé pour "${query}".`;
+  return parts.slice(0, 8).join("\n\n").slice(0, 2000);
 }
 
-// ══════════════════════════════════════════════════════
-//  GROQ — Détection d'intention universelle
-// ══════════════════════════════════════════════════════
+/** Classement d'une ligue ESPN */
+async function toolEspnStandings(league: string): Promise<string> {
+  const slug = LEAGUES[league.toLowerCase()] ?? league;
+  const data = await espnFetch(`${ESPN_V2}/${slug}/standings`);
+  if (!data) return `Impossible de charger le classement pour ${league}.`;
 
-interface Intent {
-  intent : "pronostics" | "classement" | "scores_live" | "programme" | "equipe" | "joueur" | "actualites" | "h2h" | "general" | "salutation" | "nombre";
-  league ?: string;   // slug ESPN ex: "eng.1"
-  team   ?: string;   // nom d'équipe
-  team2  ?: string;   // pour H2H
-  player ?: string;   // nom du joueur
-  count  ?: number;   // pour pronostics
+  const hasChildren = Array.isArray(data.children) && data.children.length > 0 && data.children[0]?.standings?.entries;
+  const hasFlat     = Array.isArray(data.standings?.entries) && data.standings.entries.length > 0;
+  const leagueName  = data.name ?? slug;
+
+  const formatEntry = (entry: any, pos: number): string => {
+    const team  = entry.team?.displayName ?? entry.team?.shortDisplayName ?? "?";
+    const stats = entry.stats ?? [];
+    const get   = (names: string[]) => names.map(n => stats.find((s: any) => s.name === n || s.abbreviation === n)?.value).find(v => v !== undefined) ?? "?";
+    const pts   = get(["points", "PTS"]);
+    const pld   = get(["gamesPlayed", "GP"]);
+    const w     = get(["wins", "W"]);
+    const d     = get(["ties", "D"]);
+    const l     = get(["losses", "L"]);
+    const gd    = get(["goalDifference"]);
+    const gdStr = gd !== "?" ? ` GD:${Number(gd) > 0 ? "+" : ""}${gd}` : "";
+    return `${pos}. ${team} | ${pts}pts | ${pld}J ${w}V${d}N${l}D${gdStr}`;
+  };
+
+  const lines: string[] = [`=== Classement ${leagueName} ===`];
+
+  if (hasChildren) {
+    for (const group of data.children) {
+      if (group.name) lines.push(`\n-- ${group.name} --`);
+      (group.standings?.entries ?? []).slice(0, 20).forEach((e: any, i: number) => lines.push(formatEntry(e, i + 1)));
+    }
+  } else if (hasFlat) {
+    data.standings.entries.slice(0, 20).forEach((e: any, i: number) => lines.push(formatEntry(e, i + 1)));
+  } else {
+    return `Classement non disponible pour ${league}.`;
+  }
+
+  return lines.join("\n").slice(0, 2000);
 }
 
-async function detectIntent(message: string): Promise<Intent> {
-  if (!GROQ_KEY) return { intent: "general" };
+/** Scores en direct */
+async function toolEspnLiveScores(): Promise<string> {
+  const slugs = ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1", "uefa.champions", "uefa.europa"];
+  const results: string[] = [];
 
-  const prompt = `Tu es un classifieur de messages pour un bot Telegram football.
-Analyse ce message et retourne UNIQUEMENT un objet JSON valide (aucun texte avant ou après).
+  await Promise.all(slugs.map(async (slug) => {
+    const data = await espnFetch(`${ESPN_BASE}/${slug}/scoreboard?dates=${todayESPN()}`);
+    for (const ev of data?.events ?? []) {
+      const comp  = ev.competitions?.[0];
+      if (comp?.status?.type?.state !== "in") continue;
+      const home  = comp?.competitors?.find((c: any) => c.homeAway === "home");
+      const away  = comp?.competitors?.find((c: any) => c.homeAway === "away");
+      const clock = comp?.status?.displayClock ?? "";
+      const league = data?.leagues?.[0]?.abbreviation ?? slug;
+      results.push(`[${league}] ${home?.team?.displayName ?? "?"} ${home?.score ?? 0}-${away?.score ?? 0} ${away?.team?.displayName ?? "?"} (${clock})`);
+    }
+  }));
 
-Message: "${message}"
+  return results.length ? `=== Scores Live ===\n${results.join("\n")}` : "Aucun match en direct en ce moment.";
+}
 
-Intents possibles:
-- "salutation" : bonjour, salut, hello, hi, slt, bjr, cc, hey, bonsoir, wesh, salam, yo, etc.
-- "nombre" : chiffre seul ou réponse à "combien de matchs"
-- "pronostics" : demande de pronostics, prédictions, conseils paris, analyse de matchs
-- "classement" : classement d'une ligue, tableau, standings
-- "scores_live" : scores en direct, résultats live, ce qui se passe maintenant
-- "programme" : matchs du jour, ce soir, demain, programme, calendrier
-- "equipe" : infos sur une équipe (forme, résultats, effectif)
-- "joueur" : infos sur un joueur (stats, buts, situation)
-- "actualites" : news foot, transferts, actualités, mercato
-- "h2h" : historique face-à-face entre deux équipes
-- "general" : toute autre question football (règles, histoire, records, etc.)
+/** Programme du jour */
+async function toolEspnSchedule(league?: string): Promise<string> {
+  const slugs = league
+    ? [LEAGUES[league.toLowerCase()] ?? league]
+    : ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1", "uefa.champions", "uefa.europa", "caf.nations", "fifa.world"];
 
-Champs à remplir selon l'intent:
-- league: slug ESPN ("eng.1"=Premier League, "esp.1"=LaLiga, "fra.1"=Ligue1, "ger.1"=Bundesliga, "ita.1"=SerieA, "uefa.champions"=UCL, "uefa.europa"=EL, "caf.nations"=CAN, "fifa.world"=CM)
-- team: nom de l'équipe mentionnée
-- team2: deuxième équipe (pour h2h)
-- player: nom du joueur mentionné
-- count: nombre de matchs (pour pronostics)
+  const lines: string[] = ["=== Programme du jour ==="];
 
-Réponds UNIQUEMENT avec le JSON, exemple:
-{"intent":"classement","league":"eng.1"}
-{"intent":"joueur","player":"Mbappé"}
-{"intent":"equipe","team":"PSG","league":"fra.1"}
-{"intent":"pronostics","count":5}
-{"intent":"salutation"}`;
+  await Promise.all(slugs.map(async (slug) => {
+    const data = await espnFetch(`${ESPN_BASE}/${slug}/scoreboard?dates=${todayESPN()}`);
+    const events: any[] = (data?.events ?? []).filter((e: any) =>
+      ["pre", "in"].includes(e.competitions?.[0]?.status?.type?.state)
+    );
+    if (!events.length) return;
+    const leagueName = data?.leagues?.[0]?.name ?? slug;
+    lines.push(`\n[${leagueName}]`);
+    for (const ev of events) {
+      const comp  = ev.competitions?.[0];
+      const state = comp?.status?.type?.state;
+      const home  = comp?.competitors?.find((c: any) => c.homeAway === "home");
+      const away  = comp?.competitors?.find((c: any) => c.homeAway === "away");
+      const time  = comp?.startDate ? fmtTime(comp.startDate) : "?";
+      const score = state === "in"
+        ? `${home?.score ?? 0}-${away?.score ?? 0} (LIVE)`
+        : time;
+      lines.push(`  ${score} — ${home?.team?.displayName ?? "?"} vs ${away?.team?.displayName ?? "?"}`);
+    }
+  }));
 
-  try {
-    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0,
-        max_tokens: 120,
-      }),
+  return lines.join("\n").slice(0, 2000) || "Aucun match programmé aujourd'hui.";
+}
+
+/** Actualités ESPN */
+async function toolEspnNews(): Promise<string> {
+  const data = await espnFetch(`${ESPN_BASE}/news?limit=8`);
+  const articles: any[] = data?.articles ?? [];
+  if (!articles.length) return "Impossible de charger les actualités ESPN.";
+
+  const lines = ["=== Actualités Football ==="];
+  articles.slice(0, 6).forEach((a, i) => {
+    const title = a.headline ?? a.title ?? "?";
+    const desc  = (a.description ?? a.summary ?? "").slice(0, 120);
+    lines.push(`\n${i + 1}. ${title}`);
+    if (desc) lines.push(`   ${desc}${desc.length >= 120 ? "..." : ""}`);
+  });
+  return lines.join("\n").slice(0, 2000);
+}
+
+/** Info équipe ESPN */
+async function toolEspnTeam(teamName: string): Promise<string> {
+  const slugs = ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1"];
+  for (const slug of slugs) {
+    const data = await espnFetch(`${ESPN_BASE}/${slug}/teams`);
+    const teams: any[] = data?.sports?.[0]?.leagues?.[0]?.teams ?? [];
+    const match = teams.find((t: any) => {
+      const name = (t.team?.displayName ?? t.team?.name ?? "").toLowerCase();
+      return name.includes(teamName.toLowerCase()) || teamName.toLowerCase().includes(name.split(" ")[0]);
     });
-    if (!r.ok) return { intent: "general" };
-    const data: any = await r.json();
-    const raw = data.choices?.[0]?.message?.content?.trim() ?? "{}";
-    const jsonStr = raw.match(/\{[\s\S]*\}/)?.[0] ?? "{}";
-    const parsed = JSON.parse(jsonStr);
+    if (match) {
+      const team = match.team;
+      const info = [
+        `=== ${team.displayName} ===`,
+        `Abréviation: ${team.abbreviation ?? "?"}`,
+        team.venue?.fullName ? `Stade: ${team.venue.fullName}` : "",
+        team.location ? `Ville: ${team.location}` : "",
+      ].filter(Boolean).join("\n");
 
-    // ── Validation + normalisation du schéma ──────────
-    const VALID_INTENTS = ["pronostics","classement","scores_live","programme","equipe","joueur","actualites","h2h","general","salutation","nombre"];
-    const intent = VALID_INTENTS.includes(parsed.intent) ? parsed.intent : "general";
-    const count  = typeof parsed.count === "number" && parsed.count >= 1 && parsed.count <= 10
-      ? Math.round(parsed.count)
-      : typeof parsed.count === "string" && /^\d+$/.test(parsed.count) && parseInt(parsed.count) >= 1
-      ? parseInt(parsed.count)
-      : undefined;
-    return {
-      intent,
-      league: typeof parsed.league === "string" ? parsed.league : undefined,
-      team  : typeof parsed.team   === "string" ? parsed.team   : undefined,
-      team2 : typeof parsed.team2  === "string" ? parsed.team2  : undefined,
-      player: typeof parsed.player === "string" ? parsed.player : undefined,
-      count,
-    } as Intent;
-  } catch {
-    return { intent: "general" };
+      // Récupère les stats de la saison
+      const teamData = await espnFetch(`${ESPN_BASE}/${slug}/teams/${team.id}`);
+      const record = teamData?.team?.record?.items?.[0];
+      const stats  = record?.stats ?? [];
+      const get    = (n: string) => stats.find((s: any) => s.name === n)?.value ?? "?";
+      const statsStr = `Saison: ${get("wins")}V-${get("ties")}N-${get("losses")}D`;
+
+      return `${info}\n${statsStr}`;
+    }
+    await sleep(100);
+  }
+  return `Équipe "${teamName}" non trouvée dans les principales ligues.`;
+}
+
+/** Recherche joueur ESPN */
+async function toolEspnPlayer(playerName: string): Promise<string> {
+  const data = await safeFetch(
+    `https://site.web.api.espn.com/apis/common/v3/sports/soccer/athletes?limit=5&search=${encodeURIComponent(playerName)}`
+  );
+  const athletes: any[] = data?.athletes ?? [];
+  if (!athletes.length) return `Joueur "${playerName}" non trouvé sur ESPN.`;
+
+  const p     = athletes[0];
+  const lines = [
+    `=== ${p.displayName ?? p.fullName ?? playerName} ===`,
+    p.position?.displayName ? `Poste: ${p.position.displayName}` : "",
+    p.team?.displayName     ? `Club: ${p.team.displayName}`       : "",
+    p.age                   ? `Âge: ${p.age} ans`                 : "",
+    p.nationality           ? `Nationalité: ${p.nationality}`      : "",
+    p.height                ? `Taille: ${p.height}`               : "",
+    p.weight                ? `Poids: ${p.weight}`                : "",
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
+/** Stats détaillées d'un match ESPN (pour H2H ou analyse) */
+async function toolEspnMatchDetails(homeTeam: string, awayTeam: string): Promise<string> {
+  // Cherche l'event du jour correspondant
+  const data = await espnFetch(`${ESPN_BASE}/all/scoreboard?dates=${todayESPN()}`);
+  const events: any[] = data?.events ?? [];
+
+  const match = events.find((ev: any) => {
+    const name = (ev.name ?? ev.shortName ?? "").toLowerCase();
+    return name.includes(homeTeam.toLowerCase()) || name.includes(awayTeam.toLowerCase());
+  });
+
+  if (!match) return `Match ${homeTeam} vs ${awayTeam} non trouvé sur ESPN aujourd'hui.`;
+
+  const summary = await espnFetch(`${ESPN_BASE}/all/summary?event=${match.id}`);
+  if (!summary) return "Détails du match non disponibles.";
+
+  const lastFive: any[] = summary.lastFiveGames ?? [];
+  const h2h    : any[] = summary.headToHeadGames ?? [];
+
+  const lines = [`=== ${match.name} ===`];
+
+  for (const team of lastFive.slice(0, 2)) {
+    const teamName = team.team?.displayName ?? "?";
+    const events5  = (team.events ?? []).slice(0, 5).map((ev: any) => {
+      const comp = ev.competitions?.[0] ?? ev;
+      const me   = comp?.competitors?.find((c: any) => c.team?.id === team.team?.id);
+      const opp  = comp?.competitors?.find((c: any) => c.team?.id !== team.team?.id);
+      if (!me || !opp) return "?";
+      const ms = parseInt(me.score ?? "0", 10);
+      const os = parseInt(opp.score ?? "0", 10);
+      return ms > os ? `V(${ms}-${os})` : ms === os ? `N(${ms}-${os})` : `D(${ms}-${os})`;
+    });
+    lines.push(`${teamName} forme récente: ${events5.join(" ")}`);
+  }
+
+  const h2hSummary = h2h.slice(0, 5).map((ev: any) => {
+    const comp = ev.competitions?.[0] ?? ev;
+    const home = comp?.competitors?.find((c: any) => c.homeAway === "home");
+    const away = comp?.competitors?.find((c: any) => c.homeAway === "away");
+    if (!home || !away) return "";
+    return `${home.team?.displayName ?? "?"} ${home.score ?? 0}-${away.score ?? 0} ${away.team?.displayName ?? "?"}`;
+  }).filter(Boolean);
+
+  if (h2hSummary.length) {
+    lines.push(`\nH2H récents:`);
+    lines.push(...h2hSummary);
+  }
+
+  return lines.join("\n").slice(0, 2000);
+}
+
+// ══════════════════════════════════════════════════════
+//  DÉFINITIONS OUTILS GROQ (OpenAI Function Calling)
+// ══════════════════════════════════════════════════════
+const GROQ_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "Recherche sur le web des infos football actuelles : transferts, résultats récents, mercato, classements, records, règles, actualités. Utilise cet outil si tu as besoin de données récentes ou si tu n'es pas sûr d'une information.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Requête de recherche (ex: 'meilleur buteur Premier League 2025', 'transfert Mbappé')" }
+        },
+        required: ["query"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "espn_standings",
+      description: "Classement officiel d'une ligue de football via ESPN. Utilise pour: 'classement Premier League', 'tableau Ligue 1', etc.",
+      parameters: {
+        type: "object",
+        properties: {
+          league: { type: "string", description: "Slug ESPN de la ligue. Options: eng.1 (Premier League), esp.1 (La Liga), fra.1 (Ligue 1), ger.1 (Bundesliga), ita.1 (Serie A), uefa.champions (UCL), uefa.europa (Europa League), caf.nations (CAN), fifa.world (CM)" }
+        },
+        required: ["league"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "espn_live_scores",
+      description: "Scores des matchs en direct en ce moment dans les principales ligues européennes.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "espn_schedule",
+      description: "Programme des matchs du jour (ou en cours) dans les ligues de football.",
+      parameters: {
+        type: "object",
+        properties: {
+          league: { type: "string", description: "Optionnel: slug ESPN pour filtrer une ligue spécifique. Laisser vide pour toutes les ligues." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "espn_news",
+      description: "Dernières actualités football ESPN : news récentes, résultats importants.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "espn_team",
+      description: "Informations sur une équipe de football : stade, ville, bilan saison.",
+      parameters: {
+        type: "object",
+        properties: {
+          team_name: { type: "string", description: "Nom de l'équipe (ex: 'PSG', 'Arsenal', 'Real Madrid')" }
+        },
+        required: ["team_name"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "espn_player",
+      description: "Profil d'un joueur de football : poste, club, âge, nationalité.",
+      parameters: {
+        type: "object",
+        properties: {
+          player_name: { type: "string", description: "Nom du joueur (ex: 'Mbappé', 'Bellingham', 'Haaland')" }
+        },
+        required: ["player_name"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "espn_match_details",
+      description: "Détails d'un match spécifique : forme récente des deux équipes, historique H2H. Utile pour analyser un match particulier.",
+      parameters: {
+        type: "object",
+        properties: {
+          home_team: { type: "string", description: "Nom de l'équipe à domicile" },
+          away_team: { type: "string", description: "Nom de l'équipe à l'extérieur" }
+        },
+        required: ["home_team", "away_team"]
+      }
+    }
+  }
+];
+
+// ══════════════════════════════════════════════════════
+//  EXÉCUTEUR D'OUTILS
+// ══════════════════════════════════════════════════════
+async function executeTool(name: string, args: Record<string, any>): Promise<string> {
+  try {
+    switch (name) {
+      case "web_search":        return await toolWebSearch(args.query ?? "");
+      case "espn_standings":    return await toolEspnStandings(args.league ?? "fra.1");
+      case "espn_live_scores":  return await toolEspnLiveScores();
+      case "espn_schedule":     return await toolEspnSchedule(args.league);
+      case "espn_news":         return await toolEspnNews();
+      case "espn_team":         return await toolEspnTeam(args.team_name ?? "");
+      case "espn_player":       return await toolEspnPlayer(args.player_name ?? "");
+      case "espn_match_details":return await toolEspnMatchDetails(args.home_team ?? "", args.away_team ?? "");
+      default: return `Outil inconnu: ${name}`;
+    }
+  } catch (e) {
+    return `Erreur lors de l'appel à l'outil ${name}: ${e}`;
   }
 }
 
 // ══════════════════════════════════════════════════════
-//  GROQ — Réponse général football (QA)
+//  AGENT GROQ — BOUCLE TOOL CALLING
 // ══════════════════════════════════════════════════════
-async function groqGeneralQA(chatId: number, question: string, context?: string): Promise<void> {
-  if (!GROQ_KEY) {
-    await send(chatId, "❓ Je n'ai pas pu trouver une réponse. Essaie une question plus précise !");
+
+async function groqAgentLoop(chatId: number, userMessage: string): Promise<void> {
+  keepTyping(chatId, 60_000);
+
+  const messages: any[] = [
+    {
+      role: "system",
+      content: `Tu es FootBot ⚽, un assistant football expert qui répond UNIQUEMENT en français.
+Tu as accès à des outils pour récupérer des données réelles et actuelles du football.
+
+RÈGLES:
+- Utilise les outils ESPN pour les données structurées (classements, scores, équipes, joueurs)
+- Utilise web_search pour les transferts, mercato, news, records, infos récentes
+- Tu peux appeler plusieurs outils en parallèle si nécessaire
+- Réponds de façon concise (max 300 mots) et bien formatée pour Telegram (HTML: <b>texte</b> pour gras, <i>texte</i> pour italique)
+- Utilise des emojis pertinents pour rendre la réponse vivante
+- Si tu n'es pas sûr d'une info, dis-le et cherche
+- Pour les pronostics/paris, utilise le pipeline dédié (l'utilisateur doit demander explicitement)`,
+    },
+    { role: "user", content: userMessage },
+  ];
+
+  const MAX_ITERATIONS = 4;
+
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    let resp: Response;
+    try {
+      resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model       : GROQ_MODEL,
+          messages,
+          tools       : GROQ_TOOLS,
+          tool_choice : "auto",
+          max_tokens  : 800,
+          temperature : 0.4,
+        }),
+      });
+    } catch {
+      await send(chatId, "❌ Erreur de connexion à l'IA. Réessaie dans un instant !");
+      return;
+    }
+
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "");
+      console.error("[GROQ ERROR]", resp.status, errText);
+      // Fallback sur le modèle rapide si quota dépassé
+      if (resp.status === 429 || resp.status === 503) {
+        await send(chatId, "⏳ Groq est surchargé en ce moment. Réessaie dans quelques secondes !");
+      } else {
+        await send(chatId, "❌ Erreur IA. Réessaie !");
+      }
+      return;
+    }
+
+    const data: any = await resp.json();
+    const choice     = data.choices?.[0];
+    if (!choice) { await send(chatId, "❌ Réponse IA vide."); return; }
+
+    const finishReason = choice.finish_reason;
+    const message      = choice.message;
+
+    // ── Réponse finale ───────────────────────────────
+    if (finishReason === "stop" || finishReason === "length") {
+      const answer = message?.content?.trim();
+      if (answer) await send(chatId, answer);
+      else await send(chatId, "⚽ Je n'ai pas pu formuler une réponse. Reformule ta question !");
+      return;
+    }
+
+    // ── Tool calls ───────────────────────────────────
+    if (finishReason === "tool_calls") {
+      const toolCalls: any[] = message?.tool_calls ?? [];
+      messages.push({ role: "assistant", content: message.content ?? null, tool_calls: toolCalls });
+
+      // Exécute tous les outils en parallèle
+      await Promise.all(toolCalls.map(async (call: any) => {
+        const toolName = call.function?.name ?? "";
+        let argsObj: Record<string, any> = {};
+        try { argsObj = JSON.parse(call.function?.arguments ?? "{}"); } catch { /* keep empty */ }
+
+        console.log(`[TOOL] ${toolName}`, JSON.stringify(argsObj));
+        const result = await executeTool(toolName, argsObj);
+
+        messages.push({
+          role        : "tool",
+          tool_call_id: call.id,
+          content     : result,
+        });
+      }));
+
+      continue; // prochaine itération avec les résultats d'outils
+    }
+
+    // Fin inattendue
+    await send(chatId, message?.content?.trim() ?? "⚽ Pas de réponse. Réessaie !");
     return;
   }
-  const typingLoop = keepTyping(chatId, 20000);
-  try {
-    const systemPrompt = `Tu es FootBot, un assistant football expert et passionné. 
-Tu réponds en français, de façon concise (max 300 mots), avec des emojis pertinents.
-Tu couvres tout : résultats, joueurs, équipes, règles, histoire, transferts, tactiques, records.
-Si tu mentionnes des stats ou faits, précise l'année/saison.
-${context ? `\nDonnées ESPN disponibles:\n${context}` : ""}`;
 
-    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: question },
-        ],
-        temperature: 0.7,
-        max_tokens: 400,
-      }),
-    });
-    if (r.ok) {
-      const data: any = await r.json();
-      const answer = data.choices?.[0]?.message?.content?.trim();
-      if (answer) { await send(chatId, answer); return; }
-    }
-  } catch { /* fallback */ }
-  await send(chatId, "⚽ Bonne question ! Mais je n'arrive pas à charger ma réponse là. Réessaie dans un instant.");
+  await send(chatId, "⚽ J'ai cherché mais je n'ai pas trouvé de réponse claire. Reformule ta question !");
 }
 
 // ══════════════════════════════════════════════════════
-//  HANDLER — CLASSEMENT
-// ══════════════════════════════════════════════════════
-async function handleClassement(chatId: number, leagueSlug: string, originalText: string): Promise<void> {
-  const slug = leagueSlug || detectLeague(originalText);
-  const typingLoop = keepTyping(chatId, 15000);
-
-  try {
-    const data = await espnFetch(`${ESPN_V2}/${slug}/standings`);
-    if (!data) {
-      await groqGeneralQA(chatId, originalText);
-      return;
-    }
-
-    // ── Standings parsing — parenthèses explicites pour éviter bug de précédence ──
-    // ESPN renvoie soit data.children[] (groupes) soit data.standings.entries (flat)
-    const hasChildren  = Array.isArray(data.children) && data.children.length > 0 && data.children[0]?.standings?.entries;
-    const hasFlat      = Array.isArray(data.standings?.entries) && data.standings.entries.length > 0;
-    const groups: any[] = hasChildren ? data.children : (hasFlat ? [data] : []);
-
-    let lines: string[] = [];
-    const leagueName = data.name ?? data.abbreviation ?? slug;
-    lines.push(`🏆 <b>Classement ${leagueName}</b>\n`);
-
-    const addEntries = (entries: any[], offset = 0) => {
-      entries.slice(0, 20).forEach((entry: any, i: number) => {
-        const team = entry.team?.displayName ?? entry.team?.shortDisplayName ?? "?";
-        const stats = entry.stats ?? [];
-        const pts  = stats.find((s: any) => s.name === "points")?.value ?? stats.find((s: any) => s.abbreviation === "PTS")?.value ?? "?";
-        const pld  = stats.find((s: any) => s.name === "gamesPlayed")?.value ?? stats.find((s: any) => s.abbreviation === "GP")?.value ?? "?";
-        const w    = stats.find((s: any) => s.name === "wins")?.value ?? stats.find((s: any) => s.abbreviation === "W")?.value ?? "";
-        const d    = stats.find((s: any) => s.name === "ties")?.value ?? stats.find((s: any) => s.abbreviation === "D")?.value ?? "";
-        const l    = stats.find((s: any) => s.name === "losses")?.value ?? stats.find((s: any) => s.abbreviation === "L")?.value ?? "";
-        const gd   = stats.find((s: any) => s.name === "goalDifference")?.value ?? "";
-        const pos  = offset + i + 1;
-        const medal = pos === 1 ? "🥇" : pos === 2 ? "🥈" : pos === 3 ? "🥉" : `${pos}.`;
-        const gdStr = gd !== "" ? ` (${Number(gd) > 0 ? "+" : ""}${gd})` : "";
-        lines.push(`${medal} <b>${team}</b> — ${pts}pts | ${pld}J ${w}V${d}N${l}D${gdStr}`);
-      });
-    };
-
-    if (!groups.length) {
-      await groqGeneralQA(chatId, originalText);
-      return;
-    }
-
-    if (hasChildren) {
-      for (const group of groups) {
-        if (group.name) lines.push(`\n<b>${group.name}</b>`);
-        addEntries(group.standings?.entries ?? []);
-      }
-    } else {
-      addEntries(data.standings.entries);
-    }
-
-    await send(chatId, lines.join("\n"));
-  } catch {
-    await groqGeneralQA(chatId, originalText);
-  }
-}
-
-// ══════════════════════════════════════════════════════
-//  HANDLER — SCORES LIVE
-// ══════════════════════════════════════════════════════
-async function handleScoresLive(chatId: number): Promise<void> {
-  const typingLoop = keepTyping(chatId, 10000);
-  try {
-    // Cherche dans les principales ligues
-    const slugs = ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1", "uefa.champions"];
-    const results: string[] = [];
-
-    await Promise.all(slugs.map(async (slug) => {
-      const data = await espnFetch(`${ESPN_BASE}/${slug}/scoreboard?dates=${todayESPN()}`);
-      const events: any[] = data?.events ?? [];
-      for (const ev of events) {
-        const comp  = ev.competitions?.[0];
-        const state = comp?.status?.type?.state;
-        if (state !== "in") continue;
-        const home  = comp?.competitors?.find((c: any) => c.homeAway === "home");
-        const away  = comp?.competitors?.find((c: any) => c.homeAway === "away");
-        const clock = comp?.status?.displayClock ?? comp?.status?.period ?? "";
-        results.push(`⚡ <b>${home?.team?.displayName ?? "?"} ${home?.score ?? 0} - ${away?.score ?? 0} ${away?.team?.displayName ?? "?"}</b> (${clock})`);
-      }
-    }));
-
-    if (!results.length) {
-      await send(chatId, "📺 Aucun match en direct en ce moment sur les principales ligues.\n\nTape <b>programme</b> pour voir les matchs du jour !");
-      return;
-    }
-    await send(chatId, `🔴 <b>SCORES EN DIRECT</b>\n\n${results.join("\n")}`);
-  } catch {
-    await send(chatId, "❌ Impossible de charger les scores live. Réessaie dans un instant !");
-  }
-}
-
-// ══════════════════════════════════════════════════════
-//  HANDLER — PROGRAMME DU JOUR
-// ══════════════════════════════════════════════════════
-async function handleProgramme(chatId: number): Promise<void> {
-  const typingLoop = keepTyping(chatId, 15000);
-  try {
-    const slugs = ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1", "uefa.champions", "uefa.europa"];
-    const byLeague: Record<string, string[]> = {};
-
-    await Promise.all(slugs.map(async (slug) => {
-      const data = await espnFetch(`${ESPN_BASE}/${slug}/scoreboard?dates=${todayESPN()}`);
-      const events: any[] = (data?.events ?? []).filter((e: any) =>
-        e.competitions?.[0]?.status?.type?.state === "pre"
-      );
-      if (!events.length) return;
-      const leagueName = data?.leagues?.[0]?.name ?? slug;
-      byLeague[leagueName] = events.map(ev => {
-        const comp = ev.competitions?.[0];
-        const home = comp?.competitors?.find((c: any) => c.homeAway === "home");
-        const away = comp?.competitors?.find((c: any) => c.homeAway === "away");
-        const time = comp?.startDate ? fmtTime(comp.startDate) : "?";
-        return `  ⏰ ${time} — ${home?.team?.displayName ?? "?"} vs ${away?.team?.displayName ?? "?"}`;
-      });
-    }));
-
-    if (!Object.keys(byLeague).length) {
-      await send(chatId, "📅 Aucun match prévu aujourd'hui dans les principales ligues européennes.");
-      return;
-    }
-
-    const lines = ["📅 <b>PROGRAMME DU JOUR</b>\n"];
-    for (const [league, matches] of Object.entries(byLeague)) {
-      lines.push(`🏆 <b>${league}</b>`);
-      lines.push(...matches);
-      lines.push("");
-    }
-    await send(chatId, lines.join("\n"));
-  } catch {
-    await send(chatId, "❌ Impossible de charger le programme. Réessaie !");
-  }
-}
-
-// ══════════════════════════════════════════════════════
-//  HANDLER — ÉQUIPE
-// ══════════════════════════════════════════════════════
-async function handleEquipe(chatId: number, teamName: string, originalText: string): Promise<void> {
-  if (!teamName) { await groqGeneralQA(chatId, originalText); return; }
-  const typingLoop = keepTyping(chatId, 15000);
-
-  try {
-    // Cherche l'équipe dans plusieurs ligues
-    const slugs = ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1", "uefa.champions"];
-    let found: any = null;
-    let foundSlug = "";
-
-    for (const slug of slugs) {
-      const data = await espnFetch(`${ESPN_BASE}/${slug}/teams`);
-      const teams: any[] = data?.sports?.[0]?.leagues?.[0]?.teams ?? [];
-      const match = teams.find((t: any) => {
-        const name = (t.team?.displayName ?? t.team?.name ?? "").toLowerCase();
-        return name.includes(teamName.toLowerCase()) || teamName.toLowerCase().includes(name.split(" ")[0].toLowerCase());
-      });
-      if (match) { found = match.team; foundSlug = slug; break; }
-      await sleep(150);
-    }
-
-    if (!found) {
-      // Groq répond sur l'équipe depuis ses connaissances
-      await groqGeneralQA(chatId, originalText);
-      return;
-    }
-
-    // Récupère les derniers matchs de l'équipe
-    const teamData = await espnFetch(`${ESPN_BASE}/${foundSlug}/teams/${found.id}`);
-    const record = teamData?.team?.record?.items?.[0];
-    const stats  = record?.stats ?? [];
-    const wins   = stats.find((s: any) => s.name === "wins")?.value ?? "?";
-    const losses = stats.find((s: any) => s.name === "losses")?.value ?? "?";
-    const ties   = stats.find((s: any) => s.name === "ties")?.value ?? "?";
-
-    const lines = [
-      `⚽ <b>${found.displayName}</b>`,
-      `🏆 ${found.league ?? foundSlug}`,
-      `📊 Saison : <b>${wins}V - ${ties}N - ${losses}D</b>`,
-    ];
-
-    if (found.color) lines.push(`🎨 Couleurs : #${found.color}`);
-    if (found.venue?.fullName) lines.push(`🏟️ Stade : ${found.venue.fullName}`);
-    if (found.location) lines.push(`📍 ${found.location}`);
-
-    await send(chatId, lines.join("\n"));
-
-    // Complète avec Groq
-    await groqGeneralQA(chatId, `Donne des infos actuelles sur l'équipe ${teamName} : forme récente, joueurs clés, entraîneur, et ce qu'il faut savoir.`, "");
-  } catch {
-    await groqGeneralQA(chatId, originalText);
-  }
-}
-
-// ══════════════════════════════════════════════════════
-//  HANDLER — JOUEUR
-// ══════════════════════════════════════════════════════
-async function handleJoueur(chatId: number, playerName: string, originalText: string): Promise<void> {
-  if (!playerName) { await groqGeneralQA(chatId, originalText); return; }
-  const typingLoop = keepTyping(chatId, 15000);
-
-  try {
-    // ESPN athlete search
-    const encoded = encodeURIComponent(playerName);
-    const data = await espnFetch(`https://site.web.api.espn.com/apis/common/v3/sports/soccer/athletes?limit=5&search=${encoded}`);
-    const athletes: any[] = data?.athletes ?? [];
-
-    if (!athletes.length) {
-      // Fallback Groq
-      await groqGeneralQA(chatId, originalText);
-      return;
-    }
-
-    const p = athletes[0];
-    const lines: string[] = [
-      `👤 <b>${p.displayName ?? p.fullName ?? playerName}</b>`,
-    ];
-    if (p.position?.displayName) lines.push(`🎯 Poste : ${p.position.displayName}`);
-    if (p.team?.displayName)     lines.push(`⚽ Club : ${p.team.displayName}`);
-    if (p.age)                   lines.push(`🎂 Âge : ${p.age} ans`);
-    if (p.nationality)           lines.push(`🌍 Nationalité : ${p.nationality}`);
-    if (p.height)                lines.push(`📏 Taille : ${p.height}`);
-    if (p.weight)                lines.push(`⚖️ Poids : ${p.weight}`);
-
-    await send(chatId, lines.join("\n"));
-
-    // Compléter avec stats Groq
-    await groqGeneralQA(chatId, `Parle-moi de ${playerName} : ses stats cette saison, sa forme actuelle, son profil et ce qu'il faut savoir sur lui.`, "");
-  } catch {
-    await groqGeneralQA(chatId, originalText);
-  }
-}
-
-// ══════════════════════════════════════════════════════
-//  HANDLER — ACTUALITÉS
-// ══════════════════════════════════════════════════════
-async function handleActualites(chatId: number): Promise<void> {
-  const typingLoop = keepTyping(chatId, 10000);
-  try {
-    const data = await espnFetch(`${ESPN_BASE}/news?limit=8`);
-    const articles: any[] = data?.articles ?? [];
-
-    if (!articles.length) {
-      await groqGeneralQA(chatId, "Quelles sont les dernières actualités du football mondial ? Mercato, résultats importants, ce qui fait l'actualité.");
-      return;
-    }
-
-    const lines = ["📰 <b>ACTU FOOT DU MOMENT</b>\n"];
-    articles.slice(0, 6).forEach((a, i) => {
-      const title    = a.headline ?? a.title ?? "?";
-      const desc     = a.description ?? a.summary ?? "";
-      const category = a.categories?.[0]?.description ?? "";
-      lines.push(`${i + 1}. <b>${title}</b>`);
-      if (desc) lines.push(`   ${desc.slice(0, 100)}${desc.length > 100 ? "..." : ""}`);
-      if (category) lines.push(`   🏷️ ${category}`);
-      lines.push("");
-    });
-
-    await send(chatId, lines.join("\n"));
-  } catch {
-    await groqGeneralQA(chatId, "Quelles sont les dernières actualités du football ? Transferts, résultats, mercato.");
-  }
-}
-
-// ══════════════════════════════════════════════════════
-//  HANDLER — FACE À FACE (H2H)
-// ══════════════════════════════════════════════════════
-async function handleH2H(chatId: number, team1: string, team2: string, originalText: string): Promise<void> {
-  const typingLoop = keepTyping(chatId, 8000);
-  // ESPN H2H via search d'événements — on passe par Groq pour l'historique général
-  await groqGeneralQA(chatId,
-    `Quel est l'historique face-à-face entre ${team1} et ${team2} ? Donne les derniers résultats, qui domine, et les faits marquants de cette rivalité.`,
-    ""
-  );
-}
-
-// ══════════════════════════════════════════════════════
-//  PIPELINE PRONOSTICS (conservé de v5)
+//  PIPELINE PRONOSTICS (ESPN stats complètes + IA)
 // ══════════════════════════════════════════════════════
 
 interface TeamStats {
@@ -556,7 +656,6 @@ interface TeamStats {
   cleanSheets : number;
   failedScore : number;
 }
-
 interface H2HStats {
   totalMatches : number;
   homeWinPct   : number;
@@ -565,7 +664,6 @@ interface H2HStats {
   over25H2H    : number;
   bttsH2H      : number;
 }
-
 interface MatchData {
   id       : string;
   homeTeam : string;
@@ -586,30 +684,22 @@ function extractFormESPN(events: any[], teamId: string): TeamStats {
   let wins5 = 0, draws5 = 0, losses5 = 0, scored5 = 0, conceded5 = 0;
   let over25Count = 0, bttsCount = 0, cleanSheets = 0, failedScore = 0;
   const formArr: string[] = [];
-
   for (const ev of events.slice(0, 5)) {
     const comp = ev.competitions?.[0] ?? ev;
-    const home = comp?.competitors?.find((c: any) => c.homeAway === "home" || c.team?.id === teamId);
-    const away = comp?.competitors?.find((c: any) => c.homeAway === "away" && c.team?.id !== teamId);
-    const me   = comp?.competitors?.find((c: any) => c.team?.id === teamId) ?? home;
-    const opp  = comp?.competitors?.find((c: any) => c.team?.id !== teamId) ?? away;
+    const me   = comp?.competitors?.find((c: any) => c.team?.id === teamId);
+    const opp  = comp?.competitors?.find((c: any) => c.team?.id !== teamId);
     if (!me || !opp) continue;
-
-    const myScore  = parseInt(me.score ?? "0", 10) || 0;
-    const oppScore = parseInt(opp.score ?? "0", 10) || 0;
-    scored5   += myScore;
-    conceded5 += oppScore;
-    const total = myScore + oppScore;
-    if (total > 2.5)  { over25Count++; }
-    if (myScore > 0 && oppScore > 0) bttsCount++;
-    if (oppScore === 0) cleanSheets++;
-    if (myScore === 0)  failedScore++;
-
-    if (me.winner === true || myScore > oppScore)  { wins5++;  formArr.push("V"); }
-    else if (myScore === oppScore)                  { draws5++; formArr.push("N"); }
-    else                                            { losses5++;formArr.push("D"); }
+    const ms = parseInt(me.score ?? "0", 10) || 0;
+    const os = parseInt(opp.score ?? "0", 10) || 0;
+    scored5 += ms; conceded5 += os;
+    if (ms + os > 2.5) over25Count++;
+    if (ms > 0 && os > 0) bttsCount++;
+    if (os === 0) cleanSheets++;
+    if (ms === 0) failedScore++;
+    if (me.winner === true || ms > os) { wins5++;  formArr.push("V"); }
+    else if (ms === os)                { draws5++; formArr.push("N"); }
+    else                               { losses5++;formArr.push("D"); }
   }
-
   const played = wins5 + draws5 + losses5 || 1;
   return {
     form5: formArr.join("-") || "-",
@@ -622,7 +712,6 @@ function extractFormESPN(events: any[], teamId: string): TeamStats {
 
 function extractH2HESPN(h2hGames: any[], homeId: string): H2HStats {
   let total = 0, homeWins = 0, awayWins = 0, draws = 0, over25 = 0, btts = 0;
-
   for (const ev of h2hGames.slice(0, 10)) {
     const comp = ev.competitions?.[0] ?? ev;
     const home = comp?.competitors?.find((c: any) => c.homeAway === "home");
@@ -631,116 +720,89 @@ function extractH2HESPN(h2hGames: any[], homeId: string): H2HStats {
     total++;
     const hs = parseInt(home.score ?? "0", 10) || 0;
     const as_ = parseInt(away.score ?? "0", 10) || 0;
-    if (hs > as_) { (home.team?.id === homeId ? homeWins++ : awayWins++); }
-    else if (as_ > hs) { (away.team?.id === homeId ? homeWins++ : awayWins++); }
+    if (hs > as_) { home.team?.id === homeId ? homeWins++ : awayWins++; }
+    else if (as_ > hs) { away.team?.id === homeId ? homeWins++ : awayWins++; }
     else draws++;
     if (hs + as_ > 2.5) over25++;
     if (hs > 0 && as_ > 0) btts++;
   }
-
   return {
-    totalMatches : total,
-    homeWinPct   : total ? Math.round((homeWins / total) * 100) : 50,
-    awayWinPct   : total ? Math.round((awayWins / total) * 100) : 50,
-    drawPct      : total ? Math.round((draws / total) * 100) : 25,
-    over25H2H    : over25,
-    bttsH2H      : btts,
+    totalMatches: total,
+    homeWinPct  : total ? Math.round((homeWins / total) * 100) : 50,
+    awayWinPct  : total ? Math.round((awayWins / total) * 100) : 50,
+    drawPct     : total ? Math.round((draws / total) * 100) : 25,
+    over25H2H   : over25,
+    bttsH2H     : btts,
   };
 }
 
 async function scrapeMatchESPN(event: any): Promise<MatchData | null> {
   try {
-    const comp    = event.competitions?.[0];
-    const homeC   = comp?.competitors?.find((c: any) => c.homeAway === "home");
-    const awayC   = comp?.competitors?.find((c: any) => c.homeAway === "away");
+    const comp  = event.competitions?.[0];
+    const homeC = comp?.competitors?.find((c: any) => c.homeAway === "home");
+    const awayC = comp?.competitors?.find((c: any) => c.homeAway === "away");
     if (!homeC || !awayC) return null;
-
     const homeTeam = homeC.team?.displayName ?? "?";
     const awayTeam = awayC.team?.displayName ?? "?";
     const homeId   = homeC.team?.id ?? "";
     const awayId   = awayC.team?.id ?? "";
-    const league   = event.league?.name ?? event.competitions?.[0]?.notes?.[0]?.headline ?? "Football";
+    const league   = event.league?.name ?? comp?.notes?.[0]?.headline ?? "Football";
     const kickoff  = comp?.startDate ? fmtTime(comp.startDate) : "?";
-
-    const summary = await espnFetch(`${ESPN_BASE}/all/summary?event=${event.id}`);
+    const summary  = await espnFetch(`${ESPN_BASE}/all/summary?event=${event.id}`);
     if (!summary) return null;
-
     await sleep(300);
-
     const lastFive: any[] = summary.lastFiveGames ?? [];
     const h2hData : any[] = summary.headToHeadGames ?? [];
     const oddsArr : any[] = summary.pickcenter ?? summary.odds ?? [];
-
-    const homeFormData = lastFive.find((t: any) => t.team?.id === homeId);
-    const awayFormData = lastFive.find((t: any) => t.team?.id === awayId);
-
-    const homeStats = extractFormESPN(homeFormData?.events ?? [], homeId);
-    const awayStats = extractFormESPN(awayFormData?.events ?? [], awayId);
-
+    const homeStats = extractFormESPN(lastFive.find((t: any) => t.team?.id === homeId)?.events ?? [], homeId);
+    const awayStats = extractFormESPN(lastFive.find((t: any) => t.team?.id === awayId)?.events ?? [], awayId);
     if (homeStats.wins5 + homeStats.draws5 + homeStats.losses5 < 1 &&
-        awayStats.wins5 + awayStats.draws5 + awayStats.losses5 < 1) {
-      return null;
-    }
-
-    const h2h = extractH2HESPN(h2hData, homeId);
-
-    const odds    = oddsArr[0];
-    const overUnder = odds?.overUnder ?? 2.5;
-    const homeML    = odds?.homeTeamOdds?.moneyLine ?? 0;
-    const awayML    = odds?.awayTeamOdds?.moneyLine ?? 0;
-
-    return { id: event.id, homeTeam, awayTeam, homeId, awayId, league, kickoff, homeStats, awayStats, h2h, overUnder, homeML, awayML };
-  } catch (e) {
-    console.error("[SCRAPE ERROR]", e);
-    return null;
-  }
+        awayStats.wins5 + awayStats.draws5 + awayStats.losses5 < 1) return null;
+    const h2h       = extractH2HESPN(h2hData, homeId);
+    const odds      = oddsArr[0];
+    return {
+      id: event.id, homeTeam, awayTeam, homeId, awayId, league, kickoff,
+      homeStats, awayStats, h2h,
+      overUnder: odds?.overUnder ?? 2.5,
+      homeML   : odds?.homeTeamOdds?.moneyLine ?? 0,
+      awayML   : odds?.awayTeamOdds?.moneyLine ?? 0,
+    };
+  } catch (e) { console.error("[SCRAPE]", e); return null; }
 }
 
-async function scrapeUpcomingMatches(count: number, onProgress: (msg: string) => Promise<void>): Promise<MatchData[]> {
+async function scrapeUpcomingMatches(count: number, onProgress: (m: string) => Promise<void>): Promise<MatchData[]> {
   const data = await espnFetch(`${ESPN_BASE}/all/scoreboard?dates=${todayESPN()}`);
-  const candidates: any[] = (data?.events ?? [])
-    .filter((e: any) => e.competitions?.[0]?.status?.type?.state === "pre");
-
-  if (!candidates.length) return [];
-
+  const candidates = (data?.events ?? []).filter((e: any) => e.competitions?.[0]?.status?.type?.state === "pre");
   const results: MatchData[] = [];
   for (const event of candidates) {
     if (results.length >= count) break;
     await onProgress(`🔍 ${results.length + 1}/${count} — <b>${event.name ?? "..."}</b>`);
-    const match = await scrapeMatchESPN(event);
-    if (match) results.push(match);
+    const m = await scrapeMatchESPN(event);
+    if (m) results.push(m);
   }
   return results;
 }
 
 function computeSignals(m: MatchData): Record<string, number> {
-  const h = m.homeStats;
-  const a = m.awayStats;
-  const x = m.h2h;
-
+  const h = m.homeStats, a = m.awayStats, x = m.h2h;
   const homeDom = (h.wins5 * 3 + h.draws5) / Math.max((h.wins5 + h.draws5 + h.losses5) * 3, 1);
   const awayDom = (a.wins5 * 3 + a.draws5) / Math.max((a.wins5 + a.draws5 + a.losses5) * 3, 1);
-
   let homeProb = 33, awayProb = 33;
   if (m.homeML > 0) homeProb = Math.round(100 / (m.homeML / 100 + 1));
   else if (m.homeML < 0) homeProb = Math.round(Math.abs(m.homeML) / (Math.abs(m.homeML) + 100) * 100);
   if (m.awayML > 0) awayProb = Math.round(100 / (m.awayML / 100 + 1));
   else if (m.awayML < 0) awayProb = Math.round(Math.abs(m.awayML) / (Math.abs(m.awayML) + 100) * 100);
-
   const homeWin = Math.round(homeDom * 50 + (x.homeWinPct / 100) * 25 + (homeProb / 100) * 25);
   const awayWin = Math.round(awayDom * 50 + (x.awayWinPct / 100) * 25 + (awayProb / 100) * 25);
   const draw    = Math.round(x.drawPct * 0.6 + 15);
-
-  const over25total = (h.over25Count + a.over25Count) / Math.max((h.wins5 + h.draws5 + h.losses5 + a.wins5 + a.draws5 + a.losses5), 1);
+  const over25total = (h.over25Count + a.over25Count) / Math.max(h.wins5+h.draws5+h.losses5+a.wins5+a.draws5+a.losses5, 1);
   const overOULine  = m.overUnder <= 2.0 ? 10 : m.overUnder >= 3.0 ? -10 : 0;
   const over25 = Math.round(over25total * 80 + (x.over25H2H / Math.max(x.totalMatches, 1)) * 20 + overOULine);
-
-  const homeSR = 1 - h.failedScore / Math.max(h.wins5 + h.draws5 + h.losses5, 1);
-  const awaySR = 1 - a.failedScore / Math.max(a.wins5 + a.draws5 + a.losses5, 1);
-  const homeCR = 1 - h.cleanSheets / Math.max(h.wins5 + h.draws5 + h.losses5, 1);
-  const awayCR = 1 - a.cleanSheets / Math.max(a.wins5 + a.draws5 + a.losses5, 1);
+  const homeSR = 1 - h.failedScore / Math.max(h.wins5+h.draws5+h.losses5, 1);
+  const awaySR = 1 - a.failedScore / Math.max(a.wins5+a.draws5+a.losses5, 1);
+  const homeCR = 1 - h.cleanSheets / Math.max(h.wins5+h.draws5+h.losses5, 1);
+  const awayCR = 1 - a.cleanSheets / Math.max(a.wins5+a.draws5+a.losses5, 1);
   const btts   = Math.round(((homeSR * awayCR + awaySR * homeCR) / 2) * 70 + (x.bttsH2H / Math.max(x.totalMatches, 1)) * 30);
-
   return {
     homeWin: Math.min(Math.max(homeWin, 5), 90),
     awayWin: Math.min(Math.max(awayWin, 5), 90),
@@ -753,136 +815,98 @@ function computeSignals(m: MatchData): Record<string, number> {
 }
 
 function buildStatsBlock(m: MatchData): string {
-  const h   = m.homeStats;
-  const a   = m.awayStats;
-  const x   = m.h2h;
-  const sig = computeSignals(m);
-
+  const h = m.homeStats, a = m.awayStats, x = m.h2h, sig = computeSignals(m);
   return [
     `MATCH: ${m.homeTeam} vs ${m.awayTeam} [${m.league}] ${m.kickoff}`,
-    `HOME(${m.homeTeam}): forme=${h.form5} V${h.wins5}N${h.draws5}D${h.losses5} +${h.avgScored}/-${h.avgConceded} Over25:${h.over25Count} BTTS:${h.bttsCount} CS:${h.cleanSheets}`,
-    `AWAY(${m.awayTeam}): forme=${a.form5} V${a.wins5}N${a.draws5}D${a.losses5} +${a.avgScored}/-${a.avgConceded} Over25:${a.over25Count} BTTS:${a.bttsCount} CS:${a.cleanSheets}`,
-    `H2H: ${x.totalMatches}matchs homeWin=${x.homeWinPct}% draw=${x.drawPct}% awayWin=${x.awayWinPct}% Over25:${x.over25H2H} BTTS:${x.bttsH2H}`,
+    `HOME: forme=${h.form5} V${h.wins5}N${h.draws5}D${h.losses5} +${h.avgScored}/-${h.avgConceded} Over25:${h.over25Count} BTTS:${h.bttsCount} CS:${h.cleanSheets}`,
+    `AWAY: forme=${a.form5} V${a.wins5}N${a.draws5}D${a.losses5} +${a.avgScored}/-${a.avgConceded} Over25:${a.over25Count} BTTS:${a.bttsCount} CS:${a.cleanSheets}`,
+    `H2H: ${x.totalMatches}M homeWin=${x.homeWinPct}% draw=${x.drawPct}% awayWin=${x.awayWinPct}% Over25:${x.over25H2H} BTTS:${x.bttsH2H}`,
     `ODDS: homeML=${m.homeML} awayML=${m.awayML} OU=${m.overUnder}`,
-    `SIGNALS: homeWin=${sig.homeWin} awayWin=${sig.awayWin} draw=${sig.draw} over25=${sig.over25} under25=${sig.under25} btts=${sig.btts} noBtts=${sig.noBtts}`,
+    `SIG: homeWin=${sig.homeWin} awayWin=${sig.awayWin} draw=${sig.draw} o25=${sig.over25} u25=${sig.under25} btts=${sig.btts} noBtts=${sig.noBtts}`,
   ].join("\n");
 }
 
 function localFallback(m: MatchData): { market: string; choice: string; confidence: number; reason: string } {
   const sig = computeSignals(m);
   const candidates = [
-    { market: "1X2", choice: `Victoire ${m.homeTeam}`, confidence: sig.homeWin,  key: "homeWin" },
-    { market: "1X2", choice: `Victoire ${m.awayTeam}`, confidence: sig.awayWin,  key: "awayWin" },
-    { market: "1X2", choice: "Match nul",               confidence: sig.draw,     key: "draw" },
-    { market: "Plus/Moins buts", choice: "Plus de 2.5 buts",   confidence: sig.over25,  key: "over25" },
-    { market: "Plus/Moins buts", choice: "Moins de 2.5 buts",  confidence: sig.under25, key: "under25" },
-    { market: "Les deux équipes marquent", choice: "Oui",       confidence: sig.btts,    key: "btts" },
-    { market: "Les deux équipes marquent", choice: "Non",       confidence: sig.noBtts,  key: "noBtts" },
+    { market: "1X2",                        choice: `Victoire ${m.homeTeam}`, confidence: sig.homeWin, key: "homeWin" },
+    { market: "1X2",                        choice: `Victoire ${m.awayTeam}`, confidence: sig.awayWin, key: "awayWin" },
+    { market: "1X2",                        choice: "Match nul",              confidence: sig.draw,    key: "draw" },
+    { market: "Plus/Moins buts",            choice: "Plus de 2.5 buts",       confidence: sig.over25,  key: "over25" },
+    { market: "Plus/Moins buts",            choice: "Moins de 2.5 buts",      confidence: sig.under25, key: "under25" },
+    { market: "Les deux équipes marquent",  choice: "Oui",                    confidence: sig.btts,    key: "btts" },
+    { market: "Les deux équipes marquent",  choice: "Non",                    confidence: sig.noBtts,  key: "noBtts" },
   ];
   const best = candidates.reduce((a, b) => a.confidence >= b.confidence ? a : b);
   const h = m.homeStats, a_ = m.awayStats, x = m.h2h;
   const reasons: Record<string, string> = {
-    homeWin : `${m.homeTeam} forme ${h.form5}, ${h.wins5}V/5, cotes favorisent domicile`,
-    awayWin : `${m.awayTeam} forme ${a_.form5}, ${a_.wins5}V/5, cotes favorisent extérieur`,
-    draw    : `H2H ${x.drawPct}% nuls, équipes équilibrées`,
-    over25  : `Moy. buts dom. ${h.avgScored}/${h.avgConceded}, ext. ${a_.avgScored}/${a_.avgConceded}`,
-    under25 : `Défenses solides, ${h.cleanSheets}/${a_.cleanSheets} CS récents`,
-    btts    : `Les deux équipes ont marqué dans ${(h.bttsCount + a_.bttsCount) / 2}/5 matchs récents`,
-    noBtts  : `CS fréquents : dom. ${h.cleanSheets}/5, ext. ${a_.cleanSheets}/5`,
+    homeWin : `${m.homeTeam} forme ${h.form5}, ${h.wins5}V/5`, awayWin: `${m.awayTeam} forme ${a_.form5}, ${a_.wins5}V/5`,
+    draw    : `H2H ${x.drawPct}% nuls`,                        over25 : `Moy. buts ${h.avgScored}+${a_.avgScored}`,
+    under25 : `CS dom.${h.cleanSheets}/5 ext.${a_.cleanSheets}/5`, btts: `BTTS ${(h.bttsCount+a_.bttsCount)/2}/5`,
+    noBtts  : `CS fréquents ${h.cleanSheets}+${a_.cleanSheets}`,
   };
   return { ...best, reason: reasons[best.key] ?? "" };
 }
 
 async function analyseWithAI(m: MatchData): Promise<{ market: string; choice: string; confidence: number; reason: string }> {
   if (!GROQ_KEY) return localFallback(m);
-  const statsBlock = buildStatsBlock(m);
-
-  const prompt = `Tu es un analyste football expert. Voici les données d'un match.
-${statsBlock}
-
-Retourne UNIQUEMENT un JSON valide :
-{"market":"Plus/Moins buts","choice":"Plus de 2.5 buts","confidence":72,"reason":"Over25 fréquent (7/10), moy. buts ESPN 3.1"}
-
-Champs obligatoires:
-- market: "1X2" | "Plus/Moins buts" | "Les deux équipes marquent"
-- choice: option la plus probable
-- confidence: nombre entre 51 et 89
-- reason: une phrase courte avec les stats clés
-
-Choisis le marché avec le signal le plus fort et le plus fiable. Réponds UNIQUEMENT avec le JSON.`;
-
+  const prompt = `Analyste football expert. Stats du match:\n${buildStatsBlock(m)}\n\nRetourne UNIQUEMENT ce JSON:\n{"market":"Plus/Moins buts","choice":"Plus de 2.5 buts","confidence":72,"reason":"Over25 7/10, moy. 3.1 buts"}\n\nMarché le plus fiable. Confiance 51-89. JSON uniquement.`;
   try {
     const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { "Authorization": `Bearer ${GROQ_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.2,
-        max_tokens: 150,
-      }),
+      body: JSON.stringify({ model: GROQ_FAST, messages: [{ role: "user", content: prompt }], temperature: 0.2, max_tokens: 150 }),
     });
     if (!r.ok) return localFallback(m);
     const data: any = await r.json();
-    const raw     = data.choices?.[0]?.message?.content?.trim() ?? "{}";
-    const jsonStr = raw.match(/\{[\s\S]*?\}/)?.[0] ?? "{}";
-    const parsed  = JSON.parse(jsonStr);
+    const raw    = data.choices?.[0]?.message?.content?.trim() ?? "{}";
+    const parsed = JSON.parse(raw.match(/\{[\s\S]*?\}/)?.[0] ?? "{}");
     if (!parsed.market || !parsed.choice || !parsed.confidence) return localFallback(m);
     return parsed;
-  } catch {
-    return localFallback(m);
-  }
+  } catch { return localFallback(m); }
 }
 
 function confBar(pct: number): string {
-  const filled = Math.round(pct / 10);
-  return "🟩".repeat(filled) + "⬜".repeat(10 - filled) + ` ${pct}%`;
+  const f = Math.round(pct / 10);
+  return "🟩".repeat(f) + "⬜".repeat(10 - f) + ` ${pct}%`;
 }
 
 async function runPipeline(chatId: number, count: number): Promise<void> {
-  const safeCount = Math.max(1, Math.min(10, count));
-  await typing(chatId);
-
-  const typingLoop = keepTyping(chatId, 120_000);
-
-  const matches = await scrapeUpcomingMatches(safeCount, async (msg) => {
-    await send(chatId, msg);
-  });
-
+  const n = Math.max(1, Math.min(10, count));
+  keepTyping(chatId, 120_000);
+  const matches = await scrapeUpcomingMatches(n, async (msg) => { await send(chatId, msg); });
   if (!matches.length) {
-    await send(chatId, "😕 Aucun match à venir trouvé aujourd'hui sur ESPN. Réessaie plus tard ou tape <b>programme</b> pour voir les matchs disponibles.");
+    await send(chatId, "😕 Aucun match à venir trouvé aujourd'hui. Tape <b>programme</b> pour voir les matchs disponibles.");
     return;
   }
-
   await send(chatId, `🧠 Analyse IA en cours pour <b>${matches.length} match(s)</b>...`);
-
   const pronos: string[] = [];
   for (let i = 0; i < matches.length; i++) {
-    const m   = matches[i];
-    const res = await analyseWithAI(m);
+    const m = matches[i], res = await analyseWithAI(m);
     pronos.push(
-      `${i + 1}. ⚽ <b>${m.homeTeam} vs ${m.awayTeam}</b>\n` +
+      `${i+1}. ⚽ <b>${m.homeTeam} vs ${m.awayTeam}</b>\n` +
       `👉 ${res.market} → <b>${res.choice}</b>\n` +
       confBar(res.confidence) + "\n" +
       `📊 ${res.reason}`
     );
   }
-
-  const header = `⚽ <b>PRONOSTICS DU JOUR — ${matches.length} match(s)</b>\n━━━━━━━━━━━━━━━━━━━━\n\n`;
-  const footer = `\n━━━━━━━━━━━━━━━━━━━━\n⚠️ <i>Analyse statistique ESPN + IA. Jouer responsable.</i>`;
-  await send(chatId, header + pronos.join("\n\n") + footer);
+  await send(chatId,
+    `⚽ <b>PRONOSTICS DU JOUR — ${matches.length} match(s)</b>\n━━━━━━━━━━━━━━━━━━━━\n\n` +
+    pronos.join("\n\n") +
+    `\n━━━━━━━━━━━━━━━━━━━━\n⚠️ <i>Analyse ESPN + IA. Jouer responsable.</i>`
+  );
 }
 
 // ══════════════════════════════════════════════════════
-//  HANDLE — ROUTEUR UNIVERSEL
+//  HANDLE — ROUTEUR PRINCIPAL
 // ══════════════════════════════════════════════════════
 
-const GREETING = /^(bonjour|bonsoir|salut|hello|hi|hey|cc|coucou|yo|wesh|salam|bjr|bj|slt|ola|hola|gm|good\s?morning|good\s?evening|good\s?night|bonne\s?nuit|soir|jour|matin|bonne\s?journée)[\s!.,?]*$/i;
+const GREETING = /^(bonjour|bonsoir|salut|hello|hi|hey|cc|coucou|yo|wesh|salam|bjr|bj|slt|ola|hola|gm|good\s?morning|bonne\s?nuit|bonne\s?journée|soir|jour|matin)[\s!.,?]*$/i;
 
 const GREET_REPLIES = [
-  "👋 Salut ! Je suis FootBot, ton assistant football IA.\n\nTu peux me demander :\n• 📊 <b>Pronostics</b> pour les matchs du jour\n• 🏆 <b>Classement</b> d'une ligue\n• ⚡ <b>Scores live</b> en ce moment\n• 📅 <b>Programme</b> du jour\n• 👤 Infos sur un <b>joueur</b>\n• ⚽ Infos sur une <b>équipe</b>\n• 📰 <b>Actualités</b> foot\n• ❓ N'importe quelle <b>question football</b> !",
-  "⚽ Hey ! Je suis là pour tout ce qui touche au foot.\n\nDemande-moi ce que tu veux : classement, scores, actu, pronostics, infos joueur... Je suis là !",
-  "🔥 Salut ! Prêt à parler foot ?\n\nEnvoie-moi ta question — pronostics, classement Ligue 1, qui est le meilleur buteur, scores live... Je m'occupe de tout !",
+  "👋 Salut ! Je suis <b>FootBot ⚽</b>, ton assistant football IA.\n\nPose-moi <b>n'importe quelle question football</b> en langage naturel :\n\n• <i>\"Classement Premier League ?\"</i>\n• <i>\"Scores live ce soir\"</i>\n• <i>\"Stats de Mbappé\"</i>\n• <i>\"Transferts du mercato\"</i>\n• <i>\"Donne-moi 5 pronostics\"</i>\n• <i>\"Qui est le meilleur buteur de l'histoire ?\"</i>\n\nJe cherche les données réelles et je te réponds 🔥",
+  "⚽ Hey ! Prêt à parler foot ?\n\nJe peux répondre à <b>tout</b> : scores live, classements, actu, transferts, joueurs, équipes, règles, histoire... Pose ta question !",
+  "🔥 Salut ! Je suis FootBot, ton expert football IA.\n\nEnvoie ta question, je cherche les vraies données et je te réponds directement !",
 ];
 
 function extractNumber(text: string): number | null {
@@ -890,11 +914,14 @@ function extractNumber(text: string): number | null {
   return m ? parseInt(m[1], 10) : null;
 }
 
+// Détection rapide de l'intention pronostics (sans appel IA)
+const PRONOS_REGEX = /\b(prono|pronostic|pari|paris|analyse|predic|tip|bet|coup\s?sûr|mise|cote)\b/i;
+
 async function handle(chatId: number, raw: string): Promise<void> {
   const lower = raw.toLowerCase().trim();
   const phase = await loadPhase(chatId);
 
-  // ── Si on attend un chiffre de confirmation ──────
+  // ── Chiffre en attente de confirmation ───────────
   if (phase === "awaiting_count") {
     const num = extractNumber(raw);
     if (num !== null) {
@@ -902,99 +929,44 @@ async function handle(chatId: number, raw: string): Promise<void> {
       await runPipeline(chatId, num);
       return;
     }
-    // sinon on continue le routage normal (l'utilisateur a posé une autre question)
     await savePhase(chatId, "idle");
   }
 
-  // ── Salutation simple rapide ─────────────────────
+  // ── Salutation rapide (sans Groq) ────────────────
   if (GREETING.test(lower)) {
     await send(chatId, GREET_REPLIES[Math.floor(Math.random() * GREET_REPLIES.length)]);
     return;
   }
 
-  // ── Commandes slash directes ─────────────────────
+  // ── Commandes slash de base ──────────────────────
   if (lower.startsWith("/start") || lower.startsWith("/help") || lower === "/") {
     await send(chatId, GREET_REPLIES[0]);
     return;
   }
-  if (lower.startsWith("/live") || lower === "live") {
-    await handleScoresLive(chatId); return;
-  }
-  if (lower.startsWith("/programme") || lower === "programme" || lower === "matchs du jour" || lower === "aujourd'hui") {
-    await handleProgramme(chatId); return;
-  }
-  if (lower.startsWith("/actu") || lower === "actualités" || lower === "actualites" || lower === "news") {
-    await handleActualites(chatId); return;
-  }
 
-  // ── Détection d'intention via Groq ───────────────
-  await typing(chatId);
-  const intent = await detectIntent(raw);
-  console.log("[INTENT]", JSON.stringify(intent));
-
-  switch (intent.intent) {
-
-    case "salutation":
-      await send(chatId, GREET_REPLIES[Math.floor(Math.random() * GREET_REPLIES.length)]);
-      break;
-
-    case "nombre": {
-      const num = intent.count ?? extractNumber(raw);
-      if (num !== null) {
-        await savePhase(chatId, "idle");
-        await runPipeline(chatId, num);
-      } else {
-        await savePhase(chatId, "awaiting_count");
-        await send(chatId, "⚽ Combien de matchs tu veux analyser ? (1 à 10)");
-      }
-      break;
+  // ── Pronostics avec nombre (bypass Groq) ─────────
+  if (PRONOS_REGEX.test(lower)) {
+    const num = extractNumber(raw);
+    if (num !== null) {
+      await runPipeline(chatId, num);
+    } else {
+      await savePhase(chatId, "awaiting_count");
+      await send(chatId, "⚽ Combien de matchs tu veux que j'analyse ? (1 à 10)");
     }
-
-    case "pronostics": {
-      const num = intent.count ?? extractNumber(raw);
-      if (num !== null) {
-        await savePhase(chatId, "idle");
-        await runPipeline(chatId, num);
-      } else {
-        await savePhase(chatId, "awaiting_count");
-        await send(chatId, "⚽ Combien de matchs tu veux que j'analyse ? (1 à 10)");
-      }
-      break;
-    }
-
-    case "classement":
-      await handleClassement(chatId, intent.league ?? detectLeague(raw), raw);
-      break;
-
-    case "scores_live":
-      await handleScoresLive(chatId);
-      break;
-
-    case "programme":
-      await handleProgramme(chatId);
-      break;
-
-    case "equipe":
-      await handleEquipe(chatId, intent.team ?? "", raw);
-      break;
-
-    case "joueur":
-      await handleJoueur(chatId, intent.player ?? "", raw);
-      break;
-
-    case "actualites":
-      await handleActualites(chatId);
-      break;
-
-    case "h2h":
-      await handleH2H(chatId, intent.team ?? "", intent.team2 ?? "", raw);
-      break;
-
-    default:
-      // Question football générale → Groq répond directement
-      await groqGeneralQA(chatId, raw);
-      break;
+    return;
   }
+
+  // ── Chiffre seul = pronostics ─────────────────────
+  if (/^\d+$/.test(lower.trim())) {
+    const num = extractNumber(raw);
+    if (num !== null) {
+      await runPipeline(chatId, num);
+      return;
+    }
+  }
+
+  // ── Tout le reste → Agent Groq avec outils ───────
+  await groqAgentLoop(chatId, raw);
 }
 
 // ══════════════════════════════════════════════════════
@@ -1002,8 +974,7 @@ async function handle(chatId: number, raw: string): Promise<void> {
 // ══════════════════════════════════════════════════════
 Deno.serve(async (req) => {
   if (req.method !== "POST")
-    return new Response("FootBot v6 ⚽ Assistant Football Universel — ESPN + IA Groq");
-
+    return new Response("FootBot v7 ⚽ Agent IA avec Tool Calling — ESPN + DuckDuckGo + Groq");
   try {
     const b = await req.json();
     const m = b?.message;
