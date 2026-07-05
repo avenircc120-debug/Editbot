@@ -12,14 +12,15 @@
 // ═══════════════════════════════════════════════════════════════════
 
 // ── Variables d'environnement ─────────────────────────────────────
-const TG_TOKEN   = Deno.env.get("TELEGRAM_BOT_TOKEN")        ?? "";
-const GROQ_KEY   = Deno.env.get("GROQ_API_KEY")              ?? "";
-const SB_URL     = Deno.env.get("SUPABASE_URL")              ?? "";
-const SB_KEY     = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const SHEETS_ID  = Deno.env.get("GOOGLE_SHEETS_ID")          ?? "";
+const TG_TOKEN      = Deno.env.get("TELEGRAM_BOT_TOKEN")          ?? "";
+const GROQ_KEY      = Deno.env.get("GROQ_API_KEY")                ?? "";
+const SB_URL        = Deno.env.get("SUPABASE_URL")                ?? "";
+const SB_KEY        = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")   ?? "";
+const SHEETS_ID     = Deno.env.get("GOOGLE_SHEETS_ID")            ?? "";
+const TG_WH_SECRET  = Deno.env.get("TELEGRAM_WEBHOOK_SECRET")     ?? ""; // auth webhook
 // Service Account (remplace OAuth 2.0 — plus de refresh token)
-const SA_EMAIL   = Deno.env.get("GOOGLE_SERVICE_ACCOUNT_EMAIL") ?? "";
-const SA_KEY_RAW = Deno.env.get("GOOGLE_SERVICE_ACCOUNT_KEY")   ?? ""; // PEM PKCS8
+const SA_EMAIL      = Deno.env.get("GOOGLE_SERVICE_ACCOUNT_EMAIL") ?? "";
+const SA_KEY_RAW    = Deno.env.get("GOOGLE_SERVICE_ACCOUNT_KEY")   ?? ""; // PEM PKCS8
 
 const TG         = `https://api.telegram.org/bot${TG_TOKEN}`;
 const GROQ_MODEL = "llama-3.3-70b-versatile";
@@ -192,6 +193,33 @@ async function sheetsAppend(tab: string, row: string[]): Promise<void> {
   } catch {}
 }
 
+/** Ajoute une ligne avec retry sur 401 (même robustesse que sheetsRead). */
+async function sheetsAppendWithRetry(tab: string, row: string[]): Promise<void> {
+  if (!SHEETS_ID) return;
+  const doAppend = async (token: string): Promise<number> => {
+    const enc = encodeURIComponent(`${tab}!A:Z`);
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEETS_ID}/values/${enc}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
+    const ctrl = new AbortController();
+    const t    = setTimeout(() => ctrl.abort(), 10_000);
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ values: [row] }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(t); return r.status;
+    } catch { clearTimeout(t); return 0; }
+  };
+  let token = await getAccessToken();
+  if (!token) return;
+  const status = await doAppend(token);
+  if (status === 401 || status === 403) {
+    token = await getAccessToken(true);
+    if (token) await doAppend(token);
+  }
+}
+
 function sheetToText(rows: string[][], sep = " | "): string {
   if (!rows.length) return "Données non disponibles.";
   return rows
@@ -273,6 +301,13 @@ interface CachedAnalysis {
 // Cache L1 — in-memory
 const L1_CACHE = new Map<string, { ts: number; data: CachedAnalysis }>();
 const L1_TTL   = 30 * 60 * 1000;  // 30 minutes
+let   _l1PurgeCount = 0;
+
+/** Purge les entrées expirées du cache L1 (appelé toutes les 50 écritures). */
+function purgeL1(): void {
+  const now = Date.now();
+  for (const [k, v] of L1_CACHE) { if (now - v.ts >= L1_TTL) L1_CACHE.delete(k); }
+}
 
 // Cache L2 — Google Sheets "Predictions_Cache"
 // Structure : A=MatchKey | B=TimestampMs | C=Market | D=Choice | E=Confidence | F=Reason
@@ -285,17 +320,26 @@ function makeMatchKey(home: string, away: string, date: string): string {
   return `${home.toLowerCase().trim()}|${away.toLowerCase().trim()}|${(date || "").trim()}`;
 }
 
-/** Charge l'onglet Predictions_Cache en mémoire (max toutes les 5 min). */
+/** Charge l'onglet Predictions_Cache en mémoire (max toutes les 5 min).
+ *  Déduplique par clé en conservant l'entrée la plus récente. */
 async function loadL2Cache(): Promise<void> {
   if (_l2Cache !== null && Date.now() - _l2CacheLoadedAt < L2_RELOAD_INTERVAL) return;
-  const rows = await sheetsRead("Predictions_Cache", "A2:F500");
-  _l2Cache = rows
-    .filter(r => r[0] && r[1])
-    .map(r => ({
-      key:  r[0],
-      ts:   parseInt(r[1] ?? "0", 10),
-      data: { market: r[2] ?? "", choice: r[3] ?? "", confidence: parseInt(r[4] ?? "55", 10), reason: r[5] ?? "" },
-    }));
+  const rows = await sheetsRead("Predictions_Cache", "A2:F1000");
+  // Déduplique : pour chaque clé on garde l'entrée au timestamp le plus élevé
+  const byKey = new Map<string, { key:string; ts:number; data:CachedAnalysis }>();
+  for (const r of rows) {
+    if (!r[0] || !r[1]) continue;
+    const ts = parseInt(r[1] ?? "0", 10);
+    const existing = byKey.get(r[0]);
+    if (!existing || ts > existing.ts) {
+      byKey.set(r[0], {
+        key:  r[0],
+        ts,
+        data: { market: r[2] ?? "", choice: r[3] ?? "", confidence: parseInt(r[4] ?? "55", 10), reason: r[5] ?? "" },
+      });
+    }
+  }
+  _l2Cache = [...byKey.values()];
   _l2CacheLoadedAt = Date.now();
 }
 
@@ -314,9 +358,16 @@ async function checkCache(key: string): Promise<CachedAnalysis | null> {
 async function writeCache(key: string, data: CachedAnalysis): Promise<void> {
   const now = Date.now();
   L1_CACHE.set(key, { ts: now, data });
-  if (_l2Cache) _l2Cache.push({ key, ts: now, data });
+  // Purge périodique L1 pour éviter la fuite mémoire (toutes les 50 écritures)
+  if (++_l1PurgeCount % 50 === 0) purgeL1();
+  if (_l2Cache) {
+    // Mise à jour en mémoire : remplace l'entrée existante (pas d'appends dupliqués)
+    const idx = _l2Cache.findIndex(e => e.key === key);
+    if (idx >= 0) _l2Cache[idx] = { key, ts: now, data };
+    else _l2Cache.push({ key, ts: now, data });
+  }
   // Écriture asynchrone en arrière-plan (non bloquant)
-  sheetsAppend("Predictions_Cache", [
+  sheetsAppendWithRetry("Predictions_Cache", [
     key, String(now), data.market, data.choice, String(data.confidence), data.reason,
   ]).catch(() => {});
 }
@@ -388,21 +439,43 @@ async function toolEspnScheduleToday(): Promise<string> {
 //  Prompt exact demandé par l'administrateur.
 // ══════════════════════════════════════════════════════════════════
 
-/** Appel Groq avec retry automatique sur 429 (rate limit 30 RPM). */
+// ── Sémaphore global Groq ─────────────────────────────────────────
+// Borne le nombre d'appels Groq SIMULTANÉS toutes requêtes confondues
+// pour ne pas dépasser le rate limit même avec 21k users en parallèle.
+const GROQ_MAX_CONCURRENT = 3;
+let   _groqActive = 0;
+const _groqQueue: Array<() => void> = [];
+
+function groqAcquire(): Promise<void> {
+  if (_groqActive < GROQ_MAX_CONCURRENT) { _groqActive++; return Promise.resolve(); }
+  return new Promise(resolve => _groqQueue.push(resolve));
+}
+function groqRelease(): void {
+  const next = _groqQueue.shift();
+  if (next) { next(); } else { _groqActive--; }
+}
+
+/** Appel Groq avec sémaphore global + retry automatique sur 429. */
 async function groqCall(model: string, messages: any[], maxTokens = 512, attempt = 0): Promise<string> {
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_KEY}` },
-    body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature: 0.2 }),
-  });
-  if (res.status === 429 && attempt < 3) {
-    const retry = parseInt(res.headers.get("retry-after") ?? "2", 10);
-    await sleep((retry || 2) * 1000 * (attempt + 1));
-    return groqCall(model, messages, maxTokens, attempt + 1);
+  await groqAcquire();
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_KEY}` },
+      body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature: 0.2 }),
+    });
+    if (res.status === 429 && attempt < 3) {
+      const retry = parseInt(res.headers.get("retry-after") ?? "2", 10);
+      groqRelease();
+      await sleep((retry || 2) * 1000 * (attempt + 1));
+      return groqCall(model, messages, maxTokens, attempt + 1);
+    }
+    if (!res.ok) return "";
+    const d = await res.json();
+    return d.choices?.[0]?.message?.content ?? "";
+  } finally {
+    groqRelease();
   }
-  if (!res.ok) return "";
-  const d = await res.json();
-  return d.choices?.[0]?.message?.content ?? "";
 }
 
 /** Analyse IA d'un match — cache L1+L2 avant d'appeler Groq. */
@@ -508,6 +581,22 @@ async function execTool(name: string, args: Record<string,any>): Promise<string>
   }
 }
 
+/** Appel Groq avec outils (tool-calling), protégé par le sémaphore global. */
+async function groqCallWithTools(messages: any[]): Promise<{ ok: boolean; data: any; status: number }> {
+  await groqAcquire();
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json", Authorization:`Bearer ${GROQ_KEY}` },
+      body: JSON.stringify({ model:GROQ_MODEL, messages, tools:GROQ_TOOLS, tool_choice:"auto", max_tokens:1024 }),
+    });
+    const data = res.ok ? await res.json() : null;
+    return { ok: res.ok, data, status: res.status };
+  } finally {
+    groqRelease();
+  }
+}
+
 async function groqAgent(userMsg: string, history: ChatMessage[], firstName?: string): Promise<string> {
   const messages: any[] = [
     { role:"system", content: SYS_AGENT + (firstName ? `\nUtilisateur : ${firstName}.` : "") },
@@ -515,14 +604,10 @@ async function groqAgent(userMsg: string, history: ChatMessage[], firstName?: st
     { role:"user", content: userMsg },
   ];
   for (let i = 0; i < 5; i++) {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json", Authorization:`Bearer ${GROQ_KEY}` },
-      body: JSON.stringify({ model:GROQ_MODEL, messages, tools:GROQ_TOOLS, tool_choice:"auto", max_tokens:1024 }),
-    });
-    if (!res.ok) return "❌ Erreur IA. Réessaie.";
-    const d      = await res.json();
-    const choice = d.choices?.[0];
+    const { ok, data, status } = await groqCallWithTools(messages);
+    if (status === 429) { await sleep(2000); continue; }
+    if (!ok || !data)   return "❌ Erreur IA. Réessaie.";
+    const choice = data.choices?.[0];
     const msg    = choice?.message;
     if (!msg) break;
     messages.push(msg);
@@ -850,6 +935,17 @@ Deno.serve(async (req) => {
       "FootBot v10 ⚽ | Arch: Sheets→Cache→Groq→Telegram | 21 000+ users",
       { headers: { "Content-Type": "text/plain" } },
     );
+
+  // ── Authentification webhook Telegram ────────────────────────
+  // Si TELEGRAM_WEBHOOK_SECRET est défini, le header doit correspondre.
+  if (TG_WH_SECRET) {
+    const incoming = req.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
+    if (incoming !== TG_WH_SECRET) {
+      console.warn("Webhook: secret token invalide, requête rejetée.");
+      return new Response("Unauthorized", { status: 401 });
+    }
+  }
+
   try {
     const b = await req.json();
     const m = b?.message;
