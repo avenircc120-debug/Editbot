@@ -209,7 +209,7 @@ async function archiveProcessed() {
     supabaseInsert("archive_stats", archiveRows.map((r) => ({
       id: r[0], date: r[1], competition: r[2],
       equipe_dom: r[3], equipe_ext: r[4],
-      score_dom: r[5] || null, score_ext: r[6] || null,
+      score_dom: parseInt(r[5]) || null, score_ext: parseInt(r[6]) || null,
       possession_dom: r[7] || null, possession_ext: r[8] || null,
       tirs_dom: r[9] || null, tirs_ext: r[10] || null,
       source: r[21], fiabilite: r[22],
