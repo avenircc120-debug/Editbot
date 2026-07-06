@@ -43,4 +43,6 @@
 
     [functions.recherche-bot]
     verify_jwt = false
-    
+
+    [functions.setup-sheets]
+    verify_jwt = false
