@@ -55,3 +55,6 @@ verify_jwt = false
 
 [functions.diffusion-telegram]
 verify_jwt = false
+
+[functions.jwks]
+verify_jwt = false
