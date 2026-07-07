@@ -1,7 +1,8 @@
 // diffusion-telegram/index.ts — Supabase DB (confiance ≥ seuil) → Telegram
+//   + marque Envoyé dans ANALYSE_IA_GROQ (Sheets, WIF)
 // POST /functions/v1/diffusion-telegram  Body: { channel_id, seuil_confiance?, dry_run? }
 
-import { sheetsGet } from "../_shared/sheets-client.ts";
+import { sheetsGet, sheetsUpdateCell } from "../_shared/sheets-client.ts";
 
 const TG_TOKEN  = Deno.env.get("TELEGRAM_BOT_TOKEN")       ?? "";
 const SB_URL    = Deno.env.get("SUPABASE_URL")              ?? "";
@@ -32,14 +33,12 @@ async function fetchAnalyses(seuil: number): Promise<AnalyseRow[]> {
   return r.json() as Promise<AnalyseRow[]>;
 }
 
-async function markSent(id: number) {
+async function markSentDB(id: number) {
   await fetch(`${SB_URL}/rest/v1/analyse_ia_groq?id=eq.${id}`, {
     method: "PATCH",
     headers: {
-      apikey:         SB_KEY,
-      Authorization:  `Bearer ${SB_KEY}`,
-      "Content-Type": "application/json",
-      Prefer:         "return=minimal",
+      apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`,
+      "Content-Type": "application/json", Prefer: "return=minimal",
     },
     body: JSON.stringify({ envoye: true }),
   });
@@ -49,10 +48,8 @@ async function logPrediction(row: AnalyseRow) {
   await fetch(`${SB_URL}/rest/v1/logs_predictions`, {
     method: "POST",
     headers: {
-      apikey:         SB_KEY,
-      Authorization:  `Bearer ${SB_KEY}`,
-      "Content-Type": "application/json",
-      Prefer:         "return=minimal",
+      apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`,
+      "Content-Type": "application/json", Prefer: "return=minimal",
     },
     body: JSON.stringify({
       competition:     row.competition,
@@ -76,17 +73,17 @@ async function sendTelegram(chatId: string, text: string): Promise<boolean> {
   return r.ok;
 }
 
-// ── Template ──────────────────────────────────────────────────────────────────
-// TEMPLATES!A:C — colonnes : Type | Nom | Contenu
+// ── Template (Sheets, API key) ────────────────────────────────────────────────
+// TEMPLATES!A:C — Type | Nom | Contenu
 async function getTemplate(type: string): Promise<string> {
   try {
     const rows = await sheetsGet("TEMPLATES!A2:C20", SHEETS_ID);
     const row  = rows.find(r => r[0]?.toLowerCase() === type.toLowerCase());
-    return row?.[2] ?? buildDefaultTemplate();
-  } catch { return buildDefaultTemplate(); }
+    return row?.[2] ?? defaultTemplate();
+  } catch { return defaultTemplate(); }
 }
 
-function buildDefaultTemplate(): string {
+function defaultTemplate(): string {
   return [
     "🎯 *{competition}*",
     "⚽ {match}",
@@ -107,19 +104,21 @@ Deno.serve(async (req) => {
   if (req.method !== "POST")
     return new Response("Method Not Allowed", { status: 405 });
 
-  const body    = await req.json().catch(() => ({})) as {
+  const body = await req.json().catch(() => ({})) as {
     channel_id?: string;
     seuil_confiance?: number;
     dry_run?: boolean;
+    sheets_start_row?: number; // ligne Sheet correspondant aux premières données (défaut: 2)
   };
-  const channel = body.channel_id ?? "";
-  const seuil   = Number(body.seuil_confiance) || 80;
-  const dryRun  = body.dry_run === true;
+  const channel  = body.channel_id ?? "";
+  const seuil    = Number(body.seuil_confiance) || 80;
+  const dryRun   = body.dry_run === true;
+  const sheetRow = body.sheets_start_row ?? 2; // ligne 2 = première donnée (après en-têtes)
 
   if (!channel)
     return new Response(
       JSON.stringify({ error: "channel_id requis (ex: @mon_canal ou -100123456)" }),
-      { status: 400, headers: { "Content-Type": "application/json" } }
+      { status: 400, headers: { "Content-Type": "application/json" } },
     );
 
   let analyses: AnalyseRow[];
@@ -128,46 +127,70 @@ Deno.serve(async (req) => {
   } catch (e) {
     return new Response(
       JSON.stringify({ error: "Erreur Supabase", detail: String(e) }),
-      { status: 500, headers: { "Content-Type": "application/json" } }
+      { status: 500, headers: { "Content-Type": "application/json" } },
     );
   }
 
   if (!analyses.length)
     return new Response(
       JSON.stringify({ ok: true, envoyes: 0, message: `Aucune analyse ≥ ${seuil}% à envoyer` }),
-      { headers: { "Content-Type": "application/json" } }
+      { headers: { "Content-Type": "application/json" } },
     );
 
   const tpl = await getTemplate("match_a_venir");
-  let envoyes = 0;
+  let envoyes   = 0;
+  let rowOffset = 0; // pour calculer la ligne Sheet correspondante
 
-  for (const a of analyses) {
+  // Lire le nombre de lignes dans ANALYSE_IA_GROQ pour retrouver la position des lignes
+  // envoyées (colonne I = Envoyé, FALSE → TRUE)
+  let sheetRows: string[][] = [];
+  try {
+    sheetRows = await sheetsGet("ANALYSE_IA_GROQ!A2:I1000", SHEETS_ID);
+  } catch { /* WIF pas encore configuré — on continue sans écriture Sheets */ }
+
+  for (let i = 0; i < analyses.length; i++) {
+    const a     = analyses[i];
     const texte = applyTemplate(tpl, {
-      competition: a.competition   ?? "",
-      match:       a.match_desc    ?? "",
-      marche:      a.marche        ?? "",
-      prediction:  a.prediction    ?? "",
+      competition: a.competition  ?? "",
+      match:       a.match_desc   ?? "",
+      marche:      a.marche       ?? "",
+      prediction:  a.prediction   ?? "",
       confiance:   String(a.confiance ?? ""),
-      action:      a.action        ?? "",
-      analyse:     a.analyse_groq  ?? "",
+      action:      a.action       ?? "",
+      analyse:     a.analyse_groq ?? "",
     });
 
     if (!dryRun) {
       const ok = await sendTelegram(channel, texte);
       if (ok) {
-        await markSent(a.id);
+        // Marquer Supabase DB
+        await markSentDB(a.id);
         await logPrediction(a);
+
+        // Marquer colonne I (Envoyé) dans Google Sheets via WIF
+        if (sheetRows.length > 0) {
+          // Trouver la ligne correspondant à ce match (comparaison match_desc)
+          const sheetIdx = sheetRows.findIndex(
+            r => r[2] === a.match_desc && r[8]?.toUpperCase() !== "TRUE"
+          );
+          if (sheetIdx >= 0) {
+            const cellRef = `ANALYSE_IA_GROQ!I${sheetIdx + sheetRow}`;
+            try {
+              await sheetsUpdateCell(cellRef, "TRUE", SHEETS_ID);
+            } catch { /* WIF non configuré — ignoré */ }
+          }
+        }
         envoyes++;
       }
     } else {
       envoyes++;
     }
-
+    rowOffset++;
     await new Promise(r => setTimeout(r, 500));
   }
 
   return new Response(
     JSON.stringify({ ok: true, envoyes, total_eligible: analyses.length, dry_run: dryRun }),
-    { headers: { "Content-Type": "application/json" } }
+    { headers: { "Content-Type": "application/json" } },
   );
 });
