@@ -106,6 +106,25 @@ async function chargerPronostics(): Promise<{ donnees: string; count: number; ma
   };
 }
 
+// ─── Meilleur pronostic de la semaine ────────────────────────────────────────
+async function meilleurPronostic(): Promise<any | null> {
+  const now  = new Date().toISOString();
+  const in7j = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+
+  const { data } = await supabase
+    .from('pronostics_finaux')
+    .select('home_team, away_team, competition, match_date, pronostic_type, pronostic_valeur, fiabilite, cote_conseille, analyse_texte')
+    .gte('match_date', now)
+    .lte('match_date', in7j)
+    .gte('expires_at', now)
+    .order('fiabilite', { ascending: false })
+    .order('cote_conseille', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  return data ?? null;
+}
+
 // ─── Appel Groq — personnalité humaine forte ──────────────────────────────────
 async function groqReponse(userMessage: string, donnees: string, prenom?: string): Promise<string> {
   const appelUtilisateur = prenom ? prenom : 'mon ami';
@@ -114,21 +133,30 @@ async function groqReponse(userMessage: string, donnees: string, prenom?: string
 Tu parles français de façon naturelle, décontractée et directe — comme un ami, pas comme un robot.
 ${prenom ? `L'utilisateur s'appelle ${prenom}.` : ''}
 
-Tes règles :
+Tes règles absolues :
 - Parle comme un humain : contractions, expressions naturelles ("franchement", "honnêtement", "vas-y", "clairement", etc.)
 - Ne commence JAMAIS par "Bien sûr", "Certainement", "Absolument" ou tout mot de robot
-- Sois direct et personnel — exprime TON avis sur les matchs
+- Sois direct et personnel — exprime TON avis tranché sur les matchs
 - Utilise les émojis avec modération (1-2 max par réponse), jamais en début de phrase
-- Quand tu analyses un match, montre de l'enthousiasme ou de la prudence selon la situation
-- Si tu n'es pas sûr, dis-le franchement
 - Garde tes réponses courtes et punchy (4-6 phrases max)
 - Tu n'es PAS une IA, tu es Edi, un passionné de foot
+- Tu as été créé par *Houmetin Jeremy*
+
+IMPORTANT — Faire un choix clair :
+Quand l'utilisateur demande un pronostic ou un conseil, tu dois TOUJOURS :
+1. Choisir UN seul pari parmi tous les pronostics disponibles (le meilleur selon toi)
+2. Expliquer brièvement pourquoi tu le choisis
+3. Donner la cote et le niveau de confiance
+4. Ne pas lister tous les pronostics — juste ton meilleur choix du moment
+
+Exemple de bonne réponse :
+"Mon choix de ce soir c'est KuPS à domicile (cote 1.85). L'équipe est solide chez elle et face à Vardar qui sort d'une série difficile, je vois mal comment ça tourne autrement. Confiance 75%."
 
 Données pronostics disponibles (7 jours à venir) :
 ${donnees || '(aucun match disponible cette semaine)'}
 
 Si l'utilisateur pose une question sur un match spécifique, base-toi sur ces données.
-Si aucune donnée n'est disponible pour ce match, dis-le simplement sans t'excuser excessivement.`;
+Si aucune donnée n'est disponible, dis-le directement.`;
 
   const res = await fetch(`${GROQ_BASE}/chat/completions`, {
     method:  'POST',
@@ -170,8 +198,8 @@ function reponseInstantanee(text: string, prenom?: string): string | null {
     return `${moment}${salut} Quoi de neuf ?\n\nJ'ai des pronos frais pour cette semaine si t'as envie de jeter un œil 👀`;
   }
 
-  if (/qui (t.a|t'a) (cr[eé]e?r?|fait|construit|d[eé]velopp)/i.test(text)) {
-    return `C'est *Avenir CC* qui m'a créé — un dev passionné de foot et d'IA.\n\nMoi je suis *Edi*, le moteur de pronostics sportifs derrière tout ça. Je tourne sur des données réelles, pas du vent 😉`;
+  if (/qui (t.a|t'a) (cr[eé]e?r?|fait|construit|d[eé]velopp)|qui est.* cr[eé]ateur|cr[eé]ateur du bot/i.test(text)) {
+    return `C'est *Houmetin Jeremy* qui m'a créé — un dev passionné de foot et d'IA.\n\nMoi je suis *Edi*, le moteur de pronostics sportifs derrière tout ça. Je tourne sur des données réelles, pas du vent 😉`;
   }
 
   if (/qui es.tu|t'es qui|c'est quoi|c'est qui edi/i.test(text)) {
@@ -210,14 +238,28 @@ Deno.serve(async (req) => {
     // 2. Charger les pronostics
     const { donnees, count, matchsResume } = await chargerPronostics();
 
-    // 3. Commande /pronostics — affichage direct formaté
+    // 3. Commande /pronostics — meilleur choix + liste complète
     if (/^\/pronostics/.test(text.toLowerCase())) {
       if (!count) {
         await send(chatId,
           `Pas de matchs analysés pour cette semaine pour l'instant...\n\nLes données sont mises à jour chaque nuit — reviens demain matin, j'aurai du nouveau 🌙`
         );
       } else {
-        await send(chatId, `Voilà mes pronos de la semaine :\n${matchsResume}`);
+        // Trouver le meilleur pronostic (fiabilité max)
+        const meilleur = await meilleurPronostic();
+        let msg = '';
+        if (meilleur) {
+          msg += `🎯 *Mon choix de la semaine :*\n`;
+          msg += `*${meilleur.home_team} vs ${meilleur.away_team}*\n`;
+          msg += `→ *${meilleur.pronostic_type}: ${meilleur.pronostic_valeur}* — cote ${meilleur.cote_conseille}\n`;
+          msg += `Confiance : ${meilleur.fiabilite}% `;
+          msg += meilleur.fiabilite >= 75 ? '🟢\n' : meilleur.fiabilite >= 60 ? '🟡\n' : '🔴\n';
+          if (meilleur.analyse_texte) msg += `_${meilleur.analyse_texte}_\n`;
+          msg += `\n──────────────────\n`;
+          msg += `*Tous les pronos de la semaine :*\n`;
+        }
+        msg += matchsResume;
+        await send(chatId, msg);
       }
       return new Response('OK');
     }
