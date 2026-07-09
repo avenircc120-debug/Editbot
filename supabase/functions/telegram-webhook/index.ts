@@ -13,7 +13,9 @@ const GROQ_KEY       = Deno.env.get('GROQ_API_KEY') ?? '';
 const supabase       = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const GROQ_BASE  = 'https://api.groq.com/openai/v1';
-const GROQ_MODEL = 'llama3-70b-8192';
+// llama3-70b-8192 a été décommissionné par Groq (juillet 2026) — remplacé par
+// son successeur recommandé. Voir https://console.groq.com/docs/deprecations
+const GROQ_MODEL = 'llama-3.3-70b-versatile';
 
 // ─── Quota Groq ───────────────────────────────────────────────────────────────
 async function consommerGroq(): Promise<boolean> {
