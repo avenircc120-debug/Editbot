@@ -33,13 +33,19 @@ export const LEAGUES: Array<{
   tsdb_id: string;
   name:    string;
 }> = [
-  { tsdb_id: '4334', name: 'Ligue 1'          },
-  { tsdb_id: '4328', name: 'Premier League'   },
-  { tsdb_id: '4335', name: 'La Liga'          },
-  { tsdb_id: '4331', name: 'Bundesliga'       },
-  { tsdb_id: '4332', name: 'Serie A'          },
-  { tsdb_id: '4480', name: 'Champions League' },
-  { tsdb_id: '4481', name: 'Europa League'    },
+  { tsdb_id: '4334', name: 'Ligue 1'           },
+  { tsdb_id: '4328', name: 'Premier League'    },
+  { tsdb_id: '4335', name: 'La Liga'           },
+  { tsdb_id: '4331', name: 'Bundesliga'        },
+  { tsdb_id: '4332', name: 'Serie A'           },
+  { tsdb_id: '4480', name: 'Champions League'  },
+  { tsdb_id: '4481', name: 'Europa League'     },
+  { tsdb_id: '4329', name: 'Championship'      },
+  { tsdb_id: '4330', name: 'Scottish Premiership' },
+  { tsdb_id: '4337', name: 'Eredivisie'        },
+  { tsdb_id: '4344', name: 'Primeira Liga'     },
+  { tsdb_id: '4346', name: 'MLS'               },
+  { tsdb_id: '4351', name: 'Brasileirão'       },
 ];
 
 // ─── Prompt système Groq ──────────────────────────────────────────────────────
