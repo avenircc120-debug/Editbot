@@ -1,57 +1,57 @@
 /**
- * fetch-matches — Ingestion dynamique
+ * fetch-matches — Ingestion dynamique avec protection de quota
  *
  * Workflow:
- * 1. Récupère les matchs à venir/récents via teams/get-near-events pour
- *    chaque équipe extraite du classement de tournoi (découverte dynamique).
- * 2. Pour chaque match trouvé, appelle EN PARALLÈLE tous les endpoints
- *    de marché disponibles (statistiques, lineups, incidents, h2h, odds…).
- * 3. Stocke chaque type de données dans marches_bruts (JSONB) sans schéma fixe.
- * 4. Anti-doublon : ne refetch pas un marché déjà présent (< REFRESH_HOURS).
+ * 1. Lit l'état du quota RapidAPI avant de commencer.
+ * 2. Pour chaque tournoi, récupère le classement (1 appel RapidAPI).
+ * 3. Pour chaque équipe, récupère ses matchs proches (1 appel RapidAPI).
+ * 4. Pour chaque match, fetche EN PARALLÈLE tous les marchés disponibles
+ *    (1 appel par endpoint) — uniquement si le marché n'est pas déjà frais.
+ * 5. Chaque appel RapidAPI est protégé par quota_consommer().
+ * 6. Stoppe dès que le quota journalier est atteint.
  */
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
   getTeamNearEvents,
   getTournamentStandings,
-  fetchAllMarkets,
+  fetchAllMarketsAvecQuota,
   buildCustomId,
+  MARKET_ENDPOINTS,
 } from '../_shared/sofascore.ts';
+import { lireQuotas } from '../_shared/quota.ts';
 
-const SUPABASE_URL  = Deno.env.get('SUPABASE_URL') ?? '';
-const SUPABASE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const supabase      = createClient(SUPABASE_URL, SUPABASE_KEY);
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
+const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const supabase     = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// IDs de compétitions à surveiller (seed minimal — uniquement les tournois, pas les marchés)
+// Compétitions à surveiller — réduites au minimum pour économiser les appels
+// Priorité aux compétitions les plus demandées par les utilisateurs
 const TOURNAMENT_SEEDS: Array<{ id: string; name: string; seasonId: string }> = [
-  { id: '17',    name: 'Ligue 1',          seasonId: '61737' },
-  { id: '8',     name: 'Premier League',   seasonId: '61627' },
-  { id: '23',    name: 'La Liga',          seasonId: '61643' },
-  { id: '35',    name: 'Bundesliga',       seasonId: '61738' },
-  { id: '23160', name: 'Serie A',          seasonId: '61664' },
-  { id: '7',     name: 'Champions League', seasonId: '61644' },
+  { id: '17', name: 'Ligue 1',          seasonId: '61737' },
+  { id: '7',  name: 'Champions League', seasonId: '61644' },
+  { id: '8',  name: 'Premier League',   seasonId: '61627' },
 ];
 
-const REFRESH_HOURS = 3;  // Ne re-fetche pas un marché de moins de 3h
+// Paramètres d'économie de quota
+const REFRESH_HOURS   = 12;  // Données fraîches pendant 12h (au lieu de 3h)
+const MAX_EQUIPES     = 5;   // Max 5 équipes par tournoi (pas les 20)
+const MAX_MATCHS      = 2;   // Max 2 matchs par équipe (prochain + dernier)
 
 // ─── Indexer un match dans matchs_index ────────────────────────────────────
 async function indexMatch(event: any, competition: string, tournamentId: string, seasonId: string) {
   const matchId   = String(event.id);
-  const homeTeam  = event.homeTeam?.name ?? '';
-  const awayTeam  = event.awayTeam?.name ?? '';
   const homeSlug  = event.homeTeam?.slug ?? '';
   const awaySlug  = event.awayTeam?.slug ?? '';
   const matchDate = new Date((event.startTimestamp ?? 0) * 1000).toISOString();
-  const status    = event.status?.type === 'finished' ? 'finished'
-                  : event.status?.type === 'inprogress' ? 'inprogress'
+  const status    = event.status?.type === 'finished'    ? 'finished'
+                  : event.status?.type === 'inprogress'  ? 'inprogress'
                   : 'scheduled';
-  const homeScore = event.homeScore?.current ?? null;
-  const awayScore = event.awayScore?.current ?? null;
 
   await supabase.from('matchs_index').upsert({
     match_id:      matchId,
-    home_team:     homeTeam,
-    away_team:     awayTeam,
+    home_team:     event.homeTeam?.name ?? '',
+    away_team:     event.awayTeam?.name ?? '',
     home_team_id:  String(event.homeTeam?.id ?? ''),
     away_team_id:  String(event.awayTeam?.id ?? ''),
     home_slug:     homeSlug,
@@ -61,18 +61,21 @@ async function indexMatch(event: any, competition: string, tournamentId: string,
     season_id:     seasonId,
     match_date:    matchDate,
     status,
-    home_score:    homeScore,
-    away_score:    awayScore,
+    home_score:    event.homeScore?.current ?? null,
+    away_score:    event.awayScore?.current ?? null,
     updated_at:    new Date().toISOString(),
   }, { onConflict: 'match_id' });
 
-  return { matchId, homeTeam, awayTeam, matchDate, status,
-           homeTeamId: String(event.homeTeam?.id ?? ''),
-           awayTeamId: String(event.awayTeam?.id ?? ''),
-           customId: buildCustomId(homeSlug, awaySlug) };
+  return {
+    matchId,
+    homeTeamId: String(event.homeTeam?.id ?? ''),
+    awayTeamId: String(event.awayTeam?.id ?? ''),
+    customId:   buildCustomId(homeSlug, awaySlug),
+    status,
+  };
 }
 
-// ─── Vérifier quels marchés sont déjà frais pour un match ──────────────────
+// ─── Quels marchés sont encore frais ? (évite les appels API inutiles) ─────
 async function getMarchesFrais(matchId: string): Promise<Set<string>> {
   const cutoff = new Date(Date.now() - REFRESH_HOURS * 3600 * 1000).toISOString();
   const { data } = await supabase
@@ -99,88 +102,97 @@ async function stockerMarches(matchId: string, marches: Array<{ slug: string; do
   return stored;
 }
 
-// ─── Ingestion complète pour une équipe ────────────────────────────────────
+// ─── Ingestion d'une équipe ─────────────────────────────────────────────────
 async function ingererEquipe(
   teamId: string,
   competition: string,
   tournamentId: string,
   seasonId: string,
-  stats: { matchs: number; marches: number; erreurs: number }
-) {
-  const data = await getTeamNearEvents(teamId);
-  const events: any[] = data?.events ?? [];
-  if (!events.length) return;
+  stats: { matchs: number; marches: number; skips: number },
+): Promise<boolean> {
+  // 1 appel RapidAPI — vérification du quota dans fetchAllMarketsAvecQuota
+  const data = await getTeamNearEvents(teamId, supabase);
+  if (!data) return false; // Quota épuisé signalé par retour null
+
+  const events: any[] = (data?.events ?? []).slice(0, MAX_MATCHS);
+  if (!events.length) return true;
 
   for (const event of events) {
-    try {
-      const { matchId, homeTeamId, awayTeamId, customId } =
-        await indexMatch(event, competition, tournamentId, seasonId);
+    const { matchId, homeTeamId, awayTeamId, customId } =
+      await indexMatch(event, competition, tournamentId, seasonId);
 
-      // Vérifier AVANT tout appel API quels marchés sont déjà frais
-      const marchesFrais = await getMarchesFrais(matchId);
-      const slugsAFetcher = [...MARKET_ENDPOINTS.map(m => m.slug), 'h2h', 'stats_domicile', 'stats_exterieur']
-        .filter(s => !marchesFrais.has(s));
+    // Vérifier quels marchés sont déjà frais → zéro appel API si tout est frais
+    const marchesFrais = await getMarchesFrais(matchId);
+    const tousLesSlugs = [...MARKET_ENDPOINTS.map(m => m.slug), 'h2h', 'stats_domicile', 'stats_exterieur'];
+    const aFetcher     = tousLesSlugs.filter(s => !marchesFrais.has(s));
 
-      if (!slugsAFetcher.length) continue; // Tout est frais → zéro appel API
-
-      // Fetch dynamique uniquement des marchés manquants/expirés
-      const marches = await fetchAllMarkets(
-        matchId, customId, homeTeamId, awayTeamId, tournamentId, seasonId
-      );
-      const marchesNouveaux = marches.filter(m => !marchesFrais.has(m.slug));
-
-      const nb = await stockerMarches(matchId, marchesNouveaux);
-      stats.matchs++;
-      stats.marches += nb;
-    } catch (e) {
-      stats.erreurs++;
-      console.error('Erreur match', event.id, e);
+    if (!aFetcher.length) {
+      stats.skips++;
+      continue; // Tout est frais → on ne consomme pas de quota
     }
+
+    // Fetch dynamique avec vérification de quota pour chaque appel
+    const marches = await fetchAllMarketsAvecQuota(
+      supabase, matchId, customId, homeTeamId, awayTeamId, tournamentId, seasonId,
+    );
+
+    if (marches === null) return false; // Quota global épuisé → arrêter
+
+    const nouveaux = marches.filter(m => !marchesFrais.has(m.slug));
+    const nb = await stockerMarches(matchId, nouveaux);
+    stats.matchs++;
+    stats.marches += nb;
   }
+
+  return true; // Continue
 }
 
 // ─── Handler principal ───────────────────────────────────────────────────────
 Deno.serve(async (req) => {
-  // Sécurité: vérifier CRON_SECRET pour bloquer les appels non autorisés
   const cronSecret = Deno.env.get('CRON_SECRET');
-  if (cronSecret) {
-    const auth = req.headers.get('Authorization');
-    if (auth !== `Bearer ${cronSecret}`) {
-      return new Response('Unauthorized', { status: 401 });
-    }
+  if (cronSecret && req.headers.get('Authorization') !== `Bearer ${cronSecret}`) {
+    return new Response('Unauthorized', { status: 401 });
   }
 
-  const stats = { matchs: 0, marches: 0, erreurs: 0, equipes: 0 };
+  const stats = { matchs: 0, marches: 0, skips: 0 };
+  let quotaEpuise = false;
 
+  // Rapport initial de quota
+  const quotaAvant = await lireQuotas(supabase);
+
+  boucle:
   for (const tournament of TOURNAMENT_SEEDS) {
-    try {
-      // Récupérer les équipes du classement pour ce tournoi (découverte dynamique)
-      const standings = await getTournamentStandings(tournament.id, tournament.seasonId);
-      const rows: any[] = standings?.standings?.[0]?.rows ?? [];
+    // 1 appel RapidAPI pour le classement
+    const standings = await getTournamentStandings(tournament.id, tournament.seasonId, supabase);
+    if (!standings) { quotaEpuise = true; break; }
 
-      if (!rows.length) continue;
+    const rows: any[] = (standings?.standings?.[0]?.rows ?? []).slice(0, MAX_EQUIPES);
+    if (!rows.length) continue;
 
-      // Ingérer les matchs de chaque équipe classée EN PARALLÈLE (par lots de 5)
-      for (let i = 0; i < rows.length; i += 5) {
-        const batch = rows.slice(i, i + 5);
-        await Promise.allSettled(batch.map(row => {
-          const teamId = String(row.team?.id ?? '');
-          if (!teamId) return Promise.resolve();
-          stats.equipes++;
-          return ingererEquipe(teamId, tournament.name, tournament.id, tournament.seasonId, stats);
-        }));
-      }
-    } catch (e) {
-      console.error('Erreur tournoi', tournament.name, e);
+    for (const row of rows) {
+      const teamId = String(row.team?.id ?? '');
+      if (!teamId) continue;
+
+      const continuer = await ingererEquipe(
+        teamId, tournament.name, tournament.id, tournament.seasonId, stats,
+      );
+      if (!continuer) { quotaEpuise = true; break boucle; }
     }
   }
+
+  const quotaApres = await lireQuotas(supabase);
 
   return new Response(JSON.stringify({
-    success:       true,
-    equipes:       stats.equipes,
-    matchs_index:  stats.matchs,
-    marches_bruts: stats.marches,
-    erreurs:       stats.erreurs,
-    timestamp:     new Date().toISOString(),
+    success:        true,
+    matchs_indexes: stats.matchs,
+    marches_stockes: stats.marches,
+    matchs_en_cache: stats.skips,
+    quota_epuise:   quotaEpuise,
+    quota_rapidapi: quotaApres.rapidapi ?? null,
+    quota_groq:     quotaApres.groq ?? null,
+    quota_consomme: {
+      rapidapi: (quotaApres.rapidapi?.compteur ?? 0) - (quotaAvant.rapidapi?.compteur ?? 0),
+    },
+    timestamp: new Date().toISOString(),
   }), { headers: { 'Content-Type': 'application/json' } });
 });
