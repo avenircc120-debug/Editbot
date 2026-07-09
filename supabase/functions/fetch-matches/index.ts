@@ -168,6 +168,47 @@ Deno.serve(async (req) => {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
+  // PHASE 1b — MASAP : auto-population de whitelist_matchs
+  // Chaque match indexé avec un idAPIfootball est ajouté à la whitelist
+  // pour que fetch-odds puisse récupérer ses cotes toutes les 10 min.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  for (const { matchId, idAPIfootball } of matchsIndexes) {
+    if (!idAPIfootball) continue; // Pas de cotes disponibles sans ce pont
+
+    // Récupère les métadonnées depuis matchs_index pour l'affichage
+    const { data: mi } = await supabase
+      .from('matchs_index')
+      .select('home_team, away_team, competition, match_date')
+      .eq('match_id', matchId)
+      .single();
+
+    if (!mi) continue;
+
+    // Upsert dans whitelist_matchs — ne modifie pas intervalle_refresh_min
+    // si la ligne existe déjà (préserve la config manuelle)
+    await supabase.from('whitelist_matchs').upsert(
+      {
+        match_id:         matchId,
+        fixture_apif_id:  Number(idAPIfootball),
+        competition:      mi.competition,
+        equipe_domicile:  mi.home_team,
+        equipe_exterieur: mi.away_team,
+        match_date:       mi.match_date,
+        actif:            true,
+      },
+      {
+        onConflict:      'match_id',
+        ignoreDuplicates: false,
+        // ignoreDuplicates: false permet de mettre à jour fixture_apif_id si besoin
+        // sans écraser intervalle_refresh_min (non inclus dans l'objet → non touché)
+      }
+    );
+  }
+
+  console.log(`[whitelist] ${matchsIndexes.filter(m => m.idAPIfootball).length} matchs dans la whitelist`);
+
+  // ══════════════════════════════════════════════════════════════════════════
   // PHASE 2 — TheSportsDB → Stats de base + Lineups
   // ══════════════════════════════════════════════════════════════════════════
 

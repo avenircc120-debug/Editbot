@@ -13,9 +13,10 @@
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { GROQ, SYSTEM_PROMPT }        from '../_shared/config.ts';
-import { consommerQuota, lireQuotas }      from '../_shared/quota.ts';
-import { resumerStatsApif }           from '../_shared/apifootball.ts';
+import { GROQ, SYSTEM_PROMPT }          from '../_shared/config.ts';
+import { consommerQuota, lireQuotas }   from '../_shared/quota.ts';
+import { resumerStatsApif }             from '../_shared/apifootball.ts';
+import { resumeOddsGroq }               from '../_shared/odds.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -118,9 +119,16 @@ function buildContext(match: any, marches: any[]): string {
     if (ev.intRound) lignes.push(`Journée   : ${ev.intRound}`);
   }
 
-  // ── Cotes (SofaScore legacy, conservé si présent) ────────────────────────────
-  if (par['odds']?.markets?.length) {
-    lignes.push('\n--- COTES ---');
+  // ── Cotes MASAP (marches_bookmakers — source principale) ─────────────────────
+  // Injectées dans buildContext depuis la requête principale (voir handler)
+  if (par['__masap_odds__']) {
+    lignes.push('');
+    lignes.push(par['__masap_odds__']);
+  }
+
+  // ── Cotes legacy SofaScore (conservé en fallback si présent) ─────────────────
+  if (!par['__masap_odds__'] && par['odds']?.markets?.length) {
+    lignes.push('\n--- COTES (legacy) ---');
     try {
       (par['odds'].markets as any[]).slice(0, 3).forEach((mkt: any) => {
         const choices = (mkt.choices ?? [])
@@ -225,14 +233,32 @@ Deno.serve(async (req) => {
       continue;
     }
 
-    // Lire tous les marchés disponibles pour ce match
+    // Lire tous les marchés bruts disponibles pour ce match (stats, lineups, H2H)
     const { data: marches } = await supabase
       .from('marches_bruts')
       .select('marche_slug, donnees')
       .eq('match_id', match.match_id);
 
-    if (!marches?.length) {
-      console.warn(`[skip] Aucun marché pour ${match.match_id}`);
+    // Charger les cotes MASAP depuis marches_bookmakers (source principale)
+    const { data: oddsRow } = await supabase
+      .from('marches_bookmakers')
+      .select('marche_donnees, nom_bookmaker')
+      .eq('match_id', match.match_id)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    // Injecter les cotes dans le contexte comme slug virtuel '__masap_odds__'
+    const marchesAvecOdds = marches ?? [];
+    if (oddsRow?.marche_donnees) {
+      try {
+        const resumeOdds = resumeOddsGroq(oddsRow.marche_donnees);
+        marchesAvecOdds.push({ marche_slug: '__masap_odds__', donnees: resumeOdds } as any);
+      } catch { /* ignoré */ }
+    }
+
+    if (!marchesAvecOdds.length) {
+      console.warn(`[skip] Aucune donnée pour ${match.match_id}`);
       continue;
     }
 
@@ -240,7 +266,7 @@ Deno.serve(async (req) => {
     if (!await consommerQuota(supabase, 'groq')) { quotaEpuise = true; break; }
 
     try {
-      const context = buildContext(match, marches);
+      const context = buildContext(match, marchesAvecOdds);
       const { pronostics, tokens } = await groqAnalyse(context);
       const expiresAt = new Date(Date.now() + GROQ.CACHE_H * 3600 * 1000).toISOString();
 

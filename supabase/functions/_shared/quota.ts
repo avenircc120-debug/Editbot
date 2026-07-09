@@ -5,7 +5,7 @@
 
 import { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-export type Api = 'thesportsdb' | 'apifootball' | 'groq' | 'rapidapi';
+export type Api = 'thesportsdb' | 'apifootball' | 'groq' | 'rapidapi' | 'odds';
 
 /**
  * Tente de consommer 1 unité de quota pour l'API donnée.
