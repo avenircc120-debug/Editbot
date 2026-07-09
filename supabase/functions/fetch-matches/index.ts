@@ -1,120 +1,172 @@
+/**
+ * fetch-matches — Ingestion dynamique
+ *
+ * Workflow:
+ * 1. Récupère les matchs à venir/récents via teams/get-near-events pour
+ *    chaque équipe extraite du classement de tournoi (découverte dynamique).
+ * 2. Pour chaque match trouvé, appelle EN PARALLÈLE tous les endpoints
+ *    de marché disponibles (statistiques, lineups, incidents, h2h, odds…).
+ * 3. Stocke chaque type de données dans marches_bruts (JSONB) sans schéma fixe.
+ * 4. Anti-doublon : ne refetch pas un marché déjà présent (< REFRESH_HOURS).
+ */
+
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { getTeamNearEvents, extractForm } from '../_shared/sofascore.ts';
-import { COMPETITIONS } from '../_shared/config.ts';
+import {
+  getTeamNearEvents,
+  getTournamentStandings,
+  fetchAllMarkets,
+  buildCustomId,
+} from '../_shared/sofascore.ts';
 
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
-const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const SUPABASE_URL  = Deno.env.get('SUPABASE_URL') ?? '';
+const SUPABASE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const supabase      = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+// IDs de compétitions à surveiller (seed minimal — uniquement les tournois, pas les marchés)
+const TOURNAMENT_SEEDS: Array<{ id: string; name: string; seasonId: string }> = [
+  { id: '17',    name: 'Ligue 1',          seasonId: '61737' },
+  { id: '8',     name: 'Premier League',   seasonId: '61627' },
+  { id: '23',    name: 'La Liga',          seasonId: '61643' },
+  { id: '35',    name: 'Bundesliga',       seasonId: '61738' },
+  { id: '23160', name: 'Serie A',          seasonId: '61664' },
+  { id: '7',     name: 'Champions League', seasonId: '61644' },
+];
 
-// Équipes à surveiller par compétition (ID SofaScore)
-const TEAMS_TO_WATCH: Record<string, Array<{ id: string; name: string }>> = {
-  '17': [ // Ligue 1
-    { id: '1664', name: 'Paris Saint-Germain' },
-    { id: '2953', name: 'Olympique de Marseille' },
-    { id: '4481', name: 'Olympique Lyonnais' },
-    { id: '2953', name: 'Monaco' },
-    { id: '4489', name: 'Lille' },
-  ],
-  '8': [ // Premier League
-    { id: '17', name: 'Manchester City' },
-    { id: '32', name: 'Arsenal' },
-    { id: '31', name: 'Liverpool' },
-    { id: '35', name: 'Chelsea' },
-    { id: '29', name: 'Manchester United' },
-  ],
-  '23': [ // La Liga
-    { id: '2817', name: 'Real Madrid' },
-    { id: '2818', name: 'FC Barcelona' },
-    { id: '2836', name: 'Atletico Madrid' },
-  ],
-};
+const REFRESH_HOURS = 3;  // Ne re-fetche pas un marché de moins de 3h
 
-async function fetchAndStoreTeamMatches(
-  team: { id: string; name: string },
-  competitionId: string
+// ─── Indexer un match dans matchs_index ────────────────────────────────────
+async function indexMatch(event: any, competition: string, tournamentId: string, seasonId: string) {
+  const matchId   = String(event.id);
+  const homeTeam  = event.homeTeam?.name ?? '';
+  const awayTeam  = event.awayTeam?.name ?? '';
+  const homeSlug  = event.homeTeam?.slug ?? '';
+  const awaySlug  = event.awayTeam?.slug ?? '';
+  const matchDate = new Date((event.startTimestamp ?? 0) * 1000).toISOString();
+  const status    = event.status?.type === 'finished' ? 'finished'
+                  : event.status?.type === 'inprogress' ? 'inprogress'
+                  : 'scheduled';
+  const homeScore = event.homeScore?.current ?? null;
+  const awayScore = event.awayScore?.current ?? null;
+
+  await supabase.from('matchs_index').upsert({
+    match_id:      matchId,
+    home_team:     homeTeam,
+    away_team:     awayTeam,
+    home_team_id:  String(event.homeTeam?.id ?? ''),
+    away_team_id:  String(event.awayTeam?.id ?? ''),
+    home_slug:     homeSlug,
+    away_slug:     awaySlug,
+    competition,
+    tournament_id: tournamentId,
+    season_id:     seasonId,
+    match_date:    matchDate,
+    status,
+    home_score:    homeScore,
+    away_score:    awayScore,
+    updated_at:    new Date().toISOString(),
+  }, { onConflict: 'match_id' });
+
+  return { matchId, homeTeam, awayTeam, matchDate, status,
+           homeTeamId: String(event.homeTeam?.id ?? ''),
+           awayTeamId: String(event.awayTeam?.id ?? ''),
+           customId: buildCustomId(homeSlug, awaySlug) };
+}
+
+// ─── Stocker les marchés bruts ──────────────────────────────────────────────
+async function stockerMarches(matchId: string, marches: Array<{ slug: string; donnees: any }>) {
+  let stored = 0;
+  const cutoff = new Date(Date.now() - REFRESH_HOURS * 3600 * 1000).toISOString();
+
+  for (const { slug, donnees } of marches) {
+    // Anti-doublon: vérifier si ce marché existe déjà et est récent
+    const { data: existing } = await supabase
+      .from('marches_bruts')
+      .select('id, fetched_at')
+      .eq('match_id', matchId)
+      .eq('marche_slug', slug)
+      .gte('fetched_at', cutoff)
+      .single();
+
+    if (existing) continue; // Données fraîches → skip
+
+    const { error } = await supabase.from('marches_bruts').upsert({
+      match_id:    matchId,
+      marche_slug: slug,
+      donnees,
+      source:      'sofascore',
+      fetched_at:  new Date().toISOString(),
+    }, { onConflict: 'match_id,marche_slug' });
+
+    if (!error) stored++;
+  }
+  return stored;
+}
+
+// ─── Ingestion complète pour une équipe ────────────────────────────────────
+async function ingererEquipe(
+  teamId: string,
+  competition: string,
+  tournamentId: string,
+  seasonId: string,
+  stats: { matchs: number; marches: number; erreurs: number }
 ) {
-  const competition = COMPETITIONS[competitionId] ?? 'Inconnu';
+  const data = await getTeamNearEvents(teamId);
+  const events: any[] = data?.events ?? [];
+  if (!events.length) return;
 
-  try {
-    const data = await getTeamNearEvents(team.id);
-    if (!data?.events) return 0;
+  for (const event of events) {
+    try {
+      const { matchId, homeTeamId, awayTeamId, customId } =
+        await indexMatch(event, competition, tournamentId, seasonId);
 
-    let stored = 0;
-    for (const event of data.events) {
-      const matchId = event.id?.toString();
-      if (!matchId) continue;
+      // Fetch dynamique de TOUS les marchés disponibles en parallèle
+      const marches = await fetchAllMarkets(
+        matchId, customId, homeTeamId, awayTeamId, tournamentId, seasonId
+      );
 
-      // Vérifier si le match existe déjà (anti-doublon)
-      const { data: existing } = await supabase
-        .from('matchs_historique')
-        .select('match_id')
-        .eq('match_id', matchId)
-        .single();
-
-      if (existing) continue; // Déjà en base → on skip
-
-      const homeTeam = event.homeTeam?.name ?? '';
-      const awayTeam = event.awayTeam?.name ?? '';
-      const matchDate = new Date(event.startTimestamp * 1000).toISOString();
-      const status = event.status?.type === 'finished' ? 'finished' : 'scheduled';
-      const homeScore = event.homeScore?.current ?? null;
-      const awayScore = event.awayScore?.current ?? null;
-
-      // Extraire la forme récente
-      const homeForm = extractForm(data.events, event.homeTeam?.id?.toString() ?? '');
-      const awayForm = extractForm(data.events, event.awayTeam?.id?.toString() ?? '');
-
-      const { error } = await supabase.from('matchs_historique').insert({
-        match_id: matchId,
-        competition,
-        competition_id: competitionId,
-        home_team: homeTeam,
-        away_team: awayTeam,
-        home_team_id: event.homeTeam?.id?.toString(),
-        away_team_id: event.awayTeam?.id?.toString(),
-        match_date: matchDate,
-        status,
-        home_score: homeScore,
-        away_score: awayScore,
-        home_form: homeForm,
-        away_form: awayForm,
-      });
-
-      if (!error) stored++;
+      const nb = await stockerMarches(matchId, marches);
+      stats.matchs++;
+      stats.marches += nb;
+    } catch (e) {
+      stats.erreurs++;
+      console.error('Erreur match', event.id, e);
     }
-    return stored;
-  } catch (e) {
-    console.error(`Erreur équipe ${team.name}:`, e);
-    return 0;
   }
 }
 
+// ─── Handler principal ───────────────────────────────────────────────────────
 Deno.serve(async (req) => {
-  // Sécurité: vérifier header si appelé depuis CRON
-  const authHeader = req.headers.get('Authorization');
-  const cronSecret = Deno.env.get('CRON_SECRET');
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-    return new Response('Unauthorized', { status: 401 });
-  }
+  const stats = { matchs: 0, marches: 0, erreurs: 0, equipes: 0 };
 
-  let totalStored = 0;
-  const results: string[] = [];
+  for (const tournament of TOURNAMENT_SEEDS) {
+    try {
+      // Récupérer les équipes du classement pour ce tournoi (découverte dynamique)
+      const standings = await getTournamentStandings(tournament.id, tournament.seasonId);
+      const rows: any[] = standings?.standings?.[0]?.rows ?? [];
 
-  for (const [competitionId, teams] of Object.entries(TEAMS_TO_WATCH)) {
-    for (const team of teams) {
-      const count = await fetchAndStoreTeamMatches(team, competitionId);
-      totalStored += count;
-      if (count > 0) results.push(`${team.name}: +${count} matchs`);
+      if (!rows.length) continue;
+
+      // Ingérer les matchs de chaque équipe classée EN PARALLÈLE (par lots de 5)
+      for (let i = 0; i < rows.length; i += 5) {
+        const batch = rows.slice(i, i + 5);
+        await Promise.allSettled(batch.map(row => {
+          const teamId = String(row.team?.id ?? '');
+          if (!teamId) return Promise.resolve();
+          stats.equipes++;
+          return ingererEquipe(teamId, tournament.name, tournament.id, tournament.seasonId, stats);
+        }));
+      }
+    } catch (e) {
+      console.error('Erreur tournoi', tournament.name, e);
     }
   }
 
   return new Response(JSON.stringify({
-    success: true,
-    total_stored: totalStored,
-    details: results,
-    timestamp: new Date().toISOString(),
-  }), {
-    headers: { 'Content-Type': 'application/json' },
-  });
+    success:       true,
+    equipes:       stats.equipes,
+    matchs_index:  stats.matchs,
+    marches_bruts: stats.marches,
+    erreurs:       stats.erreurs,
+    timestamp:     new Date().toISOString(),
+  }), { headers: { 'Content-Type': 'application/json' } });
 });
