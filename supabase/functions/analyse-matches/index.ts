@@ -220,9 +220,12 @@ Deno.serve(async (req) => {
   for (const match of (matchs ?? [])) {
     if (quotaEpuise) break;
 
-    // Cache : pronostics déjà valides ?
+    // Cache : pronostics déjà valides dans la table de consultation finale ?
+    // On s'appuie sur pronostics_finaux (autorité unique lue par le bot), pas sur
+    // l'ancien cache pronostics_pre_calcules, pour éviter que le bot se retrouve
+    // sans données alors que l'ancien cache est plein.
     const { data: caches } = await supabase
-      .from('pronostics_pre_calcules')
+      .from('pronostics_finaux')
       .select('pronostic_type')
       .eq('match_id', match.match_id)
       .gte('expires_at', now);
