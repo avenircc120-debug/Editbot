@@ -3,7 +3,7 @@
  * Pas d'imports relatifs : compatible déploiement via API Management Supabase.
  */
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createClient } from 'npm:@supabase/supabase-js@2';
 
 const TELEGRAM_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN') ?? '';
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL') ?? '';
