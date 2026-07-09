@@ -14,7 +14,7 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { GROQ, SYSTEM_PROMPT }        from '../_shared/config.ts';
-import { consommerQuota, lireQuotas } from '../_shared/quota.ts';
+import { consommerQuota, lireQuotas }      from '../_shared/quota.ts';
 import { resumerStatsApif }           from '../_shared/apifootball.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
@@ -184,7 +184,8 @@ Analyse ce match et génère exactement 4 pronostics au format JSON suivant (san
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
-  if (CRON_SECRET && req.headers.get('Authorization') !== `Bearer ${CRON_SECRET}`) {
+  // CRON_SECRET toujours requis — refus explicite même si la variable est absente
+  if (!CRON_SECRET || req.headers.get('Authorization') !== `Bearer ${CRON_SECRET}`) {
     return new Response('Unauthorized', { status: 401 });
   }
 

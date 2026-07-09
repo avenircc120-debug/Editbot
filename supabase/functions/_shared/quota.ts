@@ -9,13 +9,30 @@ export type Api = 'thesportsdb' | 'apifootball' | 'groq' | 'rapidapi';
 
 /**
  * Tente de consommer 1 unité de quota pour l'API donnée.
- * Retourne true si autorisé, false si quota épuisé.
+ * Mode fail-open : en cas d'erreur DB, autorise l'appel (usage interne tolérant).
+ * Préférer consommerQuotaStrict pour les APIs à budget serré.
  */
 export async function consommerQuota(supabase: SupabaseClient, api: Api): Promise<boolean> {
   const { data, error } = await supabase.rpc('quota_consommer', { p_api: api });
   if (error) {
     console.warn(`[quota] Erreur RPC quota_consommer(${api}):`, error.message);
-    return true; // En cas d'erreur DB on laisse passer plutôt que de bloquer
+    return true; // fail-open : laisse passer plutôt que de bloquer
+  }
+  if (!data) {
+    console.warn(`[quota] 🛑 Quota ${api} épuisé pour aujourd'hui`);
+  }
+  return Boolean(data);
+}
+
+/**
+ * Variante fail-closed : en cas d'erreur DB, bloque l'appel.
+ * À utiliser pour les APIs avec un budget journalier strict (ex: apifootball 80/j).
+ */
+export async function consommerQuotaStrict(supabase: SupabaseClient, api: Api): Promise<boolean> {
+  const { data, error } = await supabase.rpc('quota_consommer', { p_api: api });
+  if (error) {
+    console.warn(`[quota] Erreur RPC quota_consommer(${api}) — appel bloqué (fail-closed):`, error.message);
+    return false; // fail-closed : protège le budget en cas d'incident DB
   }
   if (!data) {
     console.warn(`[quota] 🛑 Quota ${api} épuisé pour aujourd'hui`);

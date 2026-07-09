@@ -19,7 +19,7 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { LEAGUES }                         from '../_shared/config.ts';
-import { consommerQuota, lireQuotas }      from '../_shared/quota.ts';
+import { consommerQuota, consommerQuotaStrict, lireQuotas } from '../_shared/quota.ts';
 import {
   getProchainMatchsLigue,
   getStatsMatch,
@@ -114,7 +114,8 @@ async function stockerMarche(matchId: string, slug: string, donnees: any, source
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
-  if (CRON_SECRET && req.headers.get('Authorization') !== `Bearer ${CRON_SECRET}`) {
+  // CRON_SECRET toujours requis — refus explicite même si la variable est absente
+  if (!CRON_SECRET || req.headers.get('Authorization') !== `Bearer ${CRON_SECRET}`) {
     return new Response('Unauthorized', { status: 401 });
   }
 
@@ -206,18 +207,25 @@ Deno.serve(async (req) => {
   let apifCount = 0;
 
   for (const { matchId, idAPIfootball } of matchsIndexes) {
-    if (!idAPIfootball || apifCount >= MAX_MATCHS_APIF_PAR_RUN) break;
+    // Arrêt si budget épuisé pour ce run
+    if (apifCount >= MAX_MATCHS_APIF_PAR_RUN) break;
+    // Pas de pont api-football → on skip ce match, on continue le suivant
+    if (!idAPIfootball) { stats.skips++; continue; }
+    // Déjà enrichi récemment → skip
     if (await dejaFrais(matchId, 'apif_stats', 24)) { stats.skips++; continue; }
 
-    const ok = await consommerQuota(supabase, 'apifootball');
+    // Fail-closed : si DB KO, on n'appelle pas l'API externe (protège le quota)
+    const ok = await consommerQuotaStrict(supabase, 'apifootball');
     if (!ok) { console.warn('[apif] Quota épuisé (Phase 3)'); break; }
+
+    // Incrémenter ici : l'appel API est lancé quoi qu'il arrive (quota consommé)
+    apifCount++;
 
     try {
       const apifStats = await getStatsDetaillees(idAPIfootball);
       if (apifStats) {
         await stockerMarche(matchId, 'apif_stats', { response: apifStats }, 'apifootball');
         stats.apif_stats++;
-        apifCount++;
       }
     } catch (e) {
       console.error('[phase3] apif', matchId, e);
