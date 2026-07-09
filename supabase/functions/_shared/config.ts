@@ -1,6 +1,6 @@
-// ─── Configuration centralisée — Architecture hybride ────────────────────────
+// ─── Configuration centralisée ────────────────────────────────────────────────
 // Source 1 : TheSportsDB  → calendrier des matchs + stats de base
-// Source 2 : api-football → stats détaillées (possession, cartons, corners)
+// Source 2 : SofaScore    → H2H + enrichissement (via RapidAPI)
 
 // ─── TheSportsDB ─────────────────────────────────────────────────────────────
 export const THESPORTSDB = {
@@ -11,37 +11,35 @@ export const THESPORTSDB = {
   },
 };
 
-// ─── api-football (RapidAPI) ──────────────────────────────────────────────────
-export const APIFOOTBALL = {
-  BASE_URL: 'https://api-football-v1.p.rapidapi.com/v3',
-  HOST:     'api-football-v1.p.rapidapi.com',
+// ─── SofaScore (RapidAPI) ─────────────────────────────────────────────────────
+export const SOFASCORE = {
+  HOST:     'sofascore.p.rapidapi.com',
+  BASE_URL: 'https://sofascore.p.rapidapi.com',
+  // Quota gratuit : ~500 req/mois → 15/jour (géré dans quota_journalier)
 };
 
 // ─── Groq ─────────────────────────────────────────────────────────────────────
 export const GROQ = {
   BASE_URL:   'https://api.groq.com/openai/v1',
-  // llama3-70b-8192 a été décommissionné par Groq (juillet 2026) — remplacé par
-  // son successeur recommandé. Voir https://console.groq.com/docs/deprecations
+  // llama3-70b-8192 a été décommissionné par Groq (juillet 2026)
   MODEL:      'llama-3.3-70b-versatile',
   MAX_TOKENS: 800,
   CACHE_H:    24,   // validité du pronostic en cache (heures)
 };
 
 // ─── Ligues supportées ────────────────────────────────────────────────────────
-// tsdb_id   : ID TheSportsDB
-// apif_id   : ID api-football.com (pour les stats détaillées)
+// tsdb_id : ID TheSportsDB
 export const LEAGUES: Array<{
-  tsdb_id:  string;
-  apif_id:  string;
-  name:     string;
+  tsdb_id: string;
+  name:    string;
 }> = [
-  { tsdb_id: '4334', apif_id: '61',  name: 'Ligue 1'          },
-  { tsdb_id: '4328', apif_id: '39',  name: 'Premier League'   },
-  { tsdb_id: '4335', apif_id: '140', name: 'La Liga'          },
-  { tsdb_id: '4331', apif_id: '78',  name: 'Bundesliga'       },
-  { tsdb_id: '4332', apif_id: '135', name: 'Serie A'          },
-  { tsdb_id: '4480', apif_id: '2',   name: 'Champions League' },
-  { tsdb_id: '4481', apif_id: '3',   name: 'Europa League'    },
+  { tsdb_id: '4334', name: 'Ligue 1'          },
+  { tsdb_id: '4328', name: 'Premier League'   },
+  { tsdb_id: '4335', name: 'La Liga'          },
+  { tsdb_id: '4331', name: 'Bundesliga'       },
+  { tsdb_id: '4332', name: 'Serie A'          },
+  { tsdb_id: '4480', name: 'Champions League' },
+  { tsdb_id: '4481', name: 'Europa League'    },
 ];
 
 // ─── Prompt système Groq ──────────────────────────────────────────────────────

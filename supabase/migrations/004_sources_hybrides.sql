@@ -1,28 +1,26 @@
 -- =============================================
 -- Migration 004: Sources hybrides
 -- TheSportsDB (calendrier / stats de base)
--- api-football (stats détaillées via RapidAPI)
+-- SofaScore via RapidAPI (H2H)
 -- =============================================
 
--- Pont entre TheSportsDB et api-football
+-- Colonne de pont TheSportsDB
 ALTER TABLE matchs_index
-  ADD COLUMN IF NOT EXISTS id_apifootball TEXT,
   ADD COLUMN IF NOT EXISTS id_thesportsdb TEXT;
 
--- Index sur les IDs de pont
-CREATE INDEX IF NOT EXISTS idx_matchs_apifootball ON matchs_index(id_apifootball)
-  WHERE id_apifootball IS NOT NULL;
+-- Index sur l'ID TheSportsDB
+CREATE INDEX IF NOT EXISTS idx_matchs_thesportsdb ON matchs_index(id_thesportsdb)
+  WHERE id_thesportsdb IS NOT NULL;
 
--- Mettre à jour la colonne source de marches_bruts
--- (déjà TEXT, rien à changer structurellement — on ajoute juste les nouvelles valeurs)
--- Valeurs attendues : 'thesportsdb' | 'apifootball' | 'sofascore' (legacy)
+-- Valeurs attendues dans marches_bruts.source :
+--   'thesportsdb' | 'sofascore'
 
 -- Ajout des nouvelles APIs dans le quota journalier
 INSERT INTO quota_journalier (date, api, compteur, limite) VALUES
   -- TheSportsDB free : aucun rate limit documenté, on se fixe une limite haute
   (CURRENT_DATE, 'thesportsdb', 0, 500),
-  -- api-football free tier : 100 req/jour, on garde une marge de sécurité
-  (CURRENT_DATE, 'apifootball', 0, 80)
+  -- SofaScore free tier RapidAPI : ~500 req/mois → 15/jour
+  (CURRENT_DATE, 'sofascore', 0, 15)
 ON CONFLICT DO NOTHING;
 
 -- Mettre à jour la fonction quota_consommer pour les nouvelles clés
@@ -39,10 +37,9 @@ BEGIN
     p_api,
     0,
     CASE p_api
-      WHEN 'rapidapi'     THEN 15
       WHEN 'groq'         THEN 20
       WHEN 'thesportsdb'  THEN 500
-      WHEN 'apifootball'  THEN 80
+      WHEN 'sofascore'    THEN 15
       ELSE 10
     END
   )

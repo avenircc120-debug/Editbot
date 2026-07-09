@@ -1,21 +1,19 @@
 /**
  * analyse-matches v3 — Cycle complet fetch → Groq → pronostics_pre_calcules
  *
- * Lit matchs_index + marches_bruts (sources : thesportsdb + apifootball),
+ * Lit matchs_index + marches_bruts (sources : thesportsdb + sofascore),
  * construit un contexte enrichi pour Groq, génère 4 pronostics par match.
  *
  * Nouveaux slugs gérés dans buildContext :
  *   tsdb_event  → données brutes TheSportsDB (équipes, compétition, date)
  *   tsdb_stats  → stats post-match TheSportsDB (tirs cadrés/non-cadrés…)
- *   apif_stats  → stats détaillées api-football (possession, cartons, corners)
  *   lineups     → compositions d'équipes (TheSportsDB)
- *   h2h         → historique H2H (legacy SofaScore, conservé si présent)
+ *   h2h         → historique H2H (SofaScore)
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { GROQ, SYSTEM_PROMPT }          from '../_shared/config.ts';
 import { consommerQuota, lireQuotas }   from '../_shared/quota.ts';
-import { resumerStatsApif }             from '../_shared/apifootball.ts';
 import { resumeOddsGroq }               from '../_shared/odds.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
@@ -44,14 +42,6 @@ function buildContext(match: any, marches: any[]): string {
   // Index des marchés par slug pour accès rapide
   const par: Record<string, any> = {};
   for (const m of marches) par[m.marche_slug] = m.donnees;
-
-  // ── Stats détaillées api-football (possession, cartons, corners) ────────────
-  if (par['apif_stats']?.response?.length) {
-    lignes.push('\n--- STATS DÉTAILLÉES (api-football) ---');
-    try {
-      lignes.push(resumerStatsApif(par['apif_stats'].response));
-    } catch { /* ignoré */ }
-  }
 
   // ── Stats de base TheSportsDB (tirs cadrés / non-cadrés / bloqués) ──────────
   if (par['tsdb_stats']?.eventstats?.length) {
@@ -86,7 +76,7 @@ function buildContext(match: any, marches: any[]): string {
     } catch { /* ignoré */ }
   }
 
-  // ── Historique H2H (SofaScore legacy ou api-football) ────────────────────────
+  // ── Historique H2H (SofaScore) ─────────────────────────────────────────────────
   if (par['h2h']?.events?.length || par['h2h']?.response?.length) {
     lignes.push('\n--- HISTORIQUE H2H ---');
     try {

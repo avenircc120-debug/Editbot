@@ -1,22 +1,21 @@
 /**
  * Quota journalier — protection des APIs gratuites
- * APIs gérées : thesportsdb | apifootball | groq | rapidapi (legacy)
+ * APIs gérées : thesportsdb | sofascore | groq
  */
 
 import { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-export type Api = 'thesportsdb' | 'apifootball' | 'groq' | 'rapidapi' | 'odds';
+export type Api = 'thesportsdb' | 'sofascore' | 'groq';
 
 /**
  * Tente de consommer 1 unité de quota pour l'API donnée.
  * Mode fail-open : en cas d'erreur DB, autorise l'appel (usage interne tolérant).
- * Préférer consommerQuotaStrict pour les APIs à budget serré.
  */
 export async function consommerQuota(supabase: SupabaseClient, api: Api): Promise<boolean> {
   const { data, error } = await supabase.rpc('quota_consommer', { p_api: api });
   if (error) {
     console.warn(`[quota] Erreur RPC quota_consommer(${api}):`, error.message);
-    return true; // fail-open : laisse passer plutôt que de bloquer
+    return true; // fail-open
   }
   if (!data) {
     console.warn(`[quota] 🛑 Quota ${api} épuisé pour aujourd'hui`);
@@ -26,13 +25,13 @@ export async function consommerQuota(supabase: SupabaseClient, api: Api): Promis
 
 /**
  * Variante fail-closed : en cas d'erreur DB, bloque l'appel.
- * À utiliser pour les APIs avec un budget journalier strict (ex: apifootball 80/j).
+ * À utiliser pour les APIs avec un budget journalier strict (ex: sofascore 15/j).
  */
 export async function consommerQuotaStrict(supabase: SupabaseClient, api: Api): Promise<boolean> {
   const { data, error } = await supabase.rpc('quota_consommer', { p_api: api });
   if (error) {
     console.warn(`[quota] Erreur RPC quota_consommer(${api}) — appel bloqué (fail-closed):`, error.message);
-    return false; // fail-closed : protège le budget en cas d'incident DB
+    return false;
   }
   if (!data) {
     console.warn(`[quota] 🛑 Quota ${api} épuisé pour aujourd'hui`);
@@ -64,7 +63,6 @@ export async function lireQuotas(
 
 /**
  * Wrapper autour d'un appel API externe avec vérification de quota.
- * Si le quota est épuisé, retourne null sans faire l'appel.
  */
 export async function avecQuota<T>(
   supabase: SupabaseClient,
