@@ -20,7 +20,9 @@ export const APIFOOTBALL = {
 // ─── Groq ─────────────────────────────────────────────────────────────────────
 export const GROQ = {
   BASE_URL:   'https://api.groq.com/openai/v1',
-  MODEL:      'llama3-70b-8192',
+  // llama3-70b-8192 a été décommissionné par Groq (juillet 2026) — remplacé par
+  // son successeur recommandé. Voir https://console.groq.com/docs/deprecations
+  MODEL:      'llama-3.3-70b-versatile',
   MAX_TOKENS: 800,
   CACHE_H:    24,   // validité du pronostic en cache (heures)
 };
