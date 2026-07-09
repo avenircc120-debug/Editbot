@@ -6,6 +6,7 @@
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
+import { searchPlayers } from '../_shared/apifootball.ts';
 
 const TELEGRAM_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN') ?? '';
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL') ?? '';
@@ -221,6 +222,18 @@ Si aucune donnée n'est disponible, dis-le directement.`;
     ?? "J'ai un petit bug là, réessaie dans quelques secondes 👊";
 }
 
+// ─── Formatage résultats recherche joueur ─────────────────────────────────────
+function formatJoueurs(nom: string, joueurs: Awaited<ReturnType<typeof searchPlayers>>): string {
+  if (!joueurs.length) {
+    return `Trouvé personne pour *"${nom}"*... vérifie l'orthographe et retente 🔍`;
+  }
+  const lignes = joueurs.slice(0, 8).map((j) => {
+    const club = j.teamName ? ` — _${j.teamName}_` : '';
+    return `⚽ *${j.name}*${club}`;
+  });
+  return `Voilà ce que j'ai trouvé pour *"${nom}"* :\n\n${lignes.join('\n')}`;
+}
+
 // ─── Réponses immédiates sans Groq ───────────────────────────────────────────
 function reponseInstantanee(text: string, prenom?: string): string | null {
   const t    = text.toLowerCase().trim();
@@ -232,7 +245,7 @@ function reponseInstantanee(text: string, prenom?: string): string | null {
   }
 
   if (/\/aide|\/help/.test(t)) {
-    return `Voilà comment ça marche :\n\n📋 */pronostics* — Mes pronos de la semaine\n💬 *Question libre* — Pose-moi n'importe quoi sur un match\n\nExemples :\n• _"Qui va gagner ce soir ?"_\n• _"T'en penses quoi du match CL ?"_\n• _"Y'a du BTTS intéressant cette semaine ?"_`;
+    return `Voilà comment ça marche :\n\n📋 */pronostics* — Mes pronos de la semaine\n🔍 */joueur [nom]* — Chercher un joueur (ex: \`/joueur Mbappé\`)\n💬 *Question libre* — Pose-moi n'importe quoi sur un match\n\nExemples :\n• _"Qui va gagner ce soir ?"_\n• _"T'en penses quoi du match CL ?"_\n• _"Y'a du BTTS intéressant cette semaine ?"_`;
   }
 
   if (/^(bonjour|bonsoir|salut|hello|hi|cc|coucou|yo|wesh)\b/.test(t)) {
@@ -278,10 +291,28 @@ Deno.serve(async (req) => {
       return new Response('OK');
     }
 
-    // 2. Charger les pronostics
+    // 2. Commande /joueur [nom] — recherche joueur en direct (RapidAPI)
+    const joueurMatch = text.match(/^\/joueur(?:@\w+)?\s+(.+)/i);
+    if (joueurMatch) {
+      const nomRecherche = joueurMatch[1].trim();
+      try {
+        const joueurs = await searchPlayers(nomRecherche);
+        await send(chatId, formatJoueurs(nomRecherche, joueurs));
+      } catch (e) {
+        console.error('Erreur searchPlayers:', e);
+        await send(chatId, `J'ai eu un souci pour chercher *"${nomRecherche}"*, réessaie dans un instant 🙏`);
+      }
+      return new Response('OK');
+    }
+    if (/^\/joueur\b/i.test(text)) {
+      await send(chatId, `Dis-moi qui chercher ! Exemple : \`/joueur Mbappé\``);
+      return new Response('OK');
+    }
+
+    // 3. Charger les pronostics
     const { donnees, count, matchsResume } = await chargerPronostics();
 
-    // 3. Commande /pronostics — Groq analyse tous les pronos et choisit le meilleur
+    // 4. Commande /pronostics — Groq analyse tous les pronos et choisit le meilleur
     if (/^\/pronostics/.test(text.toLowerCase())) {
       if (!count) {
         await send(chatId,
@@ -329,7 +360,7 @@ Deno.serve(async (req) => {
       return new Response('OK');
     }
 
-    // 4. Pas de données mais question posée
+    // 5. Pas de données mais question posée
     if (!count) {
       await send(chatId,
         `Honnêtement, j'ai pas de matchs analysés cette semaine pour l'instant.\n\nLes crons tournent chaque nuit — reviens demain et j'aurai mes analyses fraîches 🌙`
@@ -337,7 +368,7 @@ Deno.serve(async (req) => {
       return new Response('OK');
     }
 
-    // 5. Consommer quota Groq
+    // 6. Consommer quota Groq
     const groqOk = await consommerGroq();
     if (!groqOk) {
       // Fallback direct si quota épuisé
@@ -345,7 +376,7 @@ Deno.serve(async (req) => {
       return new Response('OK');
     }
 
-    // 6. Réponse Groq conversationnelle
+    // 7. Réponse Groq conversationnelle
     const reponse = await groqReponse(text, donnees, prenom);
     await send(chatId, reponse);
 
