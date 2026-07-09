@@ -22,7 +22,7 @@ const GROQ_KEY     = Deno.env.get('GROQ_API_KEY') ?? '';
 const CRON_SECRET  = Deno.env.get('CRON_SECRET') ?? '';
 const supabase     = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const MAX_MATCHS = 10;
+const MAX_MATCHS = 20; // relevé pour couvrir les compétitions ajoutées à LEAGUES
 
 // Marchés standards (toujours générés)
 const TYPES_BASE = ['1X2', 'BTTS', 'Over/Under 2.5', 'Double Chance'];
