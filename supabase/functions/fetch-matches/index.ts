@@ -72,23 +72,21 @@ async function indexMatch(event: any, competition: string, tournamentId: string,
            customId: buildCustomId(homeSlug, awaySlug) };
 }
 
+// ─── Vérifier quels marchés sont déjà frais pour un match ──────────────────
+async function getMarchesFrais(matchId: string): Promise<Set<string>> {
+  const cutoff = new Date(Date.now() - REFRESH_HOURS * 3600 * 1000).toISOString();
+  const { data } = await supabase
+    .from('marches_bruts')
+    .select('marche_slug')
+    .eq('match_id', matchId)
+    .gte('fetched_at', cutoff);
+  return new Set((data ?? []).map((r: any) => r.marche_slug));
+}
+
 // ─── Stocker les marchés bruts ──────────────────────────────────────────────
 async function stockerMarches(matchId: string, marches: Array<{ slug: string; donnees: any }>) {
   let stored = 0;
-  const cutoff = new Date(Date.now() - REFRESH_HOURS * 3600 * 1000).toISOString();
-
   for (const { slug, donnees } of marches) {
-    // Anti-doublon: vérifier si ce marché existe déjà et est récent
-    const { data: existing } = await supabase
-      .from('marches_bruts')
-      .select('id, fetched_at')
-      .eq('match_id', matchId)
-      .eq('marche_slug', slug)
-      .gte('fetched_at', cutoff)
-      .single();
-
-    if (existing) continue; // Données fraîches → skip
-
     const { error } = await supabase.from('marches_bruts').upsert({
       match_id:    matchId,
       marche_slug: slug,
@@ -96,7 +94,6 @@ async function stockerMarches(matchId: string, marches: Array<{ slug: string; do
       source:      'sofascore',
       fetched_at:  new Date().toISOString(),
     }, { onConflict: 'match_id,marche_slug' });
-
     if (!error) stored++;
   }
   return stored;
@@ -119,12 +116,20 @@ async function ingererEquipe(
       const { matchId, homeTeamId, awayTeamId, customId } =
         await indexMatch(event, competition, tournamentId, seasonId);
 
-      // Fetch dynamique de TOUS les marchés disponibles en parallèle
+      // Vérifier AVANT tout appel API quels marchés sont déjà frais
+      const marchesFrais = await getMarchesFrais(matchId);
+      const slugsAFetcher = [...MARKET_ENDPOINTS.map(m => m.slug), 'h2h', 'stats_domicile', 'stats_exterieur']
+        .filter(s => !marchesFrais.has(s));
+
+      if (!slugsAFetcher.length) continue; // Tout est frais → zéro appel API
+
+      // Fetch dynamique uniquement des marchés manquants/expirés
       const marches = await fetchAllMarkets(
         matchId, customId, homeTeamId, awayTeamId, tournamentId, seasonId
       );
+      const marchesNouveaux = marches.filter(m => !marchesFrais.has(m.slug));
 
-      const nb = await stockerMarches(matchId, marches);
+      const nb = await stockerMarches(matchId, marchesNouveaux);
       stats.matchs++;
       stats.marches += nb;
     } catch (e) {
@@ -136,6 +141,15 @@ async function ingererEquipe(
 
 // ─── Handler principal ───────────────────────────────────────────────────────
 Deno.serve(async (req) => {
+  // Sécurité: vérifier CRON_SECRET pour bloquer les appels non autorisés
+  const cronSecret = Deno.env.get('CRON_SECRET');
+  if (cronSecret) {
+    const auth = req.headers.get('Authorization');
+    if (auth !== `Bearer ${cronSecret}`) {
+      return new Response('Unauthorized', { status: 401 });
+    }
+  }
+
   const stats = { matchs: 0, marches: 0, erreurs: 0, equipes: 0 };
 
   for (const tournament of TOURNAMENT_SEEDS) {

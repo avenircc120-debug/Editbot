@@ -52,7 +52,7 @@ export const MARKET_ENDPOINTS: Array<{ slug: string; endpoint: string; paramKey:
 export const H2H_ENDPOINT = { slug: 'h2h', endpoint: 'matches/get-h2h-events', paramKey: 'customId' };
 export const TEAM_STATS_ENDPOINT = { slug: 'stats_equipe', endpoint: 'teams/get-statistics' };
 
-// Récupère dynamiquement tous les marchés disponibles pour un match
+// Récupère dynamiquement TOUS les marchés disponibles pour un match — 100% parallèle
 export async function fetchAllMarkets(
   matchId: string,
   customId?: string,
@@ -63,42 +63,41 @@ export async function fetchAllMarkets(
 ): Promise<Array<{ slug: string; donnees: any }>> {
   const results: Array<{ slug: string; donnees: any }> = [];
 
-  // Appels parallèles pour tous les endpoints par ID de match
-  const marketPromises = MARKET_ENDPOINTS.map(async ({ slug, endpoint }) => {
-    try {
-      const data = await fetchApi(endpoint, { id: matchId });
-      if (data) results.push({ slug, donnees: data });
-    } catch { /* endpoint non dispo → on continue */ }
+  // Construire la liste complète de tous les appels à effectuer
+  const allCalls: Array<{ slug: string; fn: () => Promise<any> }> = [
+    // Endpoints par ID de match
+    ...MARKET_ENDPOINTS.map(({ slug, endpoint }) => ({
+      slug,
+      fn: () => fetchApi(endpoint, { id: matchId }),
+    })),
+    // H2H via customId
+    ...(customId ? [{
+      slug: H2H_ENDPOINT.slug,
+      fn: () => fetchApi(H2H_ENDPOINT.endpoint, { customId: customId! }),
+    }] : []),
+    // Stats équipe domicile
+    ...(homeTeamId && tournamentId && seasonId ? [{
+      slug: 'stats_domicile',
+      fn: () => fetchApi(TEAM_STATS_ENDPOINT.endpoint, { id: homeTeamId!, tournamentId: tournamentId!, seasonId: seasonId! }),
+    }] : []),
+    // Stats équipe extérieur
+    ...(awayTeamId && tournamentId && seasonId ? [{
+      slug: 'stats_exterieur',
+      fn: () => fetchApi(TEAM_STATS_ENDPOINT.endpoint, { id: awayTeamId!, tournamentId: tournamentId!, seasonId: seasonId! }),
+    }] : []),
+  ];
+
+  // Lancer TOUS les appels en parallèle simultanément
+  const settled = await Promise.allSettled(allCalls.map(c => c.fn()));
+
+  settled.forEach((result, i) => {
+    const slug = allCalls[i].slug;
+    if (result.status === 'fulfilled' && result.value) {
+      results.push({ slug, donnees: result.value });
+    } else if (result.status === 'rejected') {
+      console.warn(`[sofascore] endpoint "${slug}" échoué:`, result.reason?.message ?? result.reason);
+    }
   });
-
-  await Promise.allSettled(marketPromises);
-
-  // H2H via customId (slugs des équipes)
-  if (customId) {
-    try {
-      const h2h = await fetchApi(H2H_ENDPOINT.endpoint, { customId });
-      if (h2h) results.push({ slug: H2H_ENDPOINT.slug, donnees: h2h });
-    } catch { /* ignoré */ }
-  }
-
-  // Stats équipes (domicile + extérieur)
-  if (homeTeamId && tournamentId && seasonId) {
-    try {
-      const statsHome = await fetchApi(TEAM_STATS_ENDPOINT.endpoint, {
-        id: homeTeamId, tournamentId, seasonId,
-      });
-      if (statsHome) results.push({ slug: 'stats_domicile', donnees: statsHome });
-    } catch { /* ignoré */ }
-  }
-
-  if (awayTeamId && tournamentId && seasonId) {
-    try {
-      const statsAway = await fetchApi(TEAM_STATS_ENDPOINT.endpoint, {
-        id: awayTeamId, tournamentId, seasonId,
-      });
-      if (statsAway) results.push({ slug: 'stats_exterieur', donnees: statsAway });
-    } catch { /* ignoré */ }
-  }
 
   return results;
 }

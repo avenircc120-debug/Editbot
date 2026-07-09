@@ -63,6 +63,10 @@ FROM matchs_index m
 LEFT JOIN marches_bruts mb ON m.match_id = mb.match_id
 GROUP BY m.match_id, m.competition, m.home_team, m.away_team, m.match_date, m.status;
 
--- Garder pronostics_pre_calcules, référencer matchs_index
+-- Corriger la FK de pronostics_pre_calcules → matchs_index
 ALTER TABLE pronostics_pre_calcules
   DROP CONSTRAINT IF EXISTS pronostics_pre_calcules_match_id_fkey;
+
+ALTER TABLE pronostics_pre_calcules
+  ADD CONSTRAINT pronostics_pre_calcules_match_id_fkey
+  FOREIGN KEY (match_id) REFERENCES matchs_index(match_id) ON DELETE CASCADE;

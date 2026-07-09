@@ -135,7 +135,15 @@ Réponds en JSON strict (sans markdown) :
 }
 
 // ─── Handler principal ───────────────────────────────────────────────────────
-Deno.serve(async (_req) => {
+Deno.serve(async (req) => {
+  const cronSecret = Deno.env.get('CRON_SECRET');
+  if (cronSecret) {
+    const auth = req.headers.get('Authorization');
+    if (auth !== `Bearer ${cronSecret}`) {
+      return new Response('Unauthorized', { status: 401 });
+    }
+  }
+
   const in48h = new Date(Date.now() + 48 * 3600 * 1000).toISOString();
 
   // Matchs à venir dans les 48h avec au moins un marché disponible
