@@ -10,7 +10,7 @@
  * 5. Rafraîchit la vue matérialisée meilleure_cote_par_match
  *
  * Appelée par le CRON Supabase toutes les 10 minutes :
- *   schedule: "*/10 * * * *"
+ *   schedule: every 10 minutes (cron: star-slash-10 star star star)
  */
 
 import { serve }                         from 'https://deno.land/std@0.177.0/http/server.ts';
