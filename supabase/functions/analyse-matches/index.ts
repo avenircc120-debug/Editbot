@@ -23,7 +23,21 @@ const CRON_SECRET  = Deno.env.get('CRON_SECRET') ?? '';
 const supabase     = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const MAX_MATCHS = 10;
-const TYPES      = ['1X2', 'BTTS', 'Over/Under 2.5', 'Double Chance'];
+
+// Marchés standards (toujours générés)
+const TYPES_BASE = ['1X2', 'BTTS', 'Over/Under 2.5', 'Double Chance'];
+
+// Marchés étendus (générés en plus — Groq les prédit à partir du H2H + connaissance foot)
+// Note: corners/fautes/penaltys nécessiteraient API-Football pour des stats précises.
+// En attendant, Groq fait une estimation qualitative basée sur l'historique H2H.
+const TYPES_ENRICHIS = [
+  'Score Exact',          // ex: "1-0", "2-1", "0-0"
+  'Corners Over/Under',   // ex: "Plus de 9.5", "Moins de 9.5"
+  'Mi-Temps 1X2',         // résultat à la mi-temps : "1", "N", "2"
+  'Cartons Over/Under',   // ex: "Plus de 3.5 cartons jaunes"
+];
+
+const TYPES = [...TYPES_BASE, ...TYPES_ENRICHIS];
 
 // ─── Construction du contexte enrichi pour Groq ───────────────────────────────
 
@@ -137,15 +151,28 @@ function buildContext(match: any, marches: any[]): string {
 async function groqAnalyse(context: string): Promise<{ pronostics: any[]; tokens: number }> {
   const prompt = `${context}
 
-Analyse ce match et génère exactement 4 pronostics au format JSON suivant (sans markdown) :
+Analyse ce match et génère exactement 8 pronostics au format JSON (sans markdown).
+Pour Score Exact et Corners, base-toi sur l'historique H2H des scores et ta connaissance des styles de jeu des équipes.
+
 {
   "pronostics": [
-    { "type": "1X2",            "valeur": "1|N|2",      "fiabilite": 75, "cote_conseille": 1.85, "analyse": "..." },
-    { "type": "BTTS",           "valeur": "Oui|Non",    "fiabilite": 70, "cote_conseille": 1.75, "analyse": "..." },
-    { "type": "Over/Under 2.5", "valeur": "Plus|Moins", "fiabilite": 65, "cote_conseille": 1.90, "analyse": "..." },
-    { "type": "Double Chance",  "valeur": "1N|12|N2",   "fiabilite": 80, "cote_conseille": 1.40, "analyse": "..." }
+    { "type": "1X2",              "valeur": "1|N|2",                  "fiabilite": 75, "cote_conseille": 1.85, "analyse": "..." },
+    { "type": "BTTS",             "valeur": "Oui|Non",                "fiabilite": 70, "cote_conseille": 1.75, "analyse": "..." },
+    { "type": "Over/Under 2.5",   "valeur": "Plus|Moins",             "fiabilite": 65, "cote_conseille": 1.90, "analyse": "..." },
+    { "type": "Double Chance",    "valeur": "1N|12|N2",               "fiabilite": 80, "cote_conseille": 1.40, "analyse": "..." },
+    { "type": "Score Exact",      "valeur": "ex: 1-0 ou 2-1 ou 0-0",  "fiabilite": 40, "cote_conseille": 5.50, "analyse": "..." },
+    { "type": "Corners Over/Under","valeur": "Plus de 9.5|Moins de 9.5","fiabilite": 60,"cote_conseille": 1.85, "analyse": "..." },
+    { "type": "Mi-Temps 1X2",     "valeur": "1|N|2",                  "fiabilite": 55, "cote_conseille": 2.20, "analyse": "..." },
+    { "type": "Cartons Over/Under","valeur": "Plus de 3.5|Moins de 3.5","fiabilite": 58,"cote_conseille": 1.80, "analyse": "..." }
   ]
-}`;
+}
+
+Règles importantes :
+- Score Exact : propose le score le plus probable selon l'historique H2H. Fiabilité max 50%.
+- Corners : équipes offensives qui jouent vite = plus de corners. Fiabilité max 65%.
+- Mi-Temps : l'équipe qui prend souvent le contrôle en premier. Fiabilité max 65%.
+- Cartons : derbies/matchs tendus = plus de cartons. Fiabilité max 65%.
+- Pour chaque type, l'analyse doit expliquer en 1-2 phrases le raisonnement concret.`;
 
   const res = await fetch(`${GROQ.BASE_URL}/chat/completions`, {
     method:  'POST',

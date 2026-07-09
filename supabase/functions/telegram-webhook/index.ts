@@ -106,23 +106,66 @@ async function chargerPronostics(): Promise<{ donnees: string; count: number; ma
   };
 }
 
-// ─── Meilleur pronostic de la semaine ────────────────────────────────────────
-async function meilleurPronostic(): Promise<any | null> {
-  const now  = new Date().toISOString();
-  const in7j = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+// ─── Groq analyse TOUS les pronostics et choisit le meilleur ─────────────────
+async function groqMeilleurChoix(tous: any[], prenom?: string): Promise<string> {
+  // Construire un résumé compact de tous les pronostics pour Groq
+  const parMatch: Record<string, any[]> = {};
+  for (const p of tous) {
+    const key = `${p.home_team} vs ${p.away_team}`;
+    if (!parMatch[key]) parMatch[key] = [];
+    parMatch[key].push(p);
+  }
 
-  const { data } = await supabase
-    .from('pronostics_finaux')
-    .select('home_team, away_team, competition, match_date, pronostic_type, pronostic_valeur, fiabilite, cote_conseille, analyse_texte')
-    .gte('match_date', now)
-    .lte('match_date', in7j)
-    .gte('expires_at', now)
-    .order('fiabilite', { ascending: false })
-    .order('cote_conseille', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const contexte: string[] = ['Voici TOUS les pronostics disponibles cette semaine :'];
+  for (const [matchKey, pronos] of Object.entries(parMatch)) {
+    const first = pronos[0];
+    const date  = new Date(first.match_date).toLocaleDateString('fr-FR', {
+      weekday: 'short', day: '2-digit', month: '2-digit',
+      hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris',
+    });
+    contexte.push(`\n${matchKey} (${first.competition}, ${date}) :`);
+    for (const p of pronos) {
+      contexte.push(`  - ${p.pronostic_type}: ${p.pronostic_valeur} | fiabilité ${p.fiabilite}% | cote ${p.cote_conseille} | ${p.analyse_texte ?? ''}`);
+    }
+  }
 
-  return data ?? null;
+  const systemPrompt = `Tu es Edi, un expert paris sportifs qui parle comme un ami — direct, naturel, humain.
+${prenom ? `L'utilisateur s'appelle ${prenom}.` : ''}
+Tu as été créé par *Houmetin Jeremy*.
+
+Ta mission : analyser TOUS les pronostics ci-dessous et trouver LE MEILLEUR pari de la semaine.
+
+Critères pour choisir :
+1. Fiabilité élevée (prioritaire)
+2. Cote intéressante (rapport valeur/risque)
+3. Type de pari solide (Double Chance > 1X2 si cote proche, BTTS fiable si les deux équipes marquent régulièrement)
+4. Contexte du match (compétition, enjeux)
+
+Réponds en 4-5 phrases naturelles et directes. Format :
+- D'abord : annonce ton choix clairement (match, type de pari, cote)
+- Ensuite : explique pourquoi c'est le meilleur pari de la semaine
+- Termine : donne un conseil sur la mise (prudent, normal, confiant)
+
+Ne commence jamais par "Bien sûr", "Certainement" ou un mot de robot.`;
+
+  const res = await fetch(`${GROQ_BASE}/chat/completions`, {
+    method:  'POST',
+    headers: { 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model:       GROQ_MODEL,
+      messages:    [
+        { role: 'system', content: systemPrompt },
+        { role: 'user',   content: contexte.join('\n') },
+      ],
+      max_tokens:  350,
+      temperature: 0.75,
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Groq ${res.status}`);
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content?.trim()
+    ?? "J'arrive pas à choisir là, réessaie dans un moment 👊";
 }
 
 // ─── Appel Groq — personnalité humaine forte ──────────────────────────────────
@@ -238,29 +281,51 @@ Deno.serve(async (req) => {
     // 2. Charger les pronostics
     const { donnees, count, matchsResume } = await chargerPronostics();
 
-    // 3. Commande /pronostics — meilleur choix + liste complète
+    // 3. Commande /pronostics — Groq analyse tous les pronos et choisit le meilleur
     if (/^\/pronostics/.test(text.toLowerCase())) {
       if (!count) {
         await send(chatId,
           `Pas de matchs analysés pour cette semaine pour l'instant...\n\nLes données sont mises à jour chaque nuit — reviens demain matin, j'aurai du nouveau 🌙`
         );
-      } else {
-        // Trouver le meilleur pronostic (fiabilité max)
-        const meilleur = await meilleurPronostic();
-        let msg = '';
-        if (meilleur) {
-          msg += `🎯 *Mon choix de la semaine :*\n`;
-          msg += `*${meilleur.home_team} vs ${meilleur.away_team}*\n`;
-          msg += `→ *${meilleur.pronostic_type}: ${meilleur.pronostic_valeur}* — cote ${meilleur.cote_conseille}\n`;
-          msg += `Confiance : ${meilleur.fiabilite}% `;
-          msg += meilleur.fiabilite >= 75 ? '🟢\n' : meilleur.fiabilite >= 60 ? '🟡\n' : '🔴\n';
-          if (meilleur.analyse_texte) msg += `_${meilleur.analyse_texte}_\n`;
-          msg += `\n──────────────────\n`;
-          msg += `*Tous les pronos de la semaine :*\n`;
-        }
-        msg += matchsResume;
-        await send(chatId, msg);
+        return new Response('OK');
       }
+
+      // Récupérer tous les pronostics bruts pour l'analyse Groq
+      const now2   = new Date().toISOString();
+      const in7j2  = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+      const { data: tousLesPronos } = await supabase
+        .from('pronostics_finaux')
+        .select('home_team, away_team, competition, match_date, pronostic_type, pronostic_valeur, fiabilite, cote_conseille, analyse_texte')
+        .gte('match_date', now2)
+        .lte('match_date', in7j2)
+        .gte('expires_at', now2)
+        .order('match_date')
+        .order('fiabilite', { ascending: false })
+        .limit(40);
+
+      // Groq choisit le meilleur pari si quota dispo, sinon fallback DB
+      let choixMsg = '';
+      const groqOk2 = await consommerGroq();
+      if (groqOk2 && tousLesPronos?.length) {
+        try {
+          const analyse = await groqMeilleurChoix(tousLesPronos, prenom);
+          choixMsg = `🎯 *Mon choix de la semaine :*\n${analyse}\n`;
+        } catch {
+          // fallback silencieux
+        }
+      }
+
+      if (!choixMsg) {
+        // Fallback : meilleur par fiabilité + cote
+        const top = (tousLesPronos ?? [])
+          .sort((a, b) => b.fiabilite - a.fiabilite || b.cote_conseille - a.cote_conseille)[0];
+        if (top) {
+          const fiabEmoji = top.fiabilite >= 75 ? '🟢' : top.fiabilite >= 60 ? '🟡' : '🔴';
+          choixMsg = `🎯 *Mon choix de la semaine :*\n*${top.home_team} vs ${top.away_team}*\n→ *${top.pronostic_type}: ${top.pronostic_valeur}* — cote ${top.cote_conseille} ${fiabEmoji}\n${top.analyse_texte ? '_' + top.analyse_texte + '_\n' : ''}`;
+        }
+      }
+
+      await send(chatId, `${choixMsg}\n──────────────────\n*Tous les pronos :*\n${matchsResume}`);
       return new Response('OK');
     }
 
