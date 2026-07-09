@@ -234,6 +234,70 @@ function formatJoueurs(nom: string, joueurs: Awaited<ReturnType<typeof searchPla
   return `Voilà ce que j'ai trouvé pour *"${nom}"* :\n\n${lignes.join('\n')}`;
 }
 
+// ─── Détection conversationnelle d'une question sur un joueur ────────────────
+// Pas de commande requise : on reconnaît le nom via des tournures naturelles.
+function detecterQuestionJoueur(text: string): string | null {
+  const patterns = [
+    /^(?:qui est|c'est qui)\s+(.+?)\s*\??$/i,
+    /(?:parle[- ]?moi|dis[- ]?moi)\s+(?:de|sur)\s+(.+?)\s*\??$/i,
+    /(?:infos?|informations?)\s+(?:sur|de)\s+(.+?)\s*\??$/i,
+    /(?:stats?|statistiques)\s+(?:de|sur)\s+(.+?)\s*\??$/i,
+    /(?:cherche(?:-moi)?|recherche(?:-moi)?|trouve(?:-moi)?)\s+(?:le joueur\s+)?(.+?)\s*\??$/i,
+    /(?:tu connais|connais[- ]?tu)\s+(.+?)\s*\??$/i,
+    /(?:qui joue|il joue où|dans quel club joue)\s+(.+?)\s*\??$/i,
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (m?.[1]) {
+      const nom = m[1].trim().replace(/^(le joueur|la joueuse)\s+/i, '');
+      // Filtre les faux positifs évidents (questions sur les matchs/pronos, pas sur une personne)
+      if (nom.length >= 2 && !/^(match|équipe|foot|ligue|championnat)/i.test(nom)) {
+        return nom;
+      }
+    }
+  }
+  return null;
+}
+
+// ─── Réponse conversationnelle Groq à partir des résultats joueur ─────────────
+async function groqReponseJoueur(nomRecherche: string, joueurs: Awaited<ReturnType<typeof searchPlayers>>, prenom?: string): Promise<string> {
+  const contexte = joueurs.length
+    ? joueurs.slice(0, 5).map((j) => `- ${j.name}${j.teamName ? ` (${j.teamName})` : ' (club inconnu)'}`).join('\n')
+    : '(aucun joueur trouvé pour cette recherche)';
+
+  const systemPrompt = `Tu es *Edi*, un pote qui s'y connaît vraiment en foot.
+${prenom ? `L'utilisateur s'appelle ${prenom}.` : ''}
+Tu parles français de façon naturelle et directe, jamais comme un robot. Tu n'utilises JAMAIS "Bien sûr", "Certainement" ou "Absolument" pour commencer.
+
+L'utilisateur te demande des infos sur un joueur ("${nomRecherche}"). Voici ce que ta recherche a remonté (nom + club actuel, rien de plus — pas de stats détaillées) :
+${contexte}
+
+Règles :
+- Si un ou plusieurs joueurs correspondent, réponds en 2-4 phrases : confirme qui c'est et son club actuel, avec ton avis de passionné si tu le connais.
+- Si plusieurs joueurs différents ressortent avec des noms proches, demande une précision.
+- Si la liste est vide, dis-le franchement et propose de réessayer avec l'orthographe exacte.
+- Ne jamais inventer de statistiques, de buts ou de matchs que tu n'as pas dans les données ci-dessus.
+- Réponse courte et punchy, 1-2 émojis maximum.`;
+
+  const res = await fetch(`${GROQ_BASE}/chat/completions`, {
+    method:  'POST',
+    headers: { 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model:       GROQ_MODEL,
+      messages:    [
+        { role: 'system', content: systemPrompt },
+        { role: 'user',   content: `Question originale : ${nomRecherche}` },
+      ],
+      max_tokens:  250,
+      temperature: 0.7,
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Groq ${res.status}`);
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content?.trim() ?? formatJoueurs(nomRecherche, joueurs);
+}
+
 // ─── Réponses immédiates sans Groq ───────────────────────────────────────────
 function reponseInstantanee(text: string, prenom?: string): string | null {
   const t    = text.toLowerCase().trim();
@@ -291,21 +355,35 @@ Deno.serve(async (req) => {
       return new Response('OK');
     }
 
-    // 2. Commande /joueur [nom] — recherche joueur en direct (RapidAPI)
-    const joueurMatch = text.match(/^\/joueur(?:@\w+)?\s+(.+)/i);
-    if (joueurMatch) {
-      const nomRecherche = joueurMatch[1].trim();
-      try {
-        const joueurs = await searchPlayers(nomRecherche);
-        await send(chatId, formatJoueurs(nomRecherche, joueurs));
-      } catch (e) {
-        console.error('Erreur searchPlayers:', e);
-        await send(chatId, `J'ai eu un souci pour chercher *"${nomRecherche}"*, réessaie dans un instant 🙏`);
-      }
+    // 2. Recherche joueur — conversationnelle (aucune commande requise) ou via /joueur en secours
+    const joueurCommande = text.match(/^\/joueur(?:@\w+)?\s*(.*)/i);
+    const nomJoueurDetecte = joueurCommande
+      ? joueurCommande[1].trim() || null
+      : detecterQuestionJoueur(text);
+
+    if (joueurCommande && !nomJoueurDetecte) {
+      await send(chatId, `Dis-moi qui chercher ! Exemple : \`/joueur Mbappé\` ou juste "qui est Mbappé ?"`);
       return new Response('OK');
     }
-    if (/^\/joueur\b/i.test(text)) {
-      await send(chatId, `Dis-moi qui chercher ! Exemple : \`/joueur Mbappé\``);
+
+    if (nomJoueurDetecte) {
+      try {
+        const joueurs = await searchPlayers(nomJoueurDetecte);
+        const groqOkJoueur = await consommerGroq();
+        if (groqOkJoueur) {
+          try {
+            const reponseJoueur = await groqReponseJoueur(nomJoueurDetecte, joueurs, prenom);
+            await send(chatId, reponseJoueur);
+            return new Response('OK');
+          } catch {
+            // fallback silencieux vers le format brut ci-dessous
+          }
+        }
+        await send(chatId, formatJoueurs(nomJoueurDetecte, joueurs));
+      } catch (e) {
+        console.error('Erreur searchPlayers:', e);
+        await send(chatId, `J'ai eu un souci pour chercher *"${nomJoueurDetecte}"*, réessaie dans un instant 🙏`);
+      }
       return new Response('OK');
     }
 
