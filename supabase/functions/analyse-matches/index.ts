@@ -189,7 +189,7 @@ Deno.serve(async (req) => {
   }
 
   const now   = new Date().toISOString();
-  const in48h = new Date(Date.now() + 48 * 3600 * 1000).toISOString();
+  const in48h = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(); // 7 jours
 
   // Récupérer les matchs à venir
   const { data: matchs, error: matchErr } = await supabase
