@@ -1,11 +1,7 @@
 /**
- * telegram-webhook — Bot conversationnel
- *
- * L'utilisateur pose n'importe quelle question en langage naturel.
- * Le bot charge les pronostics disponibles et demande à Groq de
- * formuler une réponse naturelle en français.
- *
- * Fallback sans Groq (quota épuisé) : réponse template directe.
+ * telegram-webhook v2 — Bot conversationnel
+ * Fix: vérifie les données AVANT de consommer le quota Groq
+ * Fix: répond aux questions simples sans Groq
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
@@ -22,16 +18,15 @@ const GROQ_MODEL = 'llama3-70b-8192';
 // ─── Quota Groq ───────────────────────────────────────────────────────────────
 async function consommerGroq(): Promise<boolean> {
   const { data } = await supabase.rpc('quota_consommer', { p_api: 'groq' });
-  return data !== false; // true = autorisé, false = épuisé
+  return data !== false;
 }
 
 // ─── Envoi Telegram ───────────────────────────────────────────────────────────
 async function send(chatId: number, text: string) {
-  // Telegram : max 4096 chars par message
   const chunks = text.match(/.{1,4000}(\s|$)/gs) ?? [text];
   for (const chunk of chunks) {
     await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-      method: 'POST',
+      method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id:                  chatId,
@@ -43,34 +38,33 @@ async function send(chatId: number, text: string) {
   }
 }
 
-// Indicateur "en train d'écrire..."
 async function typing(chatId: number) {
   await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendChatAction`, {
-    method: 'POST',
+    method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
   });
 }
 
-// ─── Charger les données depuis la base ───────────────────────────────────────
-async function chargerDonnees(): Promise<string> {
+// ─── Charger les pronostics depuis la base ────────────────────────────────────
+async function chargerPronostics(): Promise<{ donnees: string; count: number }> {
+  const now   = new Date().toISOString();
   const in72h = new Date(Date.now() + 72 * 3600 * 1000).toISOString();
 
-  // Pronostics disponibles dans les prochaines 72h
   const { data: pronos } = await supabase
     .from('pronostics_pre_calcules')
     .select('competition, home_team, away_team, match_date, pronostic_type, pronostic_valeur, fiabilite, cote_conseille, analyse_texte')
-    .gte('match_date', new Date().toISOString())
+    .gte('match_date', now)
     .lte('match_date', in72h)
-    .gte('expires_at', new Date().toISOString())
+    .gte('expires_at', now)
     .order('fiabilite', { ascending: false })
     .limit(20);
 
   if (!pronos?.length) {
-    return 'Aucun pronostic en base pour les prochaines 72h. Les données sont mises à jour chaque nuit.';
+    return { donnees: '', count: 0 };
   }
 
-  // Grouper par match pour éviter la redondance
+  // Grouper par match
   const parMatch: Record<string, any[]> = {};
   for (const p of pronos) {
     const key = `${p.home_team} vs ${p.away_team}`;
@@ -79,84 +73,82 @@ async function chargerDonnees(): Promise<string> {
   }
 
   const lignes: string[] = [];
-  for (const [match, types] of Object.entries(parMatch)) {
+  for (const [matchKey, types] of Object.entries(parMatch)) {
     const first = types[0];
     const date  = new Date(first.match_date).toLocaleDateString('fr-FR', {
       weekday: 'short', day: '2-digit', month: '2-digit',
       hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris',
     });
-    lignes.push(`\nMATCH: ${match} | ${first.competition} | ${date}`);
+    lignes.push(`\nMATCH: ${matchKey} | ${first.competition} | ${date}`);
     for (const t of types) {
       lignes.push(`  ${t.pronostic_type}: ${t.pronostic_valeur} (fiabilité ${t.fiabilite}%, cote ${t.cote_conseille})`);
       if (t.analyse_texte) lignes.push(`  Analyse: ${t.analyse_texte}`);
     }
   }
 
-  return lignes.join('\n');
+  return { donnees: lignes.join('\n'), count: pronos.length };
 }
 
 // ─── Appel Groq conversationnel ───────────────────────────────────────────────
 async function groqReponse(userMessage: string, donnees: string): Promise<string> {
-  const systemPrompt = `Tu es un assistant expert en pronostics sportifs sur Telegram. Tu réponds aux questions des utilisateurs en français de façon naturelle, directe et chaleureuse.
+  const systemPrompt = `Tu es un assistant spécialisé en pronostics sportifs football, chaleureux et professionnel.
+Tu réponds UNIQUEMENT en français.
+Tu as accès aux données suivantes sur les matchs à venir :
 
-Règles :
-- Utilise UNIQUEMENT les données fournies, n'invente rien.
-- Si une question concerne une compétition spécifique (Ligue 1, Premier League, etc.), filtre les données en conséquence.
-- Si on demande "les matchs de ce soir" ou "aujourd'hui", filtre par date.
-- Réponds de façon concise mais complète (max 10 lignes sur Telegram).
-- Utilise des emojis pertinents (⚽ 🏆 📊 🎯 etc.) pour rendre le message agréable.
-- Si les données sont vides, dis-le honnêtement et explique que les données sont mises à jour chaque nuit.
-- N'utilise JAMAIS de syntaxe de commandes comme /pronostics. Tu réponds toujours naturellement.
-- Formate bien pour Telegram : *gras* pour les noms d'équipes, \`code\` pour les cotes.
-- Si la question est hors sujet (pas de foot/sport), réponds brièvement et redirige vers les pronostics.`;
+${donnees}
 
-  const userContent = `Question de l'utilisateur : "${userMessage}"
-
-Données disponibles :
-${donnees}`;
+Si l'utilisateur pose une question sur un match ou un pronostic, base-toi uniquement sur ces données.
+Si l'utilisateur te parle de toi-même ou te pose une question générale, réponds naturellement sans mentionner les données.
+Sois concis (3-5 phrases max). Pas de listes à puces excessives.`;
 
   const res = await fetch(`${GROQ_BASE}/chat/completions`, {
-    method: 'POST',
+    method:  'POST',
     headers: { 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model:       GROQ_MODEL,
-      messages: [
+      messages:    [
         { role: 'system', content: systemPrompt },
-        { role: 'user',   content: userContent },
+        { role: 'user',   content: userMessage },
       ],
-      max_tokens:  600,
+      max_tokens:  500,
       temperature: 0.7,
     }),
   });
 
   if (!res.ok) throw new Error(`Groq ${res.status}`);
   const data = await res.json();
-  return data.choices[0]?.message?.content?.trim() ?? 'Je n\'ai pas pu générer une réponse.';
+  return data.choices?.[0]?.message?.content ?? 'Désolé, je ne peux pas répondre pour le moment.';
 }
 
-// ─── Réponse de secours (sans Groq) ──────────────────────────────────────────
+// ─── Réponse fallback (liste directe des pronostics) ─────────────────────────
 async function reponseFallback(chatId: number) {
-  const in72h = new Date(Date.now() + 72 * 3600 * 1000).toISOString();
-  const { data } = await supabase
-    .from('pronostics_pre_calcules')
-    .select('competition, home_team, away_team, match_date, pronostic_valeur, fiabilite')
-    .gte('match_date', new Date().toISOString())
-    .lte('match_date', in72h)
-    .gte('expires_at', new Date().toISOString())
-    .order('fiabilite', { ascending: false })
-    .limit(5);
+  const { donnees, count } = await chargerPronostics();
 
-  if (!data?.length) {
-    return send(chatId, '📭 Aucun pronostic disponible pour le moment. Revenez demain, les données sont mises à jour chaque nuit !');
+  if (!count) {
+    return send(chatId,
+      '⚽ *Editbot* — Moteur de pronostics sportifs\n\n' +
+      'Aucun pronostic disponible pour le moment.\n' +
+      'Les données sont mises à jour chaque nuit automatiquement.\n\n' +
+      '_Revenez demain pour des pronostics frais !_'
+    );
   }
 
-  const lignes = data.map(p => {
-    const e = p.fiabilite >= 80 ? '🟢' : p.fiabilite >= 65 ? '🟡' : '🔴';
-    const d = new Date(p.match_date).toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit', timeZone: 'Europe/Paris' });
-    return `${e} *${p.home_team}* vs *${p.away_team}*\n   ${p.competition} · ${d} · ${p.pronostic_valeur} (${p.fiabilite}%)`;
-  }).join('\n\n');
+  const lignes = donnees.split('\n').filter(Boolean);
+  return send(chatId, `⚽ *Pronostics disponibles*\n\n${lignes.join('\n')}`);
+}
 
-  return send(chatId, `⚽ *Pronostics disponibles*\n\n${lignes}`);
+// ─── Détection de questions simples (sans besoin de quota Groq) ──────────────
+function estQuestionSimple(text: string): string | null {
+  const t = text.toLowerCase();
+  if (t.match(/qui (t.a|t'a) (cr[eé]e?r?|fait|d[eé]velopp)/i))
+    return "👨‍💻 J'ai été créé par *Avenir CC*, un développeur passionné de sport et d'IA.\n\nJe suis *Editbot*, un moteur de pronostics sportifs basé sur l'intelligence artificielle. J'analyse les données en temps réel pour vous proposer les meilleures prédictions de football. ⚽";
+  if (t.match(/^(bonjour|bonsoir|salut|hello|hi|cc|coucou|yo)\b/i))
+    return "👋 Bonjour ! Je suis *Editbot*, votre assistant de pronostics sportifs.\n\nEnvoyez-moi *n'importe quelle question* sur les matchs à venir et je vous donnerai des analyses basées sur des données réelles. ⚽";
+  if (t.match(/\/start/i))
+    return "⚽ *Bienvenue sur Editbot !*\n\nJe suis votre expert en pronostics sportifs alimenté par l'IA.\n\n*Ce que je peux faire :*\n• Analyser les matchs à venir\n• Donner des pronostics 1X2, BTTS, Over/Under\n• Expliquer mes analyses\n\nPosez-moi n'importe quelle question sur le football !";
+  if (t.match(/\/aide|\/help/i))
+    return "📋 *Aide — Editbot*\n\n• `/pronostics` — Voir les pronostics du jour\n• Posez votre question en français naturel\n• Ex: _Qui va gagner ce soir ?_\n• Ex: _Que penses-tu du match PSG-OL ?_";
+  return null;
 }
 
 // ─── Handler principal ────────────────────────────────────────────────────────
@@ -167,34 +159,57 @@ Deno.serve(async (req) => {
     const body    = await req.json();
     const message = body.message ?? body.edited_message;
 
-    // Ignorer les messages sans texte (photos, stickers, etc.)
     if (!message?.text) return new Response('OK');
 
     const chatId = message.chat.id;
     const text   = message.text.trim();
 
-    // Ignorer les commandes système Telegram (ex: /setdescription, /start sans contexte)
-    // Traiter /start comme une question naturelle de bienvenue
-    const isStart = text.toLowerCase().startsWith('/start');
-    const userMessage = isStart
-      ? 'Bonjour ! Présente-toi et dis-moi ce que tu peux faire pour moi.'
-      : text;
-
-    // Afficher "en train d'écrire..." pendant le traitement
     await typing(chatId);
 
-    // Vérifier le quota Groq
-    const groqOk = await consommerGroq();
-
-    if (!groqOk) {
-      // Quota épuisé → réponse template directe
-      await reponseFallback(chatId);
+    // 1. Réponses immédiates sans Groq (questions simples)
+    const reponseSimple = estQuestionSimple(text);
+    if (reponseSimple) {
+      await send(chatId, reponseSimple);
       return new Response('OK');
     }
 
-    // Charger les données et générer une réponse naturelle
-    const donnees  = await chargerDonnees();
-    const reponse  = await groqReponse(userMessage, donnees);
+    // 2. Charger les pronostics d'abord (AVANT de consommer quota Groq)
+    const { donnees, count } = await chargerPronostics();
+
+    // 3. Commandes /pronostics — réponse directe sans Groq
+    if (text.toLowerCase().startsWith('/pronostics')) {
+      if (!count) {
+        await send(chatId,
+          '⚽ Aucun pronostic disponible pour les prochaines 72h.\n' +
+          '_Les données sont mises à jour chaque nuit._'
+        );
+      } else {
+        await send(chatId, `⚽ *Pronostics du moment*\n${donnees}`);
+      }
+      return new Response('OK');
+    }
+
+    // 4. Si aucun pronostic disponible → pas besoin d'appeler Groq
+    if (!count) {
+      await send(chatId,
+        '⚽ Aucun pronostic disponible pour les prochaines 72h.\n\n' +
+        'Les données sont récupérées chaque nuit depuis SofaScore et analysées par IA.\n' +
+        '_Revenez demain pour des pronostics à jour !_'
+      );
+      return new Response('OK');
+    }
+
+    // 5. Consommer quota Groq seulement si on a des données
+    const groqOk = await consommerGroq();
+    if (!groqOk) {
+      // Fallback : liste directe des pronostics sans Groq
+      await send(chatId, `⚽ *Pronostics disponibles*\n${donnees}`);
+      return new Response('OK');
+    }
+
+    // 6. Réponse Groq conversationnelle avec contexte
+    const userMessage = text;
+    const reponse     = await groqReponse(userMessage, donnees);
     await send(chatId, reponse);
 
     return new Response('OK');
