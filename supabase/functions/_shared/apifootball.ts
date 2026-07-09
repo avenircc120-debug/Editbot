@@ -7,6 +7,10 @@
     *
     * Endpoints utilisés :
     *   /football-players-search?search={q}  → recherche de joueurs par nom
+    *
+    * Testé le 09/07/2026 : réponse réelle de la forme
+    *   { status: "success", response: { suggestions: [{ type: "player", id, name, teamId, teamName, isCoach }, ...] } }
+    * Les suggestions mélangent joueurs, équipes et coachs (champ "type").
     */
 
     const APIFOOTBALL_HOST = 'free-api-live-football-data.p.rapidapi.com';
@@ -39,29 +43,24 @@
 
     // ─── Types ────────────────────────────────────────────────────────────────────
 
-    export interface AfPlayer {
-    id?:        number | string;
-    name?:      string;
-    position?:  string;
-    team?:      string;
-    country?:   string;
-    [key: string]: unknown;
+    export interface AfPlayerSuggestion {
+    type:      'player' | 'team' | string;
+    id:        string | number;
+    score?:    number;
+    name:      string;
+    isCoach?:  boolean;
+    teamId?:   number | string;
+    teamName?: string;
     }
 
     // ─── Recherche de joueurs par nom ─────────────────────────────────────────────
     // GET /football-players-search?search={q}
+    // Ne retourne que les suggestions de type "player" (filtre les équipes/coachs).
 
-    export async function searchPlayers(query: string): Promise<AfPlayer[]> {
+    export async function searchPlayers(query: string): Promise<AfPlayerSuggestion[]> {
     if (!query || !query.trim()) return [];
     const data = await afGet(`/football-players-search?search=${encodeURIComponent(query.trim())}`);
-    if (!data) return [];
-    // La forme exacte de la réponse dépend du plan RapidAPI ; on gère les
-    // variantes courantes (response.players / data.response / tableau direct).
-    const list =
-      data?.response?.players ??
-      data?.response ??
-      data?.data ??
-      data;
-    return Array.isArray(list) ? (list as AfPlayer[]) : [];
+    const suggestions: AfPlayerSuggestion[] = data?.response?.suggestions ?? [];
+    return suggestions.filter((s) => s.type === 'player' && !s.isCoach);
     }
     
