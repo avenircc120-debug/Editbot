@@ -253,8 +253,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_meilleure_cote_match_id
 -- ─── 10. RPC : rafraichir_meilleures_cotes ────────────────────────────────────
 -- Appelé par fetch-odds après chaque mise à jour pour garder la vue à jour
 CREATE OR REPLACE FUNCTION rafraichir_meilleures_cotes()
-RETURNS VOID LANGUAGE plpgsql AS $
+RETURNS VOID LANGUAGE plpgsql AS $BODY$
 BEGIN
   REFRESH MATERIALIZED VIEW CONCURRENTLY meilleure_cote_par_match;
 END;
-$;
+$BODY$;
