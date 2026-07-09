@@ -250,8 +250,11 @@ function detecterQuestionJoueur(text: string): string | null {
     const m = text.match(re);
     if (m?.[1]) {
       const nom = m[1].trim().replace(/^(le joueur|la joueuse)\s+/i, '');
-      // Filtre les faux positifs évidents (questions sur les matchs/pronos, pas sur une personne)
-      if (nom.length >= 2 && !/^(match|équipe|foot|ligue|championnat)/i.test(nom)) {
+      // Filtre les faux positifs évidents (questions sur les matchs/pronos/temporalité, pas sur une personne)
+      if (
+        nom.length >= 2 &&
+        !/^(match|équipe|foot|ligue|championnat|ce soir|aujourd'hui|demain|cette semaine|la semaine|maintenant|pronostic)/i.test(nom)
+      ) {
         return nom;
       }
     }
@@ -296,6 +299,13 @@ Règles :
   if (!res.ok) throw new Error(`Groq ${res.status}`);
   const data = await res.json();
   return data.choices?.[0]?.message?.content?.trim() ?? formatJoueurs(nomRecherche, joueurs);
+}
+
+// ─── Détection conversationnelle d'une demande de pronostics ─────────────────
+// Pas de commande requise : plein de façons naturelles de demander un pari conseillé.
+function detecterQuestionPronostics(text: string): boolean {
+  const t = text.toLowerCase();
+  return /pronostics?|pronos?\b|conseill(?:e|es|é)|quoi (?:jouer|parier|miser)|qu[' ]?est.ce que (?:je|tu) (?:joue|jouerais|conseilles?)|(?:bon|meilleur) (?:pari|coup|choix)|coup s[uû]r|value bet|t'as quoi|as.tu (?:une idée|quelque chose)|qu[' ]?est.ce qu[' ]?il y a de bien|une idée pour (?:ce soir|aujourd'hui|demain|cette semaine)|sur quoi (?:je|tu) (?:mise|parie)/i.test(t);
 }
 
 // ─── Réponses immédiates sans Groq ───────────────────────────────────────────
@@ -390,8 +400,8 @@ Deno.serve(async (req) => {
     // 3. Charger les pronostics
     const { donnees, count, matchsResume } = await chargerPronostics();
 
-    // 4. Commande /pronostics — Groq analyse tous les pronos et choisit le meilleur
-    if (/^\/pronostics/.test(text.toLowerCase())) {
+    // 4. Demande de pronostics — commande /pronostics OU tournure naturelle
+    if (/^\/pronostics/.test(text.toLowerCase()) || detecterQuestionPronostics(text)) {
       if (!count) {
         await send(chatId,
           `Pas de matchs analysés pour cette semaine pour l'instant...\n\nLes données sont mises à jour chaque nuit — reviens demain matin, j'aurai du nouveau 🌙`
