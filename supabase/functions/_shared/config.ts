@@ -18,6 +18,16 @@ export const SOFASCORE = {
   // Quota gratuit : ~500 req/mois → 15/jour (géré dans quota_journalier)
 };
 
+// ─── API-Football / odds (RapidAPI) ───────────────────────────────────────────
+// Utilisé par odds.ts pour récupérer les cotes bookmakers (endpoint /odds).
+// ⚠️ Nécessite un abonnement RapidAPI séparé sur "API-Football" — si non
+// souscrit, fetchOdds() échoue proprement (HTTP non-ok, retourne null),
+// sans casser le pipeline.
+export const APIFOOTBALL = {
+  HOST:     'api-football-v1.p.rapidapi.com',
+  BASE_URL: 'https://api-football-v1.p.rapidapi.com/v3',
+};
+
 // ─── Groq ─────────────────────────────────────────────────────────────────────
 export const GROQ = {
   BASE_URL:   'https://api.groq.com/openai/v1',
