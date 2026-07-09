@@ -1,255 +1,238 @@
 /**
- * fetch-matches v2 — Discovery dynamique des saisons + tournois actifs en été
- * Pipeline: SofaScore → matchs_index + marches_bruts
+ * fetch-matches v3 — Pipeline dual-source
+ *
+ * Phase 1 — TheSportsDB → Calendrier
+ *   Récupère les prochains matchs par ligue et les indexe dans matchs_index.
+ *   Stocke l'événement brut TheSportsDB dans marches_bruts (slug: 'tsdb_event').
+ *
+ * Phase 2 — TheSportsDB → Enrichissement de base
+ *   Pour chaque match indexé : stats de base + lineups si disponibles.
+ *   (marches_bruts slug: 'tsdb_stats', 'lineups')
+ *
+ * Phase 3 — api-football → Stats détaillées
+ *   Pour les matchs disposant d'un idAPIfootball : possession, cartons, corners.
+ *   Consomme le quota apifootball (80 req/j max).
+ *   (marches_bruts slug: 'apif_stats')
+ *
+ * Sécurité : header Authorization: Bearer {CRON_SECRET}
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
+import { LEAGUES }                         from '../_shared/config.ts';
+import { consommerQuota, lireQuotas }      from '../_shared/quota.ts';
+import {
+  getProchainMatchsLigue,
+  getStatsMatch,
+  getLineupsMatch,
+  filtrerProchains,
+  tsdbTimestampToDate,
+  type TsdbMatch,
+} from '../_shared/thesportsdb.ts';
+import { getStatsDetaillees }              from '../_shared/apifootball.ts';
 
-const SUPABASE_URL  = Deno.env.get('SUPABASE_URL') ?? '';
-const SUPABASE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const RAPIDAPI_KEY  = Deno.env.get('RAPIDAPI_KEY') ?? '';
-const CRON_SECRET   = Deno.env.get('CRON_SECRET') ?? '';
-const supabase      = createClient(SUPABASE_URL, SUPABASE_KEY);
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
+const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const CRON_SECRET  = Deno.env.get('CRON_SECRET') ?? '';
+const supabase     = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const SOFASCORE_BASE = 'https://sofascore.p.rapidapi.com';
-const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
-const API_HEADERS    = { 'x-rapidapi-host': SOFASCORE_HOST, 'x-rapidapi-key': RAPIDAPI_KEY };
+const MAX_MATCHS_PAR_LIGUE    = 5;   // Limite TheSportsDB tier gratuit
+const MAX_MATCHS_APIF_PAR_RUN = 15;  // Budget api-football (80 req/j partagés)
 
-// Tournois actifs toute l'année — pas de seasonId hardcodé
-const TOURNAMENTS = [
-  // Compétitions mondiales
-  { id: '16',   name: 'Coupe du Monde FIFA' },
-  // Amérique du Sud
-  { id: '384',  name: 'Copa Libertadores' },
-  { id: '480',  name: 'Copa Sudamericana' },
-  // Amérique du Nord
-  { id: '242',  name: 'MLS' },
-  { id: '352',  name: 'Liga MX' },
-  // Brésil / Argentine
-  { id: '325',  name: 'Brasileirao' },
-  { id: '155',  name: 'Argentine Primera' },
-  // Europe (saison août-mai — matchs amicaux/qualifs en juillet)
-  { id: '17',   name: 'Ligue 1' },
-  { id: '8',    name: 'Premier League' },
-  { id: '23',   name: 'La Liga' },
-  { id: '35',   name: 'Bundesliga' },
-  { id: '23160',name: 'Serie A' },
-  { id: '7',    name: 'Champions League' },
-  { id: '679',  name: 'Europa League' },
-  // Asie
-  { id: '600',  name: 'J1 League' },
-  { id: '610',  name: 'K League' },
-];
+// ─── Helpers DB ───────────────────────────────────────────────────────────────
 
-const MARKET_ENDPOINTS = [
-  { slug: 'statistiques',      endpoint: 'matches/get-statistics'  },
-  { slug: 'h2h',               endpoint: 'matches/get-h2h-events'  },
-  { slug: 'lineups',           endpoint: 'matches/get-lineups'      },
-  { slug: 'incidents',         endpoint: 'matches/get-incidents'    },
-  { slug: 'odds',              endpoint: 'odds/get-by-match'        },
-];
+async function indexerMatch(ev: TsdbMatch, competition: string): Promise<string | null> {
+  const matchDate = tsdbTimestampToDate(ev.strTimestamp).toISOString();
+  if (!ev.strHomeTeam || !ev.strAwayTeam) return null;
 
-const MAX_MATCHS_PAR_TOURNOI = 3;
+  const { error } = await supabase.from('matchs_index').upsert({
+    match_id:        ev.idEvent,
+    home_team:       ev.strHomeTeam,
+    away_team:       ev.strAwayTeam,
+    home_team_id:    ev.idHomeTeam ?? null,
+    away_team_id:    ev.idAwayTeam ?? null,
+    home_slug:       null,
+    away_slug:       null,
+    competition,
+    tournament_id:   ev.idLeague ?? null,
+    season_id:       ev.strSeason ?? null,
+    match_date:      matchDate,
+    status:          normaliserStatus(ev.strStatus),
+    home_score:      ev.intHomeScore !== null ? Number(ev.intHomeScore) : null,
+    away_score:      ev.intAwayScore !== null ? Number(ev.intAwayScore) : null,
+    id_apifootball:  ev.idAPIfootball ?? null,
+    id_thesportsdb:  ev.idEvent,
+    updated_at:      new Date().toISOString(),
+  }, { onConflict: 'match_id' });
 
-// ─── Quota ────────────────────────────────────────────────────────────────────
-async function quota(api: string): Promise<boolean> {
-  const { data, error } = await supabase.rpc('quota_consommer', { p_api: api });
-  if (error) { console.warn('[quota]', error.message); return true; }
-  if (!data)  console.warn(`[quota] 🛑 ${api} épuisé`);
-  return Boolean(data);
+  if (error) {
+    console.warn('[index]', ev.idEvent, error.message);
+    return null;
+  }
+  return ev.idEvent;
 }
 
-// ─── SofaScore helpers ────────────────────────────────────────────────────────
-async function apiGet(endpoint: string, params: Record<string, string>): Promise<any> {
-  const url = new URL(`${SOFASCORE_BASE}/${endpoint}`);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  try {
-    const r = await fetch(url.toString(), { headers: API_HEADERS });
-    if (!r.ok || r.status === 204) return null;
-    const body = await r.json();
-    return (body && !body.error && Object.keys(body).length > 0) ? body : null;
-  } catch (e) {
-    console.warn('[api]', endpoint, e);
-    return null;
+function normaliserStatus(strStatus: string | undefined): string {
+  switch ((strStatus ?? '').toUpperCase()) {
+    case 'FT':
+    case 'AET':
+    case 'PEN':
+      return 'finished';
+    case 'HT':
+    case '1H':
+    case '2H':
+    case 'ET':
+      return 'inprogress';
+    case 'PST':
+    case 'CANC':
+    case 'ABD':
+      return 'postponed';
+    default:
+      return 'scheduled'; // NS (Not Started), vide
   }
 }
 
-// Discovery dynamique de la saison courante d'un tournoi
-async function getSaisonActuelle(tournamentId: string): Promise<string | null> {
-  if (!await quota('rapidapi')) return null;
-  const data = await apiGet('tournaments/get-seasons', { id: tournamentId });
-  const seasons: any[] = data?.seasons ?? [];
-  if (!seasons.length) return null;
-  // La première saison est la plus récente
-  return String(seasons[0]?.id ?? '');
-}
-
-// Matchs programmés dans les 7 prochains jours pour un tournoi/saison
-async function getMatchsProgrammes(tournamentId: string, seasonId: string): Promise<any[]> {
-  if (!await quota('rapidapi')) return [];
-  const data = await apiGet('tournaments/get-scheduled-events', {
-    id: tournamentId,
-    seasonId,
-    page: '0',
-  });
-  return data?.events ?? [];
-}
-
-// ─── Indexer un match dans matchs_index ───────────────────────────────────────
-async function indexerMatch(ev: any, competition: string, tournamentId: string, seasonId: string): Promise<string | null> {
-  const matchId     = String(ev.id);
-  const homeTeamId  = String(ev.homeTeam?.id ?? '');
-  const awayTeamId  = String(ev.awayTeam?.id ?? '');
-  const matchDate   = ev.startTimestamp
-    ? new Date(ev.startTimestamp * 1000).toISOString()
-    : null;
-
-  if (!matchDate || !ev.homeTeam?.name || !ev.awayTeam?.name) return null;
-
-  const { error } = await supabase.from('matchs_index').upsert({
-    match_id:      matchId,
-    home_team:     ev.homeTeam.name,
-    away_team:     ev.awayTeam.name,
-    home_team_id:  homeTeamId,
-    away_team_id:  awayTeamId,
-    home_slug:     ev.homeTeam.slug ?? '',
-    away_slug:     ev.awayTeam.slug ?? '',
-    competition,
-    tournament_id: tournamentId,
-    season_id:     seasonId,
-    match_date:    matchDate,
-    status:        ev.status?.type ?? 'scheduled',
-    updated_at:    new Date().toISOString(),
-  }, { onConflict: 'match_id' });
-
-  if (error) { console.warn('[index]', matchId, error.message); return null; }
-  return matchId;
-}
-
-// Vérifier quels marchés sont déjà en base pour ce match
-async function getMarchesFrais(matchId: string): Promise<Set<string>> {
-  const cutoff = new Date(Date.now() - 12 * 3600 * 1000).toISOString();
+async function dejaFrais(matchId: string, slug: string, heures = 12): Promise<boolean> {
+  const cutoff = new Date(Date.now() - heures * 3600 * 1000).toISOString();
   const { data } = await supabase
     .from('marches_bruts')
-    .select('marche_slug')
+    .select('id')
     .eq('match_id', matchId)
-    .gte('fetched_at', cutoff);
-  return new Set((data ?? []).map((r: any) => r.marche_slug));
+    .eq('marche_slug', slug)
+    .gte('fetched_at', cutoff)
+    .maybeSingle();
+  return !!data;
 }
 
-// Stocker les marchés dans marches_bruts
-async function stockerMarches(matchId: string, marches: Array<{ slug: string; donnees: any }>): Promise<number> {
-  if (!marches.length) return 0;
-  const rows = marches.map(m => ({
-    match_id:    matchId,
-    marche_slug: m.slug,
-    donnees:     m.donnees,
-    source:      'sofascore',
-    fetched_at:  new Date().toISOString(),
-  }));
-  const { error } = await supabase
-    .from('marches_bruts')
-    .upsert(rows, { onConflict: 'match_id,marche_slug' });
-  if (error) console.warn('[store]', error.message);
-  return error ? 0 : rows.length;
-}
-
-// Récupérer tous les marchés d'un match en parallèle
-async function fetchMarches(matchId: string, customId?: string): Promise<Array<{ slug: string; donnees: any }>> {
-  if (!await quota('rapidapi')) return [];
-
-  const calls = MARKET_ENDPOINTS.map(({ slug, endpoint }) => ({
-    slug,
-    fn: () => {
-      const params: Record<string, string> = { id: matchId };
-      if (slug === 'h2h' && customId) params['customId'] = customId;
-      return apiGet(endpoint, params);
-    },
-  }));
-
-  const results = await Promise.all(calls.map(c => c.fn()));
-  return calls
-    .map((c, i) => ({ slug: c.slug, donnees: results[i] }))
-    .filter(r => r.donnees !== null);
+async function stockerMarche(matchId: string, slug: string, donnees: any, source: string): Promise<void> {
+  const { error } = await supabase.from('marches_bruts').upsert(
+    { match_id: matchId, marche_slug: slug, donnees, source, fetched_at: new Date().toISOString() },
+    { onConflict: 'match_id,marche_slug' },
+  );
+  if (error) console.warn(`[store] ${slug}@${matchId}:`, error.message);
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
+
 Deno.serve(async (req) => {
-  // Sécurité CRON
   if (CRON_SECRET && req.headers.get('Authorization') !== `Bearer ${CRON_SECRET}`) {
     return new Response('Unauthorized', { status: 401 });
   }
 
-  const stats = { tournois: 0, matchs: 0, marches: 0, skips: 0, erreurs: 0 };
-  let quotaEpuise = false;
+  const stats = {
+    ligues:         0,
+    matchs_indexes: 0,
+    tsdb_stats:     0,
+    lineups:        0,
+    apif_stats:     0,
+    skips:          0,
+    erreurs:        0,
+  };
 
-  for (const t of TOURNAMENTS) {
-    if (quotaEpuise) break;
+  // ══════════════════════════════════════════════════════════════════════════
+  // PHASE 1 — TheSportsDB → Calendrier des prochains matchs
+  // ══════════════════════════════════════════════════════════════════════════
 
-    // Discovery dynamique de la saison courante
-    const seasonId = await getSaisonActuelle(t.id);
-    if (!seasonId) {
-      // Quota épuisé ou aucune saison trouvée
-      if ((await supabase.from('quota_journalier')
-            .select('compteur,limite')
-            .eq('api', 'rapidapi')
-            .eq('date', new Date().toISOString().slice(0, 10))
-            .single())?.data?.compteur >= 30) {
-        quotaEpuise = true;
+  const matchsIndexes: Array<{ matchId: string; idAPIfootball: string | null }> = [];
+
+  for (const ligue of LEAGUES) {
+    // Quota TheSportsDB très permissif (500/j) — on consomme 1 unité par ligue
+    const ok = await consommerQuota(supabase, 'thesportsdb');
+    if (!ok) { console.warn('[tsdb] Quota épuisé (Phase 1)'); break; }
+
+    try {
+      const evts = await getProchainMatchsLigue(ligue.tsdb_id);
+      const aVenir = filtrerProchains(evts, 7).slice(0, MAX_MATCHS_PAR_LIGUE);
+
+      if (!aVenir.length) continue;
+      stats.ligues++;
+
+      for (const ev of aVenir) {
+        try {
+          // Stocker l'événement brut TheSportsDB
+          const matchId = await indexerMatch(ev, ligue.name);
+          if (!matchId) continue;
+
+          await stockerMarche(matchId, 'tsdb_event', ev, 'thesportsdb');
+          matchsIndexes.push({ matchId, idAPIfootball: ev.idAPIfootball ?? null });
+          stats.matchs_indexes++;
+        } catch (e) {
+          console.error('[phase1] match', ev.idEvent, e);
+          stats.erreurs++;
+        }
       }
-      continue;
+    } catch (e) {
+      console.error('[phase1] ligue', ligue.tsdb_id, e);
+      stats.erreurs++;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PHASE 2 — TheSportsDB → Stats de base + Lineups
+  // ══════════════════════════════════════════════════════════════════════════
+
+  for (const { matchId } of matchsIndexes) {
+    // Stats de base (tirs)
+    if (!await dejaFrais(matchId, 'tsdb_stats')) {
+      const ok = await consommerQuota(supabase, 'thesportsdb');
+      if (!ok) { console.warn('[tsdb] Quota épuisé (Phase 2 stats)'); break; }
+
+      const tsStats = await getStatsMatch(matchId);
+      if (tsStats) {
+        await stockerMarche(matchId, 'tsdb_stats', { eventstats: tsStats }, 'thesportsdb');
+        stats.tsdb_stats++;
+      }
+    } else {
+      stats.skips++;
     }
 
-    // Matchs programmés dans les 7 prochains jours
-    const events = await getMatchsProgrammes(t.id, seasonId);
-    if (!events.length) continue;
+    // Lineups
+    if (!await dejaFrais(matchId, 'lineups')) {
+      const ok = await consommerQuota(supabase, 'thesportsdb');
+      if (!ok) { console.warn('[tsdb] Quota épuisé (Phase 2 lineups)'); break; }
 
-    const aVenir = events
-      .filter((ev: any) => {
-        const ts = ev.startTimestamp * 1000;
-        const now = Date.now();
-        return ts > now && ts < now + 7 * 24 * 3600 * 1000;
-      })
-      .slice(0, MAX_MATCHS_PAR_TOURNOI);
-
-    if (!aVenir.length) continue;
-    stats.tournois++;
-
-    for (const ev of aVenir) {
-      try {
-        const matchId = await indexerMatch(ev, t.name, t.id, seasonId);
-        if (!matchId) continue;
-
-        const frais = await getMarchesFrais(matchId);
-        const allSlugs = MARKET_ENDPOINTS.map(m => m.slug);
-        if (allSlugs.every(s => frais.has(s))) { stats.skips++; continue; }
-
-        const marches = await fetchMarches(matchId, ev.customId);
-        if (!marches.length) { quotaEpuise = true; break; }
-
-        const nouveaux = marches.filter(m => !frais.has(m.slug));
-        const stored = await stockerMarches(matchId, nouveaux);
-        stats.marches += stored;
-        stats.matchs++;
-      } catch (e) {
-        console.error('[match]', ev.id, e);
-        stats.erreurs++;
+      const lineup = await getLineupsMatch(matchId);
+      if (lineup) {
+        await stockerMarche(matchId, 'lineups', { lineup }, 'thesportsdb');
+        stats.lineups++;
       }
     }
   }
 
-  const { data: quotas } = await supabase
-    .from('quota_journalier')
-    .select('api,compteur,limite')
-    .eq('date', new Date().toISOString().slice(0, 10));
+  // ══════════════════════════════════════════════════════════════════════════
+  // PHASE 3 — api-football → Stats détaillées (possession, cartons, corners)
+  // Uniquement pour les matchs avec idAPIfootball, dans la limite du budget
+  // ══════════════════════════════════════════════════════════════════════════
+
+  let apifCount = 0;
+
+  for (const { matchId, idAPIfootball } of matchsIndexes) {
+    if (!idAPIfootball || apifCount >= MAX_MATCHS_APIF_PAR_RUN) break;
+    if (await dejaFrais(matchId, 'apif_stats', 24)) { stats.skips++; continue; }
+
+    const ok = await consommerQuota(supabase, 'apifootball');
+    if (!ok) { console.warn('[apif] Quota épuisé (Phase 3)'); break; }
+
+    try {
+      const apifStats = await getStatsDetaillees(idAPIfootball);
+      if (apifStats) {
+        await stockerMarche(matchId, 'apif_stats', { response: apifStats }, 'apifootball');
+        stats.apif_stats++;
+        apifCount++;
+      }
+    } catch (e) {
+      console.error('[phase3] apif', matchId, e);
+      stats.erreurs++;
+    }
+  }
+
+  // ─── Rapport final ─────────────────────────────────────────────────────────
+
+  const quotas = await lireQuotas(supabase);
 
   return new Response(JSON.stringify({
-    success:      true,
+    success: true,
     ...stats,
-    quota_epuise: quotaEpuise,
-    quotas:       Object.fromEntries((quotas ?? []).map((q: any) => [
-      q.api, { compteur: q.compteur, limite: q.limite, reste: q.limite - q.compteur },
-    ])),
+    quotas,
     timestamp: new Date().toISOString(),
   }), { headers: { 'Content-Type': 'application/json' } });
 });

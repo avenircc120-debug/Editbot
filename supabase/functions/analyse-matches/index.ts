@@ -1,9 +1,21 @@
 /**
- * analyse-matches v2 — Cycle complet fetch → Groq → pronostics_pre_calcules
- * Lit matchs_index + marches_bruts, génère 4 pronostics par match via Groq.
+ * analyse-matches v3 — Cycle complet fetch → Groq → pronostics_pre_calcules
+ *
+ * Lit matchs_index + marches_bruts (sources : thesportsdb + apifootball),
+ * construit un contexte enrichi pour Groq, génère 4 pronostics par match.
+ *
+ * Nouveaux slugs gérés dans buildContext :
+ *   tsdb_event  → données brutes TheSportsDB (équipes, compétition, date)
+ *   tsdb_stats  → stats post-match TheSportsDB (tirs cadrés/non-cadrés…)
+ *   apif_stats  → stats détaillées api-football (possession, cartons, corners)
+ *   lineups     → compositions d'équipes (TheSportsDB)
+ *   h2h         → historique H2H (legacy SofaScore, conservé si présent)
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
+import { GROQ, SYSTEM_PROMPT }        from '../_shared/config.ts';
+import { consommerQuota, lireQuotas } from '../_shared/quota.ts';
+import { resumerStatsApif }           from '../_shared/apifootball.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -11,95 +23,137 @@ const GROQ_KEY     = Deno.env.get('GROQ_API_KEY') ?? '';
 const CRON_SECRET  = Deno.env.get('CRON_SECRET') ?? '';
 const supabase     = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const GROQ_BASE  = 'https://api.groq.com/openai/v1';
-const GROQ_MODEL = 'llama3-70b-8192';
-const CACHE_H    = 24;        // validité pronostic en heures
-const MAX_MATCHS = 10;        // matchs analysés par run
+const MAX_MATCHS = 10;
 const TYPES      = ['1X2', 'BTTS', 'Over/Under 2.5', 'Double Chance'];
 
-const SYSTEM_PROMPT = `Tu es un expert analyste sportif. Analyse les données et génère des pronostics précis en JSON strict. Règles : utilise uniquement les données fournies, donne un indice de fiabilité entre 0 et 100, sois concis (2-3 phrases max par analyse). Format de réponse JSON strict.`;
+// ─── Construction du contexte enrichi pour Groq ───────────────────────────────
 
-// ─── Quota ────────────────────────────────────────────────────────────────────
-async function quota(api: string): Promise<boolean> {
-  const { data, error } = await supabase.rpc('quota_consommer', { p_api: api });
-  if (error) { console.warn('[quota]', error.message); return true; }
-  if (!data)  console.warn(`[quota] 🛑 ${api} épuisé`);
-  return Boolean(data);
-}
-
-// ─── Construction du contexte pour Groq ──────────────────────────────────────
 function buildContext(match: any, marches: any[]): string {
-  const lignes = [
-    `Match: ${match.home_team} vs ${match.away_team}`,
+  const lignes: string[] = [
+    `Match      : ${match.home_team} vs ${match.away_team}`,
     `Compétition: ${match.competition}`,
-    `Date: ${new Date(match.match_date).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' })}`,
+    `Date       : ${new Date(match.match_date).toLocaleDateString('fr-FR', {
+      weekday: 'long', day: '2-digit', month: 'long',
+      hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris',
+    })}`,
     '',
     '=== DONNÉES DISPONIBLES ===',
   ];
 
-  for (const m of marches) {
-    lignes.push(`\n--- ${m.marche_slug.toUpperCase()} ---`);
+  // Index des marchés par slug pour accès rapide
+  const par: Record<string, any> = {};
+  for (const m of marches) par[m.marche_slug] = m.donnees;
+
+  // ── Stats détaillées api-football (possession, cartons, corners) ────────────
+  if (par['apif_stats']?.response?.length) {
+    lignes.push('\n--- STATS DÉTAILLÉES (api-football) ---');
     try {
-      switch (m.marche_slug) {
-        case 'statistiques':
-          (m.donnees?.statistics ?? [])
-            .flatMap((g: any) => g.groups ?? [])
-            .flatMap((gr: any) => gr.statisticsItems ?? [])
-            .slice(0, 12)
-            .forEach((s: any) => lignes.push(`${s.name}: ${s.home} / ${s.away}`));
-          break;
-        case 'h2h':
-          (m.donnees?.events ?? []).slice(0, 6).forEach((e: any) => {
-            const yr = new Date((e.startTimestamp ?? 0) * 1000).getFullYear();
-            lignes.push(`${e.homeTeam?.name} ${e.homeScore?.current ?? '?'}-${e.awayScore?.current ?? '?'} ${e.awayTeam?.name} (${yr})`);
-          });
-          break;
-        case 'lineups':
-          lignes.push(`Domicile: ${m.donnees?.home?.formation ?? 'N/D'} | Extérieur: ${m.donnees?.away?.formation ?? 'N/D'}`);
-          break;
-        case 'incidents':
-          (m.donnees?.incidents ?? [])
-            .filter((i: any) => ['goal', 'card', 'substitution'].includes(i.incidentType))
-            .slice(0, 10)
-            .forEach((inc: any) =>
-              lignes.push(`${inc.time?.played ?? '?'}' ${inc.incidentType}: ${inc.player?.name ?? ''}`)
-            );
-          break;
-        case 'odds':
-          (m.donnees?.markets ?? []).slice(0, 3).forEach((mkt: any) => {
-            const choices = (mkt.choices ?? [])
-              .map((ch: any) => `${ch.name}: ${ch.fractionalValue ?? '?'}`)
-              .join(' | ');
-            lignes.push(`${mkt.marketName}: ${choices}`);
-          });
-          break;
-        default:
-          lignes.push(JSON.stringify(m.donnees).slice(0, 150));
-      }
-    } catch { /* marché ignoré si erreur parsing */ }
+      lignes.push(resumerStatsApif(par['apif_stats'].response));
+    } catch { /* ignoré */ }
   }
+
+  // ── Stats de base TheSportsDB (tirs cadrés / non-cadrés / bloqués) ──────────
+  if (par['tsdb_stats']?.eventstats?.length) {
+    lignes.push('\n--- STATS DE BASE (TheSportsDB) ---');
+    try {
+      const stats: Array<{ strStat: string; intHome: string; intAway: string }> =
+        par['tsdb_stats'].eventstats;
+      for (const s of stats.slice(0, 10)) {
+        lignes.push(`${s.strStat}: ${s.intHome} / ${s.intAway} (dom/ext)`);
+      }
+    } catch { /* ignoré */ }
+  }
+
+  // ── Lineups (TheSportsDB) ────────────────────────────────────────────────────
+  if (par['lineups']?.lineup?.length) {
+    lignes.push('\n--- COMPOSITIONS ---');
+    try {
+      const lineup = par['lineups'].lineup as Array<{
+        strTeam: string; strPosition: string; strPlayer: string; strSubstitute: string;
+      }>;
+      const homeXI = lineup
+        .filter(p => p.strTeam === match.home_team && p.strSubstitute === 'No')
+        .map(p => `${p.strPosition}: ${p.strPlayer}`)
+        .slice(0, 11);
+      const awayXI = lineup
+        .filter(p => p.strTeam === match.away_team && p.strSubstitute === 'No')
+        .map(p => `${p.strPosition}: ${p.strPlayer}`)
+        .slice(0, 11);
+
+      if (homeXI.length) lignes.push(`${match.home_team}: ${homeXI.join(', ')}`);
+      if (awayXI.length) lignes.push(`${match.away_team}: ${awayXI.join(', ')}`);
+    } catch { /* ignoré */ }
+  }
+
+  // ── Historique H2H (SofaScore legacy ou api-football) ────────────────────────
+  if (par['h2h']?.events?.length || par['h2h']?.response?.length) {
+    lignes.push('\n--- HISTORIQUE H2H ---');
+    try {
+      // Format SofaScore (legacy)
+      const evts: any[] = par['h2h']?.events ?? par['h2h']?.response ?? [];
+      evts.slice(0, 6).forEach((e: any) => {
+        // SofaScore format
+        if (e.homeTeam?.name) {
+          const yr  = new Date((e.startTimestamp ?? 0) * 1000).getFullYear();
+          const hsc = e.homeScore?.current ?? e.goals?.home ?? '?';
+          const asc = e.awayScore?.current ?? e.goals?.away ?? '?';
+          lignes.push(`${e.homeTeam.name} ${hsc}-${asc} ${e.awayTeam.name} (${yr})`);
+        }
+        // api-football format
+        else if (e.teams?.home?.name) {
+          const date = e.fixture?.date?.slice(0, 10) ?? '?';
+          const hsc  = e.goals?.home ?? '?';
+          const asc  = e.goals?.away ?? '?';
+          lignes.push(`${e.teams.home.name} ${hsc}-${asc} ${e.teams.away.name} (${date})`);
+        }
+      });
+    } catch { /* ignoré */ }
+  }
+
+  // ── Événement brut TheSportsDB (metadata si rien d'autre) ───────────────────
+  if (par['tsdb_event'] && !par['tsdb_stats'] && !par['apif_stats']) {
+    lignes.push('\n--- INFORMATIONS MATCH ---');
+    const ev = par['tsdb_event'];
+    if (ev.strVenue) lignes.push(`Stade     : ${ev.strVenue}`);
+    if (ev.intRound) lignes.push(`Journée   : ${ev.intRound}`);
+  }
+
+  // ── Cotes (SofaScore legacy, conservé si présent) ────────────────────────────
+  if (par['odds']?.markets?.length) {
+    lignes.push('\n--- COTES ---');
+    try {
+      (par['odds'].markets as any[]).slice(0, 3).forEach((mkt: any) => {
+        const choices = (mkt.choices ?? [])
+          .map((ch: any) => `${ch.name}: ${ch.fractionalValue ?? '?'}`)
+          .join(' | ');
+        lignes.push(`${mkt.marketName}: ${choices}`);
+      });
+    } catch { /* ignoré */ }
+  }
+
   return lignes.join('\n');
 }
 
 // ─── Appel Groq : 1 requête → 4 pronostics ───────────────────────────────────
+
 async function groqAnalyse(context: string): Promise<{ pronostics: any[]; tokens: number }> {
   const prompt = `${context}
 
 Analyse ce match et génère exactement 4 pronostics au format JSON suivant (sans markdown) :
 {
   "pronostics": [
-    { "type": "1X2",               "valeur": "1|N|2",           "fiabilite": 75, "cote_conseille": 1.85, "analyse": "..." },
-    { "type": "BTTS",              "valeur": "Oui|Non",          "fiabilite": 70, "cote_conseille": 1.75, "analyse": "..." },
-    { "type": "Over/Under 2.5",    "valeur": "Plus|Moins",       "fiabilite": 65, "cote_conseille": 1.90, "analyse": "..." },
-    { "type": "Double Chance",     "valeur": "1N|12|N2",        "fiabilite": 80, "cote_conseille": 1.40, "analyse": "..." }
+    { "type": "1X2",            "valeur": "1|N|2",      "fiabilite": 75, "cote_conseille": 1.85, "analyse": "..." },
+    { "type": "BTTS",           "valeur": "Oui|Non",    "fiabilite": 70, "cote_conseille": 1.75, "analyse": "..." },
+    { "type": "Over/Under 2.5", "valeur": "Plus|Moins", "fiabilite": 65, "cote_conseille": 1.90, "analyse": "..." },
+    { "type": "Double Chance",  "valeur": "1N|12|N2",   "fiabilite": 80, "cote_conseille": 1.40, "analyse": "..." }
   ]
 }`;
 
-  const res = await fetch(`${GROQ_BASE}/chat/completions`, {
+  const res = await fetch(`${GROQ.BASE_URL}/chat/completions`, {
     method:  'POST',
     headers: { 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model:           GROQ_MODEL,
+      model:           GROQ.MODEL,
       messages:        [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user',   content: prompt },
@@ -128,15 +182,16 @@ Analyse ce match et génère exactement 4 pronostics au format JSON suivant (san
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
+
 Deno.serve(async (req) => {
   if (CRON_SECRET && req.headers.get('Authorization') !== `Bearer ${CRON_SECRET}`) {
     return new Response('Unauthorized', { status: 401 });
   }
 
-  const now    = new Date().toISOString();
-  const in48h  = new Date(Date.now() + 48 * 3600 * 1000).toISOString();
+  const now   = new Date().toISOString();
+  const in48h = new Date(Date.now() + 48 * 3600 * 1000).toISOString();
 
-  // Récupérer les matchs à venir depuis matchs_index
+  // Récupérer les matchs à venir
   const { data: matchs, error: matchErr } = await supabase
     .from('matchs_index')
     .select('match_id, home_team, away_team, competition, match_date')
@@ -156,7 +211,7 @@ Deno.serve(async (req) => {
   for (const match of (matchs ?? [])) {
     if (quotaEpuise) break;
 
-    // Vérifier le cache : pronostics déjà valides ?
+    // Cache : pronostics déjà valides ?
     const { data: caches } = await supabase
       .from('pronostics_pre_calcules')
       .select('pronostic_type')
@@ -165,11 +220,11 @@ Deno.serve(async (req) => {
 
     const enCache = new Set((caches ?? []).map((c: any) => c.pronostic_type));
     if (TYPES.every(t => enCache.has(t))) {
-      console.log(`[cache] ${match.home_team} vs ${match.away_team} déjà en cache`);
+      console.log(`[cache] ${match.home_team} vs ${match.away_team} — en cache`);
       continue;
     }
 
-    // Lire les marchés disponibles
+    // Lire tous les marchés disponibles pour ce match
     const { data: marches } = await supabase
       .from('marches_bruts')
       .select('marche_slug, donnees')
@@ -181,12 +236,12 @@ Deno.serve(async (req) => {
     }
 
     // Consommer quota Groq
-    if (!await quota('groq')) { quotaEpuise = true; break; }
+    if (!await consommerQuota(supabase, 'groq')) { quotaEpuise = true; break; }
 
     try {
-      const context       = buildContext(match, marches);
+      const context = buildContext(match, marches);
       const { pronostics, tokens } = await groqAnalyse(context);
-      const expiresAt     = new Date(Date.now() + CACHE_H * 3600 * 1000).toISOString();
+      const expiresAt = new Date(Date.now() + GROQ.CACHE_H * 3600 * 1000).toISOString();
 
       for (const p of pronostics) {
         if (!p.type || enCache.has(p.type)) continue;
@@ -198,7 +253,7 @@ Deno.serve(async (req) => {
           away_team:        match.away_team,
           match_date:       match.match_date,
           pronostic_type:   p.type,
-          pronostic_valeur: p.valeur ?? 'N/A',
+          pronostic_valeur: p.valeur  ?? 'N/A',
           fiabilite:        Math.min(100, Math.max(0, p.fiabilite ?? 50)),
           cote_conseille:   p.cote_conseille ?? 1.0,
           analyse_texte:    p.analyse ?? '',
@@ -215,19 +270,14 @@ Deno.serve(async (req) => {
     }
   }
 
-  const { data: quotas } = await supabase
-    .from('quota_journalier')
-    .select('api,compteur,limite')
-    .eq('date', now.slice(0, 10));
+  const quotas = await lireQuotas(supabase);
 
   return new Response(JSON.stringify({
     success:          true,
     matchs_traites:   (matchs ?? []).length,
     pronostics_crees: totalPronostics,
     quota_epuise:     quotaEpuise,
-    quotas: Object.fromEntries((quotas ?? []).map((q: any) => [
-      q.api, { compteur: q.compteur, limite: q.limite, reste: q.limite - q.compteur },
-    ])),
-    timestamp: now,
+    quotas,
+    timestamp:        now,
   }), { headers: { 'Content-Type': 'application/json' } });
 });

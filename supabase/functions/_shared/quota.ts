@@ -1,13 +1,11 @@
 /**
  * Quota journalier — protection des APIs gratuites
- *
- * Utilise une fonction SQL atomique (quota_consommer) pour garantir
- * qu'aucune race condition ne dépasse la limite même sous parallélisme.
+ * APIs gérées : thesportsdb | apifootball | groq | rapidapi (legacy)
  */
 
 import { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-export type Api = 'rapidapi' | 'groq';
+export type Api = 'thesportsdb' | 'apifootball' | 'groq' | 'rapidapi';
 
 /**
  * Tente de consommer 1 unité de quota pour l'API donnée.
@@ -17,7 +15,7 @@ export async function consommerQuota(supabase: SupabaseClient, api: Api): Promis
   const { data, error } = await supabase.rpc('quota_consommer', { p_api: api });
   if (error) {
     console.warn(`[quota] Erreur RPC quota_consommer(${api}):`, error.message);
-    return true; // En cas d'erreur DB, on laisse passer plutôt que de bloquer
+    return true; // En cas d'erreur DB on laisse passer plutôt que de bloquer
   }
   if (!data) {
     console.warn(`[quota] 🛑 Quota ${api} épuisé pour aujourd'hui`);
@@ -28,7 +26,9 @@ export async function consommerQuota(supabase: SupabaseClient, api: Api): Promis
 /**
  * Retourne l'état actuel des quotas (pour les logs et le rapport).
  */
-export async function lireQuotas(supabase: SupabaseClient): Promise<Record<Api, { compteur: number; limite: number; reste: number }>> {
+export async function lireQuotas(
+  supabase: SupabaseClient,
+): Promise<Record<string, { compteur: number; limite: number; reste: number }>> {
   const { data } = await supabase
     .from('quota_journalier')
     .select('api, compteur, limite')
