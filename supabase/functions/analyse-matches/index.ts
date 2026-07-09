@@ -248,6 +248,15 @@ Deno.serve(async (req) => {
       .limit(1)
       .single();
 
+    // Score de confiance calculé par analyse_confrontation (moteur de calcul).
+    // Reporté tel quel sur chaque pronostic final pour ce match.
+    const { data: confrontation } = await supabase
+      .from('analyse_confrontation')
+      .select('confiance_score')
+      .eq('match_id', match.match_id)
+      .maybeSingle();
+    const confianceScore = confrontation?.confiance_score ?? null;
+
     // Injecter les cotes dans le contexte comme slug virtuel '__masap_odds__'
     const marchesAvecOdds = marches ?? [];
     if (oddsRow?.marche_donnees) {
@@ -289,6 +298,26 @@ Deno.serve(async (req) => {
         }, { onConflict: 'match_id,pronostic_type' });
 
         if (!error) totalPronostics++;
+
+        // ── Table de consultation finale ──────────────────────────────────
+        // Seule table lue par telegram-webhook. Aucun calcul en direct côté bot :
+        // ce résumé "prêt à servir" est écrit une fois ici, par batch.
+        const { error: errFinal } = await supabase.from('pronostics_finaux').upsert({
+          match_id:         match.match_id,
+          competition:      match.competition,
+          home_team:        match.home_team,
+          away_team:        match.away_team,
+          match_date:       match.match_date,
+          pronostic_type:   p.type,
+          pronostic_valeur: p.valeur  ?? 'N/A',
+          fiabilite:        Math.min(100, Math.max(0, p.fiabilite ?? 50)),
+          confiance_score:  confianceScore,
+          cote_conseille:   p.cote_conseille ?? 1.0,
+          analyse_texte:    p.analyse ?? '',
+          expires_at:       expiresAt,
+        }, { onConflict: 'match_id,pronostic_type' });
+
+        if (errFinal) console.warn('[pronostics_finaux]', match.match_id, p.type, errFinal.message);
       }
 
       console.log(`✅ ${match.home_team} vs ${match.away_team}: ${pronostics.length} pronostics`);

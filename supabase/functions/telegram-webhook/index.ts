@@ -51,8 +51,10 @@ async function chargerPronostics(): Promise<{ donnees: string; count: number }> 
   const now   = new Date().toISOString();
   const in72h = new Date(Date.now() + 72 * 3600 * 1000).toISOString();
 
+  // Le bot ne lit QUE pronostics_finaux — table de consultation "prête à servir".
+  // Aucun calcul ni JOIN en direct : réponse en quelques millisecondes.
   const { data: pronos } = await supabase
-    .from('pronostics_pre_calcules')
+    .from('pronostics_finaux')
     .select('competition, home_team, away_team, match_date, pronostic_type, pronostic_valeur, fiabilite, cote_conseille, analyse_texte')
     .gte('match_date', now)
     .lte('match_date', in72h)
