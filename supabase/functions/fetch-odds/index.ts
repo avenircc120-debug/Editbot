@@ -76,18 +76,28 @@ serve(async (req: Request) => {
   for (const match of whitelist) {
     stats.matchs_evalues++;
 
-    // Vérifie si l'intervalle de refresh est écoulé
-    if (match.dernier_refresh) {
-      const dernierRefresh = new Date(match.dernier_refresh);
-      const minutesEcoulees = (now.getTime() - dernierRefresh.getTime()) / 60000;
-      if (minutesEcoulees < (match.intervalle_refresh_min ?? 10)) {
-        stats.matchs_skips++;
-        continue;
-      }
-    }
-
     if (!match.fixture_apif_id) {
       console.warn(`[fetch-odds] Pas de fixture_apif_id pour ${match.match_id}`);
+      stats.matchs_skips++;
+      continue;
+    }
+
+    // ── Claim atomique anti-race ──────────────────────────────────────────────
+    // On tente d'écrire dernier_refresh = NOW() uniquement si la ligne n'a pas
+    // déjà été réclamée par une exécution concurrente dans l'intervalle requis.
+    const intervalleMin = match.intervalle_refresh_min ?? 10;
+    const cutoffRefresh = new Date(now.getTime() - intervalleMin * 60 * 1000).toISOString();
+
+    const { count: claimed } = await supabase
+      .from('whitelist_matchs')
+      .update({ dernier_refresh: now.toISOString() })
+      .eq('id', match.id)
+      .or(`dernier_refresh.is.null,dernier_refresh.lt.${cutoffRefresh}`)
+      // count: 'exact' pour savoir si la ligne a vraiment été mise à jour
+      .select('id', { count: 'exact', head: true });
+
+    if (!claimed || claimed === 0) {
+      // Une autre instance a déjà réclamé ce match → skip
       stats.matchs_skips++;
       continue;
     }
@@ -97,6 +107,11 @@ serve(async (req: Request) => {
     if (!ok) {
       console.warn('[fetch-odds] 🛑 Quota odds épuisé');
       stats.quota_epuise = true;
+      // Annule le claim pour que la prochaine exécution puisse le traiter
+      await supabase
+        .from('whitelist_matchs')
+        .update({ dernier_refresh: match.dernier_refresh ?? null })
+        .eq('id', match.id);
       break;
     }
 

@@ -169,8 +169,10 @@ export async function fetchOddsTousBookmakers(
 
 /**
  * Formate un résumé des marchés clés pour le prompt Groq.
+ * Guard défensif : retourne la valeur telle quelle si c'est déjà une string.
  */
-export function resumeOddsGroq(donnees: MarchesDonnees): string {
+export function resumeOddsGroq(donnees: MarchesDonnees | string): string {
+  if (typeof donnees === 'string') return donnees;
   const m = donnees.marches;
   const lignes: string[] = [];
 
