@@ -184,7 +184,8 @@ Analyse ce match et génère exactement 4 pronostics au format JSON suivant (san
   try {
     const parsed = JSON.parse(content);
     return { pronostics: parsed.pronostics ?? [], tokens };
-  } catch {
+  } catch (e) {
+    console.error('[groq-parse-fail]', String(e), '| content:', content.slice(0, 500));
     return { pronostics: [], tokens };
   }
 }
