@@ -1,5 +1,5 @@
 /**
- * fetch-matches v4 — Pipeline dual-source : TheSportsDB + SofaScore
+ * fetch-matches v5 — Pipeline TheSportsDB (SofaScore retiré)
  *
  * Phase 1 — TheSportsDB → Calendrier
  *   Récupère les prochains matchs par ligue et les indexe dans matchs_index.
@@ -8,17 +8,15 @@
  * Phase 2 — TheSportsDB → Enrichissement de base
  *   Stats de base + lineups si disponibles (slugs: 'tsdb_stats', 'lineups').
  *
- * Phase 3 — SofaScore (RapidAPI) → H2H
- *   Pour chaque date unique des matchs à venir, 1 requête SofaScore pour
- *   récupérer tous les événements du jour, puis 1 requête H2H par match trouvé.
- *   Budget : 15 req/jour (quota sofascore).
+ * SofaScore (H2H) a été retiré pour éviter tout conflit de cron/quota avec
+ * The Odds API (voir fetch-odds), qui utilise désormais le même budget RapidAPI.
  *
  * Sécurité : header Authorization: Bearer {CRON_SECRET}
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { LEAGUES }                                  from '../_shared/config.ts';
-import { consommerQuota, consommerQuotaStrict, lireQuotas } from '../_shared/quota.ts';
+import { consommerQuota, lireQuotas } from '../_shared/quota.ts';
 import {
   getProchainMatchsLigue,
   getStatsMatch,
@@ -27,19 +25,12 @@ import {
   tsdbTimestampToDate,
   type TsdbMatch,
 } from '../_shared/thesportsdb.ts';
-import {
-  getEventsByDate,
-  getH2HEvents,
-  trouverEventSofascore,
-} from '../_shared/sofascore.ts';
-
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const CRON_SECRET  = Deno.env.get('CRON_SECRET') ?? '';
 const supabase     = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const MAX_MATCHS_PAR_LIGUE = 5;   // Limite TheSportsDB tier gratuit
-const MAX_H2H_PAR_RUN      = 10;  // Budget SofaScore H2H (15 req/j partagés avec events/date)
 
 // ─── Helpers DB ───────────────────────────────────────────────────────────────
 
@@ -110,11 +101,9 @@ Deno.serve(async (req) => {
   }
 
   const stats = {
-    ligues: 0, matchs: 0, tsdb_stats: 0, lineups: 0,
-    sofascore_dates: 0, h2h: 0, skips: 0, erreurs: 0,
+    ligues: 0, matchs: 0, tsdb_stats: 0, lineups: 0, erreurs: 0,
   };
 
-  // Stocke les matchs indexés pour la phase 3
   const matchsIndexes: Array<{ matchId: string; homeTeam: string; awayTeam: string; matchDate: string }> = [];
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -186,66 +175,6 @@ Deno.serve(async (req) => {
         }
       } catch (e) {
         console.error('[phase2-lineups]', matchId, e);
-        stats.erreurs++;
-      }
-    }
-  }
-
-  // ════════════════════════════════════════════════════════════════════════════
-  // PHASE 3 — SofaScore → H2H pour chaque match
-  // Stratégie économe : 1 req SofaScore par date unique pour tous les matchs
-  // du jour, puis 1 req H2H par match trouvé (dans la limite du budget).
-  // ════════════════════════════════════════════════════════════════════════════
-
-  // Grouper les matchs par date (YYYY-MM-DD)
-  const parDate: Record<string, typeof matchsIndexes> = {};
-  for (const m of matchsIndexes) {
-    const dateKey = m.matchDate.slice(0, 10);
-    if (!parDate[dateKey]) parDate[dateKey] = [];
-    parDate[dateKey].push(m);
-  }
-
-  let h2hCount = 0;
-
-  for (const [dateKey, matchsDuJour] of Object.entries(parDate)) {
-    if (h2hCount >= MAX_H2H_PAR_RUN) break;
-
-    // 1 requête SofaScore pour récupérer tous les matchs du jour
-    const sfOk = await consommerQuotaStrict(supabase, 'sofascore');
-    if (!sfOk) { console.warn('[sofascore] Quota épuisé (events/date)'); break; }
-
-    let eventsJour: Awaited<ReturnType<typeof getEventsByDate>> = [];
-    try {
-      eventsJour = await getEventsByDate(dateKey);
-      stats.sofascore_dates++;
-    } catch (e) {
-      console.error('[phase3] events/date', dateKey, e);
-      stats.erreurs++;
-      continue;
-    }
-
-    // Pour chaque match du jour, trouver son équivalent SofaScore puis fetch H2H
-    for (const match of matchsDuJour) {
-      if (h2hCount >= MAX_H2H_PAR_RUN) break;
-      if (await dejaFrais(match.matchId, 'h2h', 48)) { stats.skips++; continue; }
-
-      const sfEvent = trouverEventSofascore(eventsJour, match.homeTeam, match.awayTeam);
-      if (!sfEvent) { stats.skips++; continue; }
-
-      // 1 requête H2H
-      const h2hOk = await consommerQuotaStrict(supabase, 'sofascore');
-      if (!h2hOk) { console.warn('[sofascore] Quota épuisé (h2h)'); break; }
-
-      h2hCount++;
-
-      try {
-        const h2hEvents = await getH2HEvents(sfEvent.id);
-        if (h2hEvents.length) {
-          await stockerMarche(match.matchId, 'h2h', { events: h2hEvents }, 'sofascore');
-          stats.h2h++;
-        }
-      } catch (e) {
-        console.error('[phase3] h2h', match.matchId, e);
         stats.erreurs++;
       }
     }
