@@ -21,6 +21,7 @@ import {
   getProchainMatchsLigue,
   getStatsMatch,
   getLineupsMatch,
+  getDerniersMatchsEquipe,
   filtrerProchains,
   tsdbTimestampToDate,
   type TsdbMatch,
@@ -101,10 +102,13 @@ Deno.serve(async (req) => {
   }
 
   const stats = {
-    ligues: 0, matchs: 0, tsdb_stats: 0, lineups: 0, erreurs: 0,
+    ligues: 0, matchs: 0, tsdb_stats: 0, lineups: 0, forme: 0, erreurs: 0,
   };
 
-  const matchsIndexes: Array<{ matchId: string; homeTeam: string; awayTeam: string; matchDate: string }> = [];
+  const matchsIndexes: Array<{
+    matchId: string; homeTeam: string; awayTeam: string; matchDate: string;
+    homeTeamId: string | null; awayTeamId: string | null;
+  }> = [];
 
   // ════════════════════════════════════════════════════════════════════════════
   // PHASE 1 — TheSportsDB → Calendrier des matchs
@@ -131,9 +135,11 @@ Deno.serve(async (req) => {
 
         matchsIndexes.push({
           matchId,
-          homeTeam:  ev.strHomeTeam,
-          awayTeam:  ev.strAwayTeam,
-          matchDate: tsdbTimestampToDate(ev.strTimestamp).toISOString(),
+          homeTeam:   ev.strHomeTeam,
+          awayTeam:   ev.strAwayTeam,
+          matchDate:  tsdbTimestampToDate(ev.strTimestamp).toISOString(),
+          homeTeamId: ev.idHomeTeam ?? null,
+          awayTeamId: ev.idAwayTeam ?? null,
         });
       }
     } catch (e) {
@@ -175,6 +181,43 @@ Deno.serve(async (req) => {
         }
       } catch (e) {
         console.error('[phase2-lineups]', matchId, e);
+        stats.erreurs++;
+      }
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // PHASE 3 — TheSportsDB → Forme récente des équipes (buts marqués/concédés)
+  // Base du calcul de probabilités Poisson dans analyse-matches.
+  // ════════════════════════════════════════════════════════════════════════════
+
+  for (const { matchId, homeTeamId, awayTeamId } of matchsIndexes) {
+    if (homeTeamId && !await dejaFrais(matchId, 'forme_domicile', 24)) {
+      const ok = await consommerQuota(supabase, 'thesportsdb');
+      if (!ok) break;
+      try {
+        const derniers = await getDerniersMatchsEquipe(homeTeamId);
+        if (derniers?.length) {
+          await stockerMarche(matchId, 'forme_domicile', { equipe_id: homeTeamId, matchs: derniers }, 'thesportsdb');
+          stats.forme++;
+        }
+      } catch (e) {
+        console.error('[phase3-forme-dom]', matchId, e);
+        stats.erreurs++;
+      }
+    }
+
+    if (awayTeamId && !await dejaFrais(matchId, 'forme_exterieur', 24)) {
+      const ok = await consommerQuota(supabase, 'thesportsdb');
+      if (!ok) break;
+      try {
+        const derniers = await getDerniersMatchsEquipe(awayTeamId);
+        if (derniers?.length) {
+          await stockerMarche(matchId, 'forme_exterieur', { equipe_id: awayTeamId, matchs: derniers }, 'thesportsdb');
+          stats.forme++;
+        }
+      } catch (e) {
+        console.error('[phase3-forme-ext]', matchId, e);
         stats.erreurs++;
       }
     }
