@@ -8,6 +8,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { searchPlayers } from '../_shared/apifootball.ts';
 import { labelPronostic } from '../_shared/templates.ts';
+import { genererUrlOAuth } from '../_shared/facebook.ts';
 
 const TELEGRAM_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN') ?? '';
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL') ?? '';
@@ -405,7 +406,7 @@ function reponseInstantanee(text: string, prenom?: string): string | null {
   }
 
   if (/\/aide|\/help/.test(t)) {
-    return `Voilà comment ça marche :\n\n📋 */pronostics* — Mes pronos de la semaine\n🔍 */joueur [nom]* — Chercher un joueur (ex: \`/joueur Mbappé\`)\n💬 *Question libre* — Pose-moi n'importe quoi sur un match\n\nExemples :\n• _"Qui va gagner ce soir ?"_\n• _"T'en penses quoi du match CL ?"_\n• _"Y'a un match où les deux équipes vont marquer cette semaine ?"_`;
+    return `Voilà comment ça marche :\n\n📋 */pronostics* — Mes pronos de la semaine\n📘 */connect_facebook* — Publier sur ta Page Facebook\n📋 */mes_pages* — Tes Pages connectées\n🗑️ */delete_my_data* — Supprimer tes données (RGPD)\n🔍 */joueur [nom]* — Chercher un joueur (ex: \`/joueur Mbappé\`)\n💬 *Question libre* — Pose-moi n'importe quoi sur un match\n\nExemples :\n• _"Qui va gagner ce soir ?"_\n• _"T'en penses quoi du match CL ?"_\n• _"Y'a un match où les deux équipes vont marquer cette semaine ?"_`;
   }
 
   if (/^(bonjour|bonsoir|salut|hello|hi|cc|coucou|yo|wesh)\b/.test(t)) {
@@ -429,6 +430,66 @@ function reponseInstantanee(text: string, prenom?: string): string | null {
   return null;
 }
 
+
+// ─── Commandes Facebook ───────────────────────────────────────────────────────
+async function handleFacebookCommands(
+  chatId: number,
+  text: string,
+  telegramUserId: number,
+): Promise<boolean> {
+  const t = text.toLowerCase().trim();
+
+  if (t === '/connect_facebook') {
+    const oauthUrl = genererUrlOAuth(String(telegramUserId));
+    await send(chatId,
+      '📘 *Connecter ta Page Facebook*\n\nClique sur le lien ci-dessous pour autoriser Editbot à publier les pronostics sur ta Page :\n\n🔗 ' + oauthUrl + '\n\n_Tu recevras une confirmation ici une fois connecté._'
+    );
+    return true;
+  }
+
+  if (t === '/disconnect_facebook') {
+    const { error } = await supabase
+      .from('facebook_connections')
+      .update({ is_active: false })
+      .eq('telegram_user_id', telegramUserId);
+    if (error) {
+      await send(chatId, '❌ Erreur lors de la déconnexion. Réessaie dans un moment.');
+    } else {
+      await send(chatId,
+        '✅ *Pages Facebook déconnectées.*\n\nEditbot ne publiera plus sur tes Pages.\nPour reconnecter : /connect_facebook'
+      );
+    }
+    return true;
+  }
+
+  if (t === '/delete_my_data') {
+    await supabase.rpc('supprimer_donnees_utilisateur', { p_telegram_user_id: telegramUserId });
+    await send(chatId,
+      '🗑️ *Suppression de tes données*\n\nToutes tes données personnelles (connexions Facebook, quotas) ont été supprimées sous 30 jours.\n\nDétails : https://editbot.vercel.app/data-deletion.html'
+    );
+    return true;
+  }
+
+  if (t === '/mes_pages') {
+    const { data: pages } = await supabase
+      .from('facebook_connections')
+      .select('fb_page_name, is_active, last_post_at')
+      .eq('telegram_user_id', telegramUserId);
+    if (!pages?.length) {
+      await send(chatId, 'Aucune Page Facebook connectée. Tape /connect_facebook pour commencer 📘');
+    } else {
+      const liste = pages.map((p: any) =>
+        (p.is_active ? '✅' : '⏸️') + ' *' + p.fb_page_name + '*' +
+        (p.last_post_at ? ' — dernier post : ' + new Date(p.last_post_at).toLocaleDateString('fr-FR') : '')
+      ).join('\n');
+      await send(chatId, '📘 *Tes Pages connectées :*\n\n' + liste + '\n\nPour déconnecter : /disconnect_facebook');
+    }
+    return true;
+  }
+
+  return false;
+}
+
 // ─── Handler principal ────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return new Response('OK');
@@ -443,6 +504,10 @@ Deno.serve(async (req) => {
     const prenom = message.from?.first_name ?? undefined;
 
     await typing(chatId);
+
+    // 0. Commandes Facebook (OAuth, déconnexion, RGPD)
+    const fbHandled = await handleFacebookCommands(chatId, text, message.from?.id ?? chatId);
+    if (fbHandled) return new Response('OK');
 
     // 1. Réponses instantanées (sans Groq, sans quota)
     const instant = reponseInstantanee(text, prenom);
