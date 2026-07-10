@@ -56,6 +56,7 @@ export const LEAGUES: Array<{
   { tsdb_id: '4344', name: 'Primeira Liga',     odds_key: 'soccer_portugal_primeira_liga' },
   { tsdb_id: '4346', name: 'MLS',               odds_key: 'soccer_usa_mls' },
   { tsdb_id: '4351', name: 'Brasileirão',       odds_key: 'soccer_brazil_campeonato' },
+  { tsdb_id: '4429', name: 'Coupe du Monde FIFA', odds_key: 'soccer_fifa_world_cup' },
 ];
 
 // ─── Prompt système Groq ──────────────────────────────────────────────────────
