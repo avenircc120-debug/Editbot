@@ -119,6 +119,15 @@ export async function getLineupsMatch(idEvent: string): Promise<TsdbLineupPlayer
   return lineup as TsdbLineupPlayer[];
 }
 
+// ─── Derniers matchs terminés d'une équipe (pour le modèle statistique) ──────
+// Utilisé pour estimer la force offensive/défensive réelle (buts marqués /
+// concédés sur les derniers matchs), base du calcul de probabilités Poisson.
+
+export async function getDerniersMatchsEquipe(teamId: string): Promise<TsdbMatch[]> {
+  const data = await tsdbGet('eventslast.php', { id: teamId });
+  return (data?.results ?? []) as TsdbMatch[];
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Convertit un timestamp ISO TheSportsDB en objet Date */
