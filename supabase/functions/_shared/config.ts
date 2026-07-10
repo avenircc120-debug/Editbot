@@ -22,7 +22,10 @@ export const ODDS_API = {
     return Deno.env.get('ODDS_API_KEY') ?? '';
   },
   REGIONS: 'eu',
-  MARKETS: 'h2h,totals,btts',
+  // 'btts' n'est PAS un marché supporté par l'endpoint /odds (422 systématique,
+  // confirmé le 10/07/2026) — remplacé par 'spreads' (handicap asiatique), qui
+  // fonctionne et ajoute un vrai marché supplémentaire.
+  MARKETS: 'h2h,totals,spreads',
   ODDS_FORMAT: 'decimal',
 };
 
