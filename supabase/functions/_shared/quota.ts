@@ -1,11 +1,12 @@
 /**
  * Quota journalier — protection des APIs gratuites
- * APIs gérées : thesportsdb | sofascore | groq
+ * APIs gérées : thesportsdb | odds | groq
+ * (sofascore retiré)
  */
 
 import { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-export type Api = 'thesportsdb' | 'sofascore' | 'groq';
+export type Api = 'thesportsdb' | 'odds' | 'groq';
 
 /**
  * Tente de consommer 1 unité de quota pour l'API donnée.
