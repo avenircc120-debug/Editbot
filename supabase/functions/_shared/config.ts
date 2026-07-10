@@ -1,6 +1,7 @@
 // ─── Configuration centralisée ────────────────────────────────────────────────
 // Source 1 : TheSportsDB  → calendrier des matchs + stats de base
-// Source 2 : SofaScore    → H2H + enrichissement (via RapidAPI)
+// Source 2 : The Odds API → cotes bookmakers
+// (SofaScore retiré — conflit de quota/cron avec The Odds API sur RapidAPI)
 
 // ─── TheSportsDB ─────────────────────────────────────────────────────────────
 export const THESPORTSDB = {
@@ -9,13 +10,6 @@ export const THESPORTSDB = {
   get KEY(): string {
     return Deno.env.get('THESPORTSDB_KEY') ?? '3';
   },
-};
-
-// ─── SofaScore (RapidAPI) ─────────────────────────────────────────────────────
-export const SOFASCORE = {
-  HOST:     'sofascore.p.rapidapi.com',
-  BASE_URL: 'https://sofascore.p.rapidapi.com',
-  // Quota gratuit : ~500 req/mois → 15/jour (géré dans quota_journalier)
 };
 
 // ─── The Odds API ──────────────────────────────────────────────────────────────
