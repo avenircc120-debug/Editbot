@@ -378,3 +378,66 @@ export function construireMarcheDonnees(
     marches,
   };
 }
+
+// ─── The Odds API : construction directe (markets déjà standardisés) ─────────
+// The Odds API renvoie des clés de marché déjà normalisées ('h2h', 'totals',
+// 'btts'), pas besoin de la table de mapping ci-dessus — juste une conversion
+// de format vers MarchesDonnees.
+
+export interface OddsApiMarket {
+  key:      string;
+  outcomes: Array<{ name: string; price: number; point?: number }>;
+}
+
+export function construireMarcheDonneesOddsApi(
+  markets: OddsApiMarket[],
+  homeTeam: string,
+  awayTeam: string,
+  matchId: string,
+  source = 'the-odds-api',
+): MarchesDonnees {
+  const marches: Record<string, MarchePayload> = {};
+
+  for (const market of markets) {
+    if (market.key === 'h2h') {
+      const valeurs: Record<string, number> = {};
+      for (const o of market.outcomes) {
+        if (o.name === homeTeam) valeurs.domicile = o.price;
+        else if (o.name === awayTeam) valeurs.exterieur = o.price;
+        else if (/draw/i.test(o.name)) valeurs.nul = o.price;
+      }
+      if (Object.keys(valeurs).length) marches['1x2'] = { label: 'Match Winner', valeurs };
+    }
+
+    if (market.key === 'btts') {
+      const valeurs: Record<string, number> = {};
+      for (const o of market.outcomes) {
+        if (/^yes$/i.test(o.name)) valeurs.oui = o.price;
+        else if (/^no$/i.test(o.name)) valeurs.non = o.price;
+      }
+      if (Object.keys(valeurs).length) marches['btts'] = { label: 'Both Teams To Score', valeurs };
+    }
+
+    if (market.key === 'totals') {
+      const lignes: Record<string, Record<string, number>> = {};
+      for (const o of market.outcomes) {
+        if (o.point === undefined) continue;
+        const ligne = String(o.point);
+        if (!lignes[ligne]) lignes[ligne] = {};
+        if (/^over$/i.test(o.name)) lignes[ligne].over = o.price;
+        else if (/^under$/i.test(o.name)) lignes[ligne].under = o.price;
+      }
+      if (Object.keys(lignes).length) marches['over_under'] = { label: 'Total Goals', lignes };
+    }
+  }
+
+  return {
+    meta: {
+      source,
+      fixture_apif_id: 0, // non applicable (The Odds API n'utilise pas d'ID api-football)
+      match_id: matchId,
+      fetch_at: new Date().toISOString(),
+    } as any,
+    marches,
+  };
+}
