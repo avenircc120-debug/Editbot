@@ -60,6 +60,12 @@ export const LEAGUES: Array<{
   { tsdb_id: '4346', name: 'MLS',               odds_key: 'soccer_usa_mls' },
   { tsdb_id: '4351', name: 'Brasileirão',       odds_key: 'soccer_brazil_campeonato' },
   { tsdb_id: '4429', name: 'Coupe du Monde FIFA', odds_key: 'soccer_fifa_world_cup' },
+  // Ajoutées le 10/07/2026 : compétitions en cours en juillet (les ligues
+  // européennes ci-dessus sont en trêve estivale) pour donner plus de matchs
+  // aux utilisateurs qui veulent faire des combinés.
+  { tsdb_id: '4350', name: 'Liga MX',            odds_key: 'soccer_mexico_ligamx' },
+  { tsdb_id: '4406', name: 'Primera División Argentine', odds_key: 'soccer_argentina_primera_division' },
+  { tsdb_id: '4359', name: 'Chinese Super League', odds_key: 'soccer_china_superleague' },
 ];
 
 // ─── Prompt système Groq ──────────────────────────────────────────────────────
