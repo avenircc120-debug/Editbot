@@ -33,7 +33,7 @@ const params = new URLSearchParams(location.search);
 const token = params.get('token');
 // API_BASE doit pointer vers l'URL de la fonction Supabase web-portal, ex:
 // https://<ref>.supabase.co/functions/v1/web-portal
-const API_BASE = window.EDITBOT_API_BASE || 'REPLACE_WITH_SUPABASE_WEB_PORTAL_URL';
+const API_BASE = window.EDITBOT_API_BASE || 'https://jxrwgcsbomqvvchvkkdt.supabase.co/functions/v1/web-portal';
 
 function toast(msg) {
   const t = document.getElementById('toast');
