@@ -440,7 +440,7 @@ async function handleFacebookCommands(
   const t = text.toLowerCase().trim();
 
   if (t === '/connect_facebook') {
-    const oauthUrl = genererUrlOAuth(String(telegramUserId));
+    const oauthUrl = await genererUrlOAuth(telegramUserId, supabase);
     await send(chatId,
       '📘 *Connecter ta Page Facebook*\n\nClique sur le lien ci-dessous pour autoriser Editbot à publier les pronostics sur ta Page :\n\n🔗 ' + oauthUrl + '\n\n_Tu recevras une confirmation ici une fois connecté._'
     );
