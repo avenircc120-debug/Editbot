@@ -94,7 +94,7 @@ Deno.serve(async (req) => {
       continue;
     }
 
-    const quotaOk = await consommerQuotaStrict(supabase, 'odds' as any);
+    const quotaOk = await consommerQuotaStrict(supabase, 'odds');
     if (!quotaOk) {
       console.warn('[fetch-odds] 🛑 Quota odds épuisé');
       stats.quota_epuise = true;
