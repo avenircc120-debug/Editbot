@@ -31,7 +31,7 @@ const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const CRON_SECRET  = Deno.env.get('CRON_SECRET') ?? '';
 const supabase     = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const MAX_MATCHS_PAR_LIGUE = 5;   // Limite TheSportsDB tier gratuit
+const MAX_MATCHS_PAR_LIGUE = 15;   // Relevé de 5 à 15 pour donner plus de choix aux users (combinés)
 
 // ─── Helpers DB ───────────────────────────────────────────────────────────────
 

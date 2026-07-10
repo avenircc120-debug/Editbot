@@ -139,8 +139,8 @@ export function tsdbTimestampToDate(strTimestamp: string, strTime?: string): Dat
   return new Date(raw + 'Z'); // TheSportsDB renvoie en UTC
 }
 
-/** Filtre les matchs dans les 7 prochains jours */
-export function filtrerProchains(matchs: TsdbMatch[], joursMax = 7): TsdbMatch[] {
+/** Filtre les matchs dans les prochains jours (14 par défaut, relevé de 7 pour donner plus de matchs à combiner) */
+export function filtrerProchains(matchs: TsdbMatch[], joursMax = 14): TsdbMatch[] {
   const now    = Date.now();
   const limite = now + joursMax * 24 * 3600 * 1000;
   return matchs.filter(ev => {
