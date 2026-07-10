@@ -18,14 +18,18 @@ export const SOFASCORE = {
   // Quota gratuit : ~500 req/mois → 15/jour (géré dans quota_journalier)
 };
 
-// ─── API-Football / odds (RapidAPI) ───────────────────────────────────────────
-// Utilisé par odds.ts pour récupérer les cotes bookmakers (endpoint /odds).
-// ⚠️ Nécessite un abonnement RapidAPI séparé sur "API-Football" — si non
-// souscrit, fetchOdds() échoue proprement (HTTP non-ok, retourne null),
-// sans casser le pipeline.
-export const APIFOOTBALL = {
-  HOST:     'api-football-v1.p.rapidapi.com',
-  BASE_URL: 'https://api-football-v1.p.rapidapi.com/v3',
+// ─── The Odds API ──────────────────────────────────────────────────────────────
+// Cotes bookmakers réelles, spécialisé sport (dont soccer). Plan gratuit :
+// 500 requêtes/mois. Clé env : ODDS_API_KEY.
+// Doc : https://the-odds-api.com/liveapi/guides/v4/
+export const ODDS_API = {
+  BASE_URL: 'https://api.the-odds-api.com/v4',
+  get KEY(): string {
+    return Deno.env.get('ODDS_API_KEY') ?? '';
+  },
+  REGIONS: 'eu',
+  MARKETS: 'h2h,totals,btts',
+  ODDS_FORMAT: 'decimal',
 };
 
 // ─── Groq ─────────────────────────────────────────────────────────────────────
@@ -40,22 +44,24 @@ export const GROQ = {
 // ─── Ligues supportées ────────────────────────────────────────────────────────
 // tsdb_id : ID TheSportsDB
 export const LEAGUES: Array<{
-  tsdb_id: string;
-  name:    string;
+  tsdb_id:   string;
+  name:      string;
+  // Clé sport The Odds API pour les cotes (null = pas de cotes pour cette ligue)
+  odds_key?: string;
 }> = [
-  { tsdb_id: '4334', name: 'Ligue 1'           },
-  { tsdb_id: '4328', name: 'Premier League'    },
-  { tsdb_id: '4335', name: 'La Liga'           },
-  { tsdb_id: '4331', name: 'Bundesliga'        },
-  { tsdb_id: '4332', name: 'Serie A'           },
-  { tsdb_id: '4480', name: 'Champions League'  },
-  { tsdb_id: '4481', name: 'Europa League'     },
-  { tsdb_id: '4329', name: 'Championship'      },
-  { tsdb_id: '4330', name: 'Scottish Premiership' },
-  { tsdb_id: '4337', name: 'Eredivisie'        },
-  { tsdb_id: '4344', name: 'Primeira Liga'     },
-  { tsdb_id: '4346', name: 'MLS'               },
-  { tsdb_id: '4351', name: 'Brasileirão'       },
+  { tsdb_id: '4334', name: 'Ligue 1',           odds_key: 'soccer_france_ligue_one' },
+  { tsdb_id: '4328', name: 'Premier League',    odds_key: 'soccer_epl' },
+  { tsdb_id: '4335', name: 'La Liga',           odds_key: 'soccer_spain_la_liga' },
+  { tsdb_id: '4331', name: 'Bundesliga',        odds_key: 'soccer_germany_bundesliga' },
+  { tsdb_id: '4332', name: 'Serie A',           odds_key: 'soccer_italy_serie_a' },
+  { tsdb_id: '4480', name: 'Champions League',  odds_key: 'soccer_uefa_champs_league' },
+  { tsdb_id: '4481', name: 'Europa League',     odds_key: 'soccer_uefa_europa_league' },
+  { tsdb_id: '4329', name: 'Championship',      odds_key: 'soccer_efl_champ' },
+  { tsdb_id: '4330', name: 'Scottish Premiership', odds_key: 'soccer_spl' },
+  { tsdb_id: '4337', name: 'Eredivisie',        odds_key: 'soccer_netherlands_eredivisie' },
+  { tsdb_id: '4344', name: 'Primeira Liga',     odds_key: 'soccer_portugal_primeira_liga' },
+  { tsdb_id: '4346', name: 'MLS',               odds_key: 'soccer_usa_mls' },
+  { tsdb_id: '4351', name: 'Brasileirão',       odds_key: 'soccer_brazil_campeonato' },
 ];
 
 // ─── Prompt système Groq ──────────────────────────────────────────────────────
