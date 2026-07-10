@@ -381,8 +381,10 @@ export function construireMarcheDonnees(
 
 // ─── The Odds API : construction directe (markets déjà standardisés) ─────────
 // The Odds API renvoie des clés de marché déjà normalisées ('h2h', 'totals',
-// 'btts'), pas besoin de la table de mapping ci-dessus — juste une conversion
-// de format vers MarchesDonnees.
+// 'spreads' = handicap asiatique), pas besoin de la table de mapping ci-dessus
+// — juste une conversion de format vers MarchesDonnees.
+// NB: 'btts' n'est PAS supporté par l'endpoint /odds de The Odds API (422),
+// contrairement à ce que documentait cette section avant — retiré.
 
 export interface OddsApiMarket {
   key:      string;
@@ -409,13 +411,18 @@ export function construireMarcheDonneesOddsApi(
       if (Object.keys(valeurs).length) marches['1x2'] = { label: 'Match Winner', valeurs };
     }
 
-    if (market.key === 'btts') {
-      const valeurs: Record<string, number> = {};
+    if (market.key === 'spreads') {
+      // Handicap asiatique : chaque outcome porte une 'point' (ligne) propre à
+      // l'équipe (ex: Arsenal -2, Coventry +2) — on regroupe par ligne absolue.
+      const lignes: Record<string, Record<string, number>> = {};
       for (const o of market.outcomes) {
-        if (/^yes$/i.test(o.name)) valeurs.oui = o.price;
-        else if (/^no$/i.test(o.name)) valeurs.non = o.price;
+        if (o.point === undefined) continue;
+        const ligne = String(Math.abs(o.point));
+        if (!lignes[ligne]) lignes[ligne] = {};
+        if (o.name === homeTeam) lignes[ligne].domicile = o.price;
+        else if (o.name === awayTeam) lignes[ligne].exterieur = o.price;
       }
-      if (Object.keys(valeurs).length) marches['btts'] = { label: 'Both Teams To Score', valeurs };
+      if (Object.keys(lignes).length) marches['handicap'] = { label: 'Asian Handicap', lignes };
     }
 
     if (market.key === 'totals') {
