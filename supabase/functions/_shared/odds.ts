@@ -1,170 +1,157 @@
 /**
  * ─── MASAP Odds Module ───────────────────────────────────────────────────────
- * Récupère TOUS les marchés disponibles pour un match via api-football /odds.
- * Utilise le module market-mapper pour normaliser chaque marché.
+ * Récupère les cotes bookmakers via The Odds API (the-odds-api.com), plan
+ * gratuit (500 requêtes/mois). Un seul appel par ligue renvoie TOUS les
+ * matchs à venir de cette ligue avec leurs cotes — on associe ensuite chaque
+ * match interne (TheSportsDB) par nom d'équipes + horaire.
  *
- * Endpoint : GET /odds?fixture={id}&bookmaker={id}
- * Documentation : https://www.api-football.com/documentation-v3#tag/Odds
+ * Documentation : https://the-odds-api.com/liveapi/guides/v4/
  */
 
-import { APIFOOTBALL } from './config.ts';
-import { construireMarcheDonnees, MarchesDonnees } from './market-mapper.ts';
+import { ODDS_API } from './config.ts';
+import { construireMarcheDonneesOddsApi, type MarchesDonnees } from './market-mapper.ts';
 
-// ─── Types réponse api-football /odds ─────────────────────────────────────────
+// ─── Types réponse The Odds API ───────────────────────────────────────────────
 
-interface OddsResponse {
-  errors:   unknown[];
-  results:  number;
-  response: OddsFixture[];
+export interface OddsApiEvent {
+  id:            string;
+  sport_key:     string;
+  commence_time: string;
+  home_team:     string;
+  away_team:     string;
+  bookmakers:    OddsApiBookmaker[];
 }
 
-interface OddsFixture {
-  fixture:    { id: number; date: string };
-  league:     { id: number; name: string };
-  update:     string;
-  bookmakers: BookmakerEntry[];
+interface OddsApiBookmaker {
+  key:      string;
+  title:    string;
+  last_update: string;
+  markets:  Array<{
+    key:     string; // 'h2h' | 'totals' | 'btts'
+    outcomes: Array<{ name: string; price: number; point?: number }>;
+  }>;
 }
 
-interface BookmakerEntry {
-  id:   number;
-  name: string;
-  bets: Array<{ id: number; name: string; values: Array<{ value: string; odd: string }> }>;
-}
-
-// ─── Bookmakers prioritaires ──────────────────────────────────────────────────
-// On récupère le bookmaker le plus complet en premier (Bet365 ID=6 sur api-football)
-// Si absent, on utilise le premier disponible.
-const BOOKMAKER_PREFERENCE_ORDER = [6, 8, 16, 1, 2]; // Bet365, Bwin, William Hill…
-
-// ─── Fetch odds ───────────────────────────────────────────────────────────────
+// ─── Fetch : tous les événements + cotes d'une ligue ──────────────────────────
 
 /**
- * Résultat d'une récupération de cotes pour un match.
+ * Récupère tous les matchs à venir avec cotes pour une ligue donnée.
+ * 1 seul appel API par ligue (consomme 1 requête sur le quota mensuel).
+ *
+ * @param sportKey  Clé sport The Odds API (ex: 'soccer_epl')
  */
+export async function fetchOddsForLeague(sportKey: string): Promise<OddsApiEvent[]> {
+  if (!ODDS_API.KEY) {
+    console.warn('[odds] ODDS_API_KEY manquant');
+    return [];
+  }
+
+  const url =
+    `${ODDS_API.BASE_URL}/sports/${sportKey}/odds/` +
+    `?apiKey=${ODDS_API.KEY}` +
+    `&regions=${ODDS_API.REGIONS}` +
+    `&markets=${ODDS_API.MARKETS}` +
+    `&oddsFormat=${ODDS_API.ODDS_FORMAT}`;
+
+  let resp: Response;
+  try {
+    resp = await fetch(url);
+  } catch (e) {
+    console.error(`[odds] Erreur réseau ligue ${sportKey}:`, e);
+    return [];
+  }
+
+  if (!resp.ok) {
+    // 401/422 (ligue inactive/hors saison) ou 429 (quota épuisé) — non-fatal
+    console.warn(`[odds] HTTP ${resp.status} pour ${sportKey}`);
+    return [];
+  }
+
+  const restant = resp.headers.get('x-requests-remaining');
+  if (restant) console.log(`[odds] Quota The Odds API restant : ${restant}`);
+
+  try {
+    return (await resp.json()) as OddsApiEvent[];
+  } catch (e) {
+    console.error(`[odds] Réponse JSON invalide pour ${sportKey}:`, e);
+    return [];
+  }
+}
+
+// ─── Association match interne ↔ événement The Odds API ──────────────────────
+
+function normaliserNom(nom: string): string {
+  return nom
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // retire accents
+    .replace(/\b(fc|cf|afc|sc|ac|as|cd|ud|club|calcio|de|do|the)\b/g, '')
+    .replace(/[^a-z0-9]/g, '')
+    .trim();
+}
+
+/**
+ * Trouve l'événement correspondant à un match interne par nom d'équipes
+ * (comparaison tolérante) + fenêtre de ±6h autour de l'horaire prévu.
+ */
+export function trouverEventOdds(
+  events: OddsApiEvent[],
+  homeTeam: string,
+  awayTeam: string,
+  matchDateIso: string,
+): OddsApiEvent | null {
+  const homeN = normaliserNom(homeTeam);
+  const awayN = normaliserNom(awayTeam);
+  const matchTime = new Date(matchDateIso).getTime();
+  const FENETRE_MS = 6 * 3600 * 1000;
+
+  for (const ev of events) {
+    const evHomeN = normaliserNom(ev.home_team);
+    const evAwayN = normaliserNom(ev.away_team);
+    const evTime = new Date(ev.commence_time).getTime();
+
+    const nomsMatch =
+      (evHomeN.includes(homeN) || homeN.includes(evHomeN)) &&
+      (evAwayN.includes(awayN) || awayN.includes(evAwayN));
+
+    if (nomsMatch && Math.abs(evTime - matchTime) <= FENETRE_MS) {
+      return ev;
+    }
+  }
+  return null;
+}
+
+// ─── Bookmakers prioritaires (Europe) ─────────────────────────────────────────
+const BOOKMAKER_PREFERENCE_ORDER = ['pinnacle', 'bet365', 'unibet_eu', 'williamhill'];
+
 export interface OddsResult {
-  fixtureId:     number;
+  matchId:       string;
   bookmakerName: string;
-  bookmakerId:   number;
+  bookmakerId:   string;
   donnees:       MarchesDonnees;
 }
 
 /**
- * Récupère toutes les cotes disponibles pour un fixture api-football.
- * Sélectionne automatiquement le bookmaker le plus riche en marchés.
- *
- * @param fixtureId  ID api-football du match
- * @returns          OddsResult | null si aucune cote disponible
+ * Construit le résultat normalisé pour un match à partir d'un événement
+ * The Odds API. Sélectionne le bookmaker le plus complet disponible.
  */
-export async function fetchOdds(fixtureId: number): Promise<OddsResult | null> {
-  const apiKey = Deno.env.get('RAPIDAPI_KEY');
-  if (!apiKey) {
-    console.warn('[odds] RAPIDAPI_KEY manquant');
-    return null;
-  }
+export function construireOddsResult(matchId: string, ev: OddsApiEvent): OddsResult | null {
+  if (!ev.bookmakers?.length) return null;
 
-  const url = `${APIFOOTBALL.BASE_URL}/odds?fixture=${fixtureId}`;
-
-  let resp: Response;
-  try {
-    resp = await fetch(url, {
-      headers: {
-        'x-rapidapi-key':  apiKey,
-        'x-rapidapi-host': APIFOOTBALL.HOST,
-      },
-    });
-  } catch (e) {
-    console.error(`[odds] Erreur réseau fixture ${fixtureId}:`, e);
-    return null;
-  }
-
-  if (!resp.ok) {
-    console.error(`[odds] HTTP ${resp.status} pour fixture ${fixtureId}`);
-    return null;
-  }
-
-  const json: OddsResponse = await resp.json();
-
-  if (!json.response || json.response.length === 0) {
-    console.warn(`[odds] Aucune cote disponible pour fixture ${fixtureId}`);
-    return null;
-  }
-
-  const fixture = json.response[0];
-  if (!fixture.bookmakers || fixture.bookmakers.length === 0) {
-    console.warn(`[odds] Aucun bookmaker pour fixture ${fixtureId}`);
-    return null;
-  }
-
-  // Sélectionne le bookmaker prioritaire, sinon le premier disponible
-  let bookmaker: BookmakerEntry | undefined;
-  for (const prefId of BOOKMAKER_PREFERENCE_ORDER) {
-    bookmaker = fixture.bookmakers.find((b) => b.id === prefId);
+  let bookmaker: OddsApiBookmaker | undefined;
+  for (const pref of BOOKMAKER_PREFERENCE_ORDER) {
+    bookmaker = ev.bookmakers.find((b) => b.key === pref);
     if (bookmaker) break;
   }
-  if (!bookmaker) bookmaker = fixture.bookmakers[0];
+  if (!bookmaker) bookmaker = ev.bookmakers[0];
 
-  // Construit le JSONB normalisé via market-mapper
-  const donnees = construireMarcheDonnees(bookmaker.bets, fixtureId);
-  donnees.meta.bookmaker_id = bookmaker.id;
-
-  const nombreMarches = Object.keys(donnees.marches).length;
-  console.log(
-    `[odds] Fixture ${fixtureId} | ${bookmaker.name} | ${nombreMarches} marchés normalisés`
-  );
+  const donnees = construireMarcheDonneesOddsApi(bookmaker.markets, ev.home_team, ev.away_team, matchId, 'the-odds-api');
 
   return {
-    fixtureId,
-    bookmakerName: bookmaker.name,
-    bookmakerId:   bookmaker.id,
+    matchId,
+    bookmakerName: bookmaker.title,
+    bookmakerId:   bookmaker.key,
     donnees,
   };
-}
-
-/**
- * Récupère les cotes pour TOUS les bookmakers d'un fixture.
- * Utile pour la vue meilleure_cote_par_match.
- * (Utilise plus de quota — 1 appel API retourne tous les bookmakers)
- */
-export async function fetchOddsTousBookmakers(
-  fixtureId: number
-): Promise<OddsResult[]> {
-  const apiKey = Deno.env.get('RAPIDAPI_KEY');
-  if (!apiKey) return [];
-
-  const url = `${APIFOOTBALL.BASE_URL}/odds?fixture=${fixtureId}`;
-
-  let resp: Response;
-  try {
-    resp = await fetch(url, { headers: {
-      'x-rapidapi-key':  apiKey,
-      'x-rapidapi-host': APIFOOTBALL.HOST,
-    }});
-  } catch (e) {
-    console.error(`[odds:all] Erreur réseau fixture ${fixtureId}:`, e);
-    return [];
-  }
-
-  if (!resp.ok) return [];
-
-  const json: OddsResponse = await resp.json();
-  if (!json.response || json.response.length === 0) return [];
-
-  const fixture = json.response[0];
-  const results: OddsResult[] = [];
-
-  for (const bk of fixture.bookmakers ?? []) {
-    const donnees = construireMarcheDonnees(bk.bets, fixtureId);
-    donnees.meta.bookmaker_id = bk.id;
-    results.push({
-      fixtureId,
-      bookmakerName: bk.name,
-      bookmakerId:   bk.id,
-      donnees,
-    });
-  }
-
-  console.log(`[odds:all] Fixture ${fixtureId} | ${results.length} bookmakers traités`);
-  return results;
 }
 
 /**
@@ -184,32 +171,12 @@ export function resumeOddsGroq(donnees: MarchesDonnees | string): string {
     const v = m['btts'].valeurs as Record<string, number>;
     lignes.push(`BTTS : Oui ${v.oui ?? '?'} | Non ${v.non ?? '?'}`);
   }
-  if (m['double_chance']?.valeurs) {
-    const v = m['double_chance'].valeurs as Record<string, number>;
-    lignes.push(`DC : 1X ${v['1X'] ?? '?'} | X2 ${v['X2'] ?? '?'} | 12 ${v['12'] ?? '?'}`);
-  }
   if (m['over_under']?.lignes) {
     const l = m['over_under'].lignes as Record<string, Record<string, number>>;
     const l25 = l['2.5'];
     if (l25) lignes.push(`O/U 2.5 : Over ${l25.over ?? '?'} | Under ${l25.under ?? '?'}`);
     const l35 = l['3.5'];
     if (l35) lignes.push(`O/U 3.5 : Over ${l35.over ?? '?'} | Under ${l35.under ?? '?'}`);
-  }
-  if (m['corners']?.lignes) {
-    const l = m['corners'].lignes as Record<string, Record<string, number>>;
-    for (const [ligne, vals] of Object.entries(l)) {
-      lignes.push(`Corners ${ligne} : Over ${vals.over ?? '?'} | Under ${vals.under ?? '?'}`);
-    }
-  }
-  if (m['cartons']?.lignes) {
-    const l = m['cartons'].lignes as Record<string, Record<string, number>>;
-    for (const [ligne, vals] of Object.entries(l)) {
-      lignes.push(`Cartons ${ligne} : Over ${vals.over ?? '?'} | Under ${vals.under ?? '?'}`);
-    }
-  }
-  if (m['mi_temps']?.valeurs) {
-    const v = m['mi_temps'].valeurs as Record<string, number>;
-    lignes.push(`Mi-temps : Dom ${v.domicile ?? '?'} | Nul ${v.nul ?? '?'} | Ext ${v.exterieur ?? '?'}`);
   }
 
   return lignes.length > 0
