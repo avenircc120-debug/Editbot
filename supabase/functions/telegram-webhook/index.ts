@@ -7,6 +7,7 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { searchPlayers } from '../_shared/apifootball.ts';
+import { labelPronostic } from '../_shared/templates.ts';
 
 const TELEGRAM_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN') ?? '';
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL') ?? '';
@@ -94,9 +95,9 @@ async function chargerPronostics(): Promise<{ donnees: string; count: number; ma
 
     for (const t of types) {
       const fiab  = t.fiabilite >= 75 ? '🟢' : t.fiabilite >= 60 ? '🟡' : '🔴';
-      lignes.push(`  → ${t.pronostic_type}: *${t.pronostic_valeur}* | fiabilité ${t.fiabilite}% | cote ${t.cote_conseille}`);
+      lignes.push(`  → ${labelPronostic(t.pronostic_type)}: *${t.pronostic_valeur}* | fiabilité ${t.fiabilite}% | cote ${t.cote_conseille}`);
       if (t.analyse_texte) lignes.push(`    Analyse: ${t.analyse_texte}`);
-      resume.push(`${fiab} *${t.pronostic_type}:* ${t.pronostic_valeur}  _(${t.fiabilite}% · cote ${t.cote_conseille})_`);
+      resume.push(`${fiab} *${labelPronostic(t.pronostic_type)}:* ${t.pronostic_valeur}  _(${t.fiabilite}% · cote ${t.cote_conseille})_`);
     }
   }
 
@@ -315,11 +316,11 @@ function reponseInstantanee(text: string, prenom?: string): string | null {
   const salut = nom ? `${nom} !` : '!';
 
   if (/\/start/.test(t)) {
-    return `Yo${nom ? ' ' + nom : ''} 👋\n\nMoi c'est *Edi*, ton pote pour les pronostics foot.\n\nJ'analyse les matchs de la semaine et je te donne mon avis honnête — 1X2, BTTS, Over/Under et tout ça.\n\nDemande-moi n'importe quoi sur les matchs à venir, ou tape /pronostics pour voir ce que j'ai préparé !`;
+    return `Yo${nom ? ' ' + nom : ''} 👋\n\nMoi c'est *Edi*, ton pote pour les pronostics foot.\n\nJ'analyse les matchs de la semaine et je te donne mon avis honnête — qui va gagner, si les deux équipes vont marquer, le nombre de buts et tout ça.\n\nDemande-moi n'importe quoi sur les matchs à venir, ou tape /pronostics pour voir ce que j'ai préparé !`;
   }
 
   if (/\/aide|\/help/.test(t)) {
-    return `Voilà comment ça marche :\n\n📋 */pronostics* — Mes pronos de la semaine\n🔍 */joueur [nom]* — Chercher un joueur (ex: \`/joueur Mbappé\`)\n💬 *Question libre* — Pose-moi n'importe quoi sur un match\n\nExemples :\n• _"Qui va gagner ce soir ?"_\n• _"T'en penses quoi du match CL ?"_\n• _"Y'a du BTTS intéressant cette semaine ?"_`;
+    return `Voilà comment ça marche :\n\n📋 */pronostics* — Mes pronos de la semaine\n🔍 */joueur [nom]* — Chercher un joueur (ex: \`/joueur Mbappé\`)\n💬 *Question libre* — Pose-moi n'importe quoi sur un match\n\nExemples :\n• _"Qui va gagner ce soir ?"_\n• _"T'en penses quoi du match CL ?"_\n• _"Y'a un match où les deux équipes vont marquer cette semaine ?"_`;
   }
 
   if (/^(bonjour|bonsoir|salut|hello|hi|cc|coucou|yo|wesh)\b/.test(t)) {
@@ -440,7 +441,7 @@ Deno.serve(async (req) => {
           .sort((a, b) => b.fiabilite - a.fiabilite || b.cote_conseille - a.cote_conseille)[0];
         if (top) {
           const fiabEmoji = top.fiabilite >= 75 ? '🟢' : top.fiabilite >= 60 ? '🟡' : '🔴';
-          choixMsg = `🎯 *Mon choix de la semaine :*\n*${top.home_team} vs ${top.away_team}*\n→ *${top.pronostic_type}: ${top.pronostic_valeur}* — cote ${top.cote_conseille} ${fiabEmoji}\n${top.analyse_texte ? '_' + top.analyse_texte + '_\n' : ''}`;
+          choixMsg = `🎯 *Mon choix de la semaine :*\n*${top.home_team} vs ${top.away_team}*\n→ *${labelPronostic(top.pronostic_type)}: ${top.pronostic_valeur}* — cote ${top.cote_conseille} ${fiabEmoji}\n${top.analyse_texte ? '_' + top.analyse_texte + '_\n' : ''}`;
         }
       }
 

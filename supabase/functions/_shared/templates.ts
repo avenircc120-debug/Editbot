@@ -1,5 +1,23 @@
 // Templates de messages Telegram pré-formatés
 
+// Les utilisateurs ne connaissent pas le jargon des paris sportifs (BTTS, 1X2...).
+// On affiche toujours un intitulé clair en français ; le nom technique reste entre
+// parenthèses pour les habitués qui le reconnaissent.
+const LABELS_PRONOSTIC: Record<string, string> = {
+  '1X2':                 'Qui gagne le match',
+  'BTTS':                'Les 2 équipes marquent',
+  'Over/Under 2.5':      'Plus ou moins de 2.5 buts',
+  'Double Chance':       'Double chance (2 résultats possibles sur 3)',
+  'Score Exact':         'Score exact',
+  'Corners Over/Under':  'Nombre de corners',
+  'Mi-Temps 1X2':        'Qui mène à la mi-temps',
+  'Cartons Over/Under':  'Nombre de cartons',
+};
+
+export function labelPronostic(type: string): string {
+  return LABELS_PRONOSTIC[type] ?? type;
+}
+
 export function templatePronostic(data: {
   competition: string;
   homeTeam: string;
@@ -22,7 +40,7 @@ export function templatePronostic(data: {
 📅 ${formatDate(data.matchDate)}
 
 ━━━━━━━━━━━━━━━━━━
-🎯 *Type* : ${data.pronosticType}
+🎯 *Type* : ${labelPronostic(data.pronosticType)}
 ✅ *Pronostic* : \`${data.pronosticValeur}\`
 💰 *Cote conseillée* : ${data.coteConseille}
 ${emoji} *Fiabilité* : ${data.fiabilite}%
@@ -72,10 +90,10 @@ export function templateAide(): string {
 /aide — Afficher cette aide
 
 💡 *Types de paris* :
-• 1X2 (Victoire/Nul/Défaite)
+• Qui gagne le match (Victoire/Nul/Défaite)
 • Score exact
-• BTTS (Les deux équipes marquent)
-• Plus/Moins de 2.5 buts
+• Les 2 équipes marquent
+• Plus ou moins de 2.5 buts
 
 ⚠️ _Pariez responsablement. 18+ uniquement._`;
 }
