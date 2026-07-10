@@ -15,6 +15,12 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 import { GROQ, SYSTEM_PROMPT }          from '../_shared/config.ts';
 import { consommerQuota, lireQuotas }   from '../_shared/quota.ts';
 import { resumeOddsGroq }               from '../_shared/odds.ts';
+import {
+  extraireResultats,
+  estimerLambdas,
+  calculerProbabilites,
+  formatProbabilitesPourGroq,
+} from '../_shared/poisson.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -123,6 +129,25 @@ function buildContext(match: any, marches: any[]): string {
     if (ev.intRound) lignes.push(`Journée   : ${ev.intRound}`);
   }
 
+  // ── Calcul de probabilités Poisson (haut degré, basé forme réelle) ──────────
+  try {
+    const formeHomeRaw = par['forme_domicile']?.matchs ?? [];
+    const formeAwayRaw = par['forme_exterieur']?.matchs ?? [];
+    const idHome = par['forme_domicile']?.equipe_id;
+    const idAway = par['forme_exterieur']?.equipe_id;
+
+    if ((formeHomeRaw.length || formeAwayRaw.length) && idHome && idAway) {
+      const formeHome = extraireResultats(formeHomeRaw, idHome);
+      const formeAway = extraireResultats(formeAwayRaw, idAway);
+      const { lambdaHome, lambdaAway, fiabiliteDonnees } = estimerLambdas(formeHome, formeAway);
+      const probas = calculerProbabilites(lambdaHome, lambdaAway, fiabiliteDonnees);
+      lignes.push('');
+      lignes.push(formatProbabilitesPourGroq(probas, match.home_team, match.away_team));
+    }
+  } catch (e) {
+    console.warn('[poisson]', match.match_id, e);
+  }
+
   // ── Cotes MASAP (marches_bookmakers — source principale) ─────────────────────
   // Injectées dans buildContext depuis la requête principale (voir handler)
   if (par['__masap_odds__']) {
@@ -168,7 +193,15 @@ Pour Score Exact et Corners, base-toi sur l'historique H2H des scores et ta conn
 }
 
 Règles importantes :
-- Score Exact : propose le score le plus probable selon l'historique H2H. Fiabilité max 50%.
+- Si une section "CALCULS STATISTIQUES (modèle Poisson...)" est présente ci-dessus : c'est ta base
+  quantitative principale pour 1X2, Double Chance, BTTS et Over/Under 2.5. Ta fiabilité pour ces
+  4 marchés doit être cohérente avec le pourcentage calculé (ex: si le modèle donne 62% de victoire
+  domicile, ta fiabilité pour "1" doit être proche de 62, pas une estimation arbitraire). Tu peux
+  l'ajuster de quelques points seulement si le contexte qualitatif (compos, cotes marché, historique
+  H2H) le justifie clairement — explique alors précisément pourquoi dans l'analyse.
+- Si cette section est absente (données de forme indisponibles), base-toi sur l'historique H2H et
+  ta connaissance du football, et indique une fiabilité plus prudente (max 60%).
+- Score Exact : utilise les "Scores les plus probables" du modèle si disponibles, sinon l'historique H2H. Fiabilité max 50%.
 - Corners : équipes offensives qui jouent vite = plus de corners. Fiabilité max 65%.
 - Mi-Temps : l'équipe qui prend souvent le contrôle en premier. Fiabilité max 65%.
 - Cartons : derbies/matchs tendus = plus de cartons. Fiabilité max 65%.
@@ -218,19 +251,41 @@ Deno.serve(async (req) => {
   const now   = new Date().toISOString();
   const in48h = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(); // 7 jours
 
-  // Récupérer les matchs à venir
-  const { data: matchs, error: matchErr } = await supabase
+  // Récupérer TOUS les matchs à venir (fenêtre 7 jours) — pas de limite ici,
+  // pour ne pas exclure d'office les matchs au-delà des N plus proches.
+  const { data: matchsCandidats, error: matchErr } = await supabase
     .from('matchs_index')
     .select('match_id, home_team, away_team, competition, match_date')
     .gte('match_date', now)
     .lte('match_date', in48h)
     .in('status', ['scheduled', 'inprogress', 'notstarted'])
-    .order('match_date')
-    .limit(MAX_MATCHS);
+    .order('match_date');
 
   if (matchErr) {
     return new Response(JSON.stringify({ error: matchErr.message }), { status: 500 });
   }
+
+  // Exclure d'abord les matchs déjà entièrement couverts par un pronostic frais,
+  // puis ne garder que MAX_MATCHS parmi les matchs restants (les plus proches
+  // en priorité). Sans ça, si >MAX_MATCHS matchs sont à venir, les matchs situés
+  // après la limite ne seraient jamais traités tant que les premiers restent en cache.
+  const { data: fraisRows } = await supabase
+    .from('pronostics_finaux')
+    .select('match_id, pronostic_type')
+    .gte('expires_at', now);
+
+  const couvertureParMatch = new Map<string, Set<string>>();
+  for (const row of (fraisRows ?? [])) {
+    if (!couvertureParMatch.has(row.match_id)) couvertureParMatch.set(row.match_id, new Set());
+    couvertureParMatch.get(row.match_id)!.add(row.pronostic_type);
+  }
+
+  const matchsNonCouverts = (matchsCandidats ?? []).filter(m => {
+    const types = couvertureParMatch.get(m.match_id);
+    return !types || !TYPES.every(t => types.has(t));
+  });
+
+  const matchs = matchsNonCouverts.slice(0, MAX_MATCHS);
 
   let totalPronostics = 0;
   let quotaEpuise     = false;
