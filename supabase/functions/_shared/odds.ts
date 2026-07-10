@@ -27,7 +27,7 @@ interface OddsApiBookmaker {
   title:    string;
   last_update: string;
   markets:  Array<{
-    key:     string; // 'h2h' | 'totals' | 'btts'
+    key:     string; // 'h2h' | 'totals' | 'spreads' (handicap asiatique)
     outcomes: Array<{ name: string; price: number; point?: number }>;
   }>;
 }
@@ -167,9 +167,13 @@ export function resumeOddsGroq(donnees: MarchesDonnees | string): string {
     const v = m['1x2'].valeurs as Record<string, number>;
     lignes.push(`1X2 : Dom ${v.domicile ?? '?'} | Nul ${v.nul ?? '?'} | Ext ${v.exterieur ?? '?'}`);
   }
-  if (m['btts']?.valeurs) {
-    const v = m['btts'].valeurs as Record<string, number>;
-    lignes.push(`BTTS : Oui ${v.oui ?? '?'} | Non ${v.non ?? '?'}`);
+  if (m['handicap']?.lignes) {
+    const l = m['handicap'].lignes as Record<string, Record<string, number>>;
+    const premiereLigne = Object.keys(l)[0];
+    if (premiereLigne) {
+      const v = l[premiereLigne];
+      lignes.push(`Handicap ±${premiereLigne} : Dom ${v.domicile ?? '?'} | Ext ${v.exterieur ?? '?'}`);
+    }
   }
   if (m['over_under']?.lignes) {
     const l = m['over_under'].lignes as Record<string, Record<string, number>>;
