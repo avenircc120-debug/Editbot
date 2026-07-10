@@ -2,16 +2,21 @@
  * facebook-oauth — Callback OAuth Meta (Supabase Edge Function)
  * URL : <SUPABASE_URL>/functions/v1/facebook-oauth
  *
+ * Sécurité CSRF : le state est un nonce cryptographique à usage unique
+ * (stocké dans facebook_oauth_states, expire dans 10 min).
+ *
  * Flux :
- *   1. Meta redirige ici avec ?code=...&state=<telegram_user_id>
- *   2. Échange code → long-lived token (60 jours)
- *   3. Récupère les Pages Facebook de l'utilisateur
- *   4. Sauvegarde dans facebook_connections
- *   5. Notifie l'utilisateur Telegram
+ *   1. Meta redirige ici avec ?code=...&state=<nonce>
+ *   2. Validation du nonce (anti-CSRF, usage unique, expiry)
+ *   3. Échange code → long-lived token (60 jours)
+ *   4. Récupération des Pages Facebook
+ *   5. Sauvegarde dans facebook_connections (service_role uniquement via RLS)
+ *   6. Notification Telegram à l'utilisateur
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import {
+  validerNonce,
   echangerCode,
   prolongerToken,
   recupererPages,
@@ -51,7 +56,7 @@ function htmlPage(icon: string, titre: string, corps: string) {
 Deno.serve(async (req: Request) => {
   const url    = new URL(req.url);
   const code   = url.searchParams.get('code');
-  const state  = url.searchParams.get('state');   // contient le telegram_user_id
+  const state  = url.searchParams.get('state');   // nonce anti-CSRF
   const erreur = url.searchParams.get('error');
 
   if (erreur || !code || !state) {
@@ -59,10 +64,11 @@ Deno.serve(async (req: Request) => {
       'Vous pouvez fermer cette page et retourner sur Telegram.');
   }
 
-  const telegramUserId = parseInt(state, 10);
-  if (isNaN(telegramUserId)) {
-    return htmlPage('⚠️', 'Lien invalide',
-      'Recommencez depuis Telegram avec /connect_facebook.');
+  // Validation CSRF : nonce à usage unique, expiry 10 min
+  const telegramUserId = await validerNonce(state, supabase);
+  if (!telegramUserId) {
+    return htmlPage('⚠️', 'Lien expiré ou invalide',
+      'Ce lien a déjà été utilisé ou a expiré. Recommencez depuis Telegram avec /connect_facebook.');
   }
 
   try {
@@ -80,10 +86,10 @@ Deno.serve(async (req: Request) => {
       await sendTelegram(telegramUserId,
         "❌ Aucune Page Facebook trouvée. Assurez-vous d'être administrateur d'au moins une Page.");
       return htmlPage('📭', 'Aucune Page trouvée',
-        "Revenez sur Telegram et assurez-vous d'administrer au moins une Page Facebook.");
+        "Revenez sur Telegram. Assurez-vous d'administrer au moins une Page Facebook.");
     }
 
-    // Sauvegarder chaque Page connectée
+    // Sauvegarder chaque Page (RLS service_role garantit que seul le backend peut écrire)
     for (const page of pages) {
       await supabase.from('facebook_connections').upsert({
         telegram_user_id:     telegramUserId,
