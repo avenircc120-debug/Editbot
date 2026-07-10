@@ -41,6 +41,26 @@ async function send(chatId: number, text: string) {
   }
 }
 
+// Envoi d'une photo (logo d'équipe) avec légende — utilisé pour le "choix de
+// la semaine" afin d'avoir un vrai visuel, pas juste un lien cliquable.
+async function sendPhoto(chatId: number, photoUrl: string, caption: string): Promise<boolean> {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendPhoto`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id:    chatId,
+        photo:      photoUrl,
+        caption:    caption.slice(0, 1024),
+        parse_mode: 'Markdown',
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function typing(chatId: number) {
   await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendChatAction`, {
     method:  'POST',
@@ -56,13 +76,13 @@ async function typing(chatId: number) {
 // cette fenêtre sous celle de fetch-matches/thesportsdb.ts::filtrerProchains.
 const FENETRE_JOURS = 14;
 
-async function chargerPronostics(): Promise<{ donnees: string; count: number; matchsResume: string }> {
+async function chargerPronostics(): Promise<{ donnees: string; count: number; matchsResume: string; premierBadge?: { home: string | null; away: string | null; homeTeam: string; awayTeam: string } }> {
   const now    = new Date().toISOString();
   const in14j  = new Date(Date.now() + FENETRE_JOURS * 24 * 3600 * 1000).toISOString();
 
   const { data: pronos } = await supabase
     .from('pronostics_finaux')
-    .select('competition, home_team, away_team, match_date, pronostic_type, pronostic_valeur, fiabilite, cote_conseille, analyse_texte')
+    .select('competition, home_team, away_team, match_date, pronostic_type, pronostic_valeur, fiabilite, cote_conseille, analyse_texte, home_team_badge, away_team_badge')
     .gte('match_date', now)
     .lte('match_date', in14j)
     .gte('expires_at', now)
@@ -95,9 +115,14 @@ async function chargerPronostics(): Promise<{ donnees: string; count: number; ma
       hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris',
     });
 
+    // Logos cliquables (Telegram ne permet pas d'image inline dans un texte,
+    // mais un lien markdown sur le nom de l'équipe ouvre le logo au clic).
+    const nomHome = first.home_team_badge ? `[${first.home_team}](${first.home_team_badge})` : first.home_team;
+    const nomAway = first.away_team_badge ? `[${first.away_team}](${first.away_team_badge})` : first.away_team;
+
     lignes.push(`\n📅 ${date} — ${first.competition}`);
     lignes.push(`⚽ ${matchKey}`);
-    resume.push(`\n*⚽ ${matchKey}*  _${first.competition} · ${dateShort}_`);
+    resume.push(`\n*⚽ ${nomHome} vs ${nomAway}*  _${first.competition} · ${dateShort}_`);
 
     for (const t of types) {
       const fiab  = t.fiabilite >= 75 ? '🟢' : t.fiabilite >= 60 ? '🟡' : '🔴';
@@ -483,7 +508,7 @@ Deno.serve(async (req) => {
       const in14j2 = new Date(Date.now() + FENETRE_JOURS * 24 * 3600 * 1000).toISOString();
       const { data: tousLesPronos } = await supabase
         .from('pronostics_finaux')
-        .select('home_team, away_team, competition, match_date, pronostic_type, pronostic_valeur, fiabilite, cote_conseille, analyse_texte')
+        .select('home_team, away_team, competition, match_date, pronostic_type, pronostic_valeur, fiabilite, cote_conseille, analyse_texte, home_team_badge, away_team_badge')
         .gte('match_date', now2)
         .lte('match_date', in14j2)
         .gte('expires_at', now2)
@@ -503,17 +528,27 @@ Deno.serve(async (req) => {
         }
       }
 
+      const top = (tousLesPronos ?? [])
+        .sort((a, b) => b.fiabilite - a.fiabilite || b.cote_conseille - a.cote_conseille)[0];
+
       if (!choixMsg) {
         // Fallback : meilleur par fiabilité + cote
-        const top = (tousLesPronos ?? [])
-          .sort((a, b) => b.fiabilite - a.fiabilite || b.cote_conseille - a.cote_conseille)[0];
         if (top) {
           const fiabEmoji = top.fiabilite >= 75 ? '🟢' : top.fiabilite >= 60 ? '🟡' : '🔴';
           choixMsg = `🎯 *Mon choix de la semaine :*\n*${top.home_team} vs ${top.away_team}*\n→ *${labelPronostic(top.pronostic_type)}: ${top.pronostic_valeur}* — cote ${top.cote_conseille} ${fiabEmoji}\n${top.analyse_texte ? '_' + top.analyse_texte + '_\n' : ''}`;
         }
       }
 
-      await send(chatId, `${choixMsg}\n──────────────────\n*Tous les pronos :*\n${matchsResume}`);
+      // Le logo de l'équipe à domicile du match choisi accompagne le message
+      // en visuel réel (photo Telegram), pas juste un lien texte.
+      const photoEnvoyee = top?.home_team_badge
+        ? await sendPhoto(chatId, top.home_team_badge, choixMsg)
+        : false;
+
+      if (!photoEnvoyee) {
+        await send(chatId, choixMsg);
+      }
+      await send(chatId, `──────────────────\n*Tous les pronos :*\n${matchsResume}`);
       return new Response('OK');
     }
 

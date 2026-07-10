@@ -55,6 +55,8 @@ async function indexerMatch(ev: TsdbMatch, competition: string): Promise<string 
     home_score:      ev.intHomeScore !== null ? Number(ev.intHomeScore) : null,
     away_score:      ev.intAwayScore !== null ? Number(ev.intAwayScore) : null,
     id_thesportsdb:  ev.idEvent,
+    home_team_badge: ev.strHomeTeamBadge ?? null,
+    away_team_badge: ev.strAwayTeamBadge ?? null,
     updated_at:      new Date().toISOString(),
   }, { onConflict: 'match_id' });
 
@@ -102,8 +104,51 @@ Deno.serve(async (req) => {
   }
 
   const stats = {
-    ligues: 0, matchs: 0, tsdb_stats: 0, lineups: 0, forme: 0, erreurs: 0,
+    ligues: 0, matchs: 0, tsdb_stats: 0, lineups: 0, forme: 0, erreurs: 0, supprimes: 0,
   };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // PHASE 0 — Nettoyage des matchs déjà joués
+  // Un match "finished" (ou dont l'heure est passée depuis >6h, au cas où le
+  // statut TheSportsDB ne serait pas encore remonté à FT) est supprimé de
+  // matchs_index. Le ON DELETE CASCADE des tables liées (marches_bruts,
+  // pronostics_pre_calcules, pronostics_finaux, analyse_confrontation,
+  // marches_bookmakers) nettoie tout le reste automatiquement. La prochaine
+  // ligue traitée en phase 1 récupère alors le NOUVEAU prochain match de cette
+  // compétition (eventsnextleague avance dès que l'ancien match est terminé).
+  // ════════════════════════════════════════════════════════════════════════════
+
+  {
+    const cutoff = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
+    const { data: aSupprimer, error: selErr } = await supabase
+      .from('matchs_index')
+      .select('match_id, home_team, away_team, competition, status, match_date')
+      .or(`status.eq.finished,match_date.lt.${cutoff}`);
+
+    if (selErr) {
+      console.error('[phase0-select]', selErr.message);
+    } else if (aSupprimer?.length) {
+      const ids = aSupprimer.map((m) => m.match_id);
+
+      // pronostics_finaux, analyse_confrontation et marches_bookmakers n'ont pas
+      // de contrainte ON DELETE CASCADE vers matchs_index (seuls marches_bruts et
+      // pronostics_pre_calcules l'ont) : on les nettoie explicitement pour éviter
+      // des lignes orphelines que le bot pourrait encore lire par erreur.
+      await supabase.from('pronostics_finaux').delete().in('match_id', ids);
+      await supabase.from('analyse_confrontation').delete().in('match_id', ids);
+      await supabase.from('marches_bookmakers').delete().in('match_id', ids);
+
+      const { error: delErr } = await supabase.from('matchs_index').delete().in('match_id', ids);
+      if (delErr) {
+        console.error('[phase0-delete]', delErr.message);
+      } else {
+        stats.supprimes = ids.length;
+        for (const m of aSupprimer) {
+          console.log(`[cleanup] ${m.home_team} vs ${m.away_team} (${m.competition}) supprimé — status=${m.status}`);
+        }
+      }
+    }
+  }
 
   const matchsIndexes: Array<{
     matchId: string; homeTeam: string; awayTeam: string; matchDate: string;

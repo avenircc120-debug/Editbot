@@ -62,6 +62,8 @@ export interface TsdbMatch {
   strStatus:      string;         // "NS" | "FT" | "HT" | "1H" | "2H" …
   strPostponed:   string;
   idAPIfootball:  string | null;  // ← pont vers api-football (ex: "1545409")
+  strHomeTeamBadge?: string | null; // logo équipe domicile (URL)
+  strAwayTeamBadge?: string | null; // logo équipe extérieur (URL)
 }
 
 // ─── Prochains matchs d'une ligue (≤ 5 en tier gratuit) ─────────────────────

@@ -255,7 +255,7 @@ Deno.serve(async (req) => {
   // pour ne pas exclure d'office les matchs au-delà des N plus proches.
   const { data: matchsCandidats, error: matchErr } = await supabase
     .from('matchs_index')
-    .select('match_id, home_team, away_team, competition, match_date')
+    .select('match_id, home_team, away_team, competition, match_date, home_team_badge, away_team_badge')
     .gte('match_date', now)
     .lte('match_date', in48h)
     .in('status', ['scheduled', 'inprogress', 'notstarted'])
@@ -378,12 +378,16 @@ Deno.serve(async (req) => {
         // ── Table de consultation finale ──────────────────────────────────
         // Seule table lue par telegram-webhook. Aucun calcul en direct côté bot :
         // ce résumé "prêt à servir" est écrit une fois ici, par batch.
+        // Les logos (home_team_badge/away_team_badge) sont copiés depuis
+        // matchs_index pour que le bot puisse les afficher sans requête en plus.
         const { error: errFinal } = await supabase.from('pronostics_finaux').upsert({
           match_id:         match.match_id,
           competition:      match.competition,
           home_team:        match.home_team,
           away_team:        match.away_team,
           match_date:       match.match_date,
+          home_team_badge:  match.home_team_badge ?? null,
+          away_team_badge:  match.away_team_badge ?? null,
           pronostic_type:   p.type,
           pronostic_valeur: p.valeur  ?? 'N/A',
           fiabilite:        Math.min(100, Math.max(0, p.fiabilite ?? 50)),
