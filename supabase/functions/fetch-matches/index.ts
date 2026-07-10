@@ -1,71 +1,28 @@
 /**
- * fetch-matches v5 — Pipeline TheSportsDB (SofaScore retiré)
+ * fetch-matches — Ingestion des scores en direct (TheSportsDB)
  *
- * Phase 1 — TheSportsDB → Calendrier
- *   Récupère les prochains matchs par ligue et les indexe dans matchs_index.
- *   Stocke l'événement brut TheSportsDB (slug: 'tsdb_event').
+ * Récupère le calendrier + les scores des prochains matchs pour chaque
+ * compétition suivie et les indexe dans matchs_index (source de vérité
+ * des scores en direct, conservée intégralement).
  *
- * Phase 2 — TheSportsDB → Enrichissement de base
- *   Stats de base + lineups si disponibles (slugs: 'tsdb_stats', 'lineups').
- *
- * SofaScore (H2H) a été retiré pour éviter tout conflit de cron/quota avec
- * The Odds API (voir fetch-odds), qui utilise désormais le même budget RapidAPI.
+ * Dès qu'un score/statut change sur un match, déclenche immédiatement
+ * facebook-post pour diffuser ce match aux Pages Facebook concernées
+ * (aucun cron séparé pour la diffusion : c'est piloté par l'événement).
  *
  * Sécurité : header Authorization: Bearer {CRON_SECRET}
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { LEAGUES }                                  from '../_shared/config.ts';
+import { LEAGUES } from '../_shared/config.ts';
 import { consommerQuota, lireQuotas } from '../_shared/quota.ts';
-import {
-  getProchainMatchsLigue,
-  getStatsMatch,
-  getLineupsMatch,
-  getDerniersMatchsEquipe,
-  filtrerProchains,
-  tsdbTimestampToDate,
-  type TsdbMatch,
-} from '../_shared/thesportsdb.ts';
+import { getProchainMatchsLigue, filtrerProchains, tsdbTimestampToDate, type TsdbMatch } from '../_shared/thesportsdb.ts';
+
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const CRON_SECRET  = Deno.env.get('CRON_SECRET') ?? '';
 const supabase     = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const MAX_MATCHS_PAR_LIGUE = 15;   // Relevé de 5 à 15 pour donner plus de choix aux users (combinés)
-
-// ─── Helpers DB ───────────────────────────────────────────────────────────────
-
-async function indexerMatch(ev: TsdbMatch, competition: string): Promise<string | null> {
-  const matchDate = tsdbTimestampToDate(ev.strTimestamp).toISOString();
-  if (!ev.strHomeTeam || !ev.strAwayTeam) return null;
-
-  const { error } = await supabase.from('matchs_index').upsert({
-    match_id:        ev.idEvent,
-    home_team:       ev.strHomeTeam,
-    away_team:       ev.strAwayTeam,
-    home_team_id:    ev.idHomeTeam ?? null,
-    away_team_id:    ev.idAwayTeam ?? null,
-    home_slug:       null,
-    away_slug:       null,
-    competition,
-    tournament_id:   ev.idLeague ?? null,
-    season_id:       ev.strSeason ?? null,
-    match_date:      matchDate,
-    status:          normaliserStatus(ev.strStatus),
-    home_score:      ev.intHomeScore !== null ? Number(ev.intHomeScore) : null,
-    away_score:      ev.intAwayScore !== null ? Number(ev.intAwayScore) : null,
-    id_thesportsdb:  ev.idEvent,
-    home_team_badge: ev.strHomeTeamBadge ?? null,
-    away_team_badge: ev.strAwayTeamBadge ?? null,
-    updated_at:      new Date().toISOString(),
-  }, { onConflict: 'match_id' });
-
-  if (error) {
-    console.warn('[index]', ev.idEvent, error.message);
-    return null;
-  }
-  return ev.idEvent;
-}
+const MAX_MATCHS_PAR_LIGUE = 15;
 
 function normaliserStatus(strStatus: string | undefined): string {
   switch ((strStatus ?? '').toUpperCase()) {
@@ -76,206 +33,100 @@ function normaliserStatus(strStatus: string | undefined): string {
   }
 }
 
-async function dejaFrais(matchId: string, slug: string, heures = 12): Promise<boolean> {
-  const cutoff = new Date(Date.now() - heures * 3600 * 1000).toISOString();
-  const { data } = await supabase
-    .from('marches_bruts')
-    .select('id')
-    .eq('match_id', matchId)
-    .eq('marche_slug', slug)
-    .gte('fetched_at', cutoff)
+async function indexerMatch(ev: TsdbMatch, competition: string): Promise<{ matchId: string; changed: boolean; row: any } | null> {
+  if (!ev.strHomeTeam || !ev.strAwayTeam) return null;
+  const matchDate = tsdbTimestampToDate(ev.strTimestamp).toISOString();
+  const status = normaliserStatus(ev.strStatus);
+  const homeScore = ev.intHomeScore !== null && ev.intHomeScore !== undefined ? Number(ev.intHomeScore) : null;
+  const awayScore = ev.intAwayScore !== null && ev.intAwayScore !== undefined ? Number(ev.intAwayScore) : null;
+
+  const { data: avant } = await supabase
+    .from('matchs_index')
+    .select('status, home_score, away_score')
+    .eq('match_id', ev.idEvent)
     .maybeSingle();
-  return !!data;
+
+  const { error } = await supabase.from('matchs_index').upsert({
+    match_id:        ev.idEvent,
+    home_team:       ev.strHomeTeam,
+    away_team:       ev.strAwayTeam,
+    home_team_id:    ev.idHomeTeam ?? null,
+    away_team_id:    ev.idAwayTeam ?? null,
+    competition,
+    tournament_id:   ev.idLeague ?? null,
+    season_id:       ev.strSeason ?? null,
+    match_date:      matchDate,
+    status,
+    home_score:      homeScore,
+    away_score:      awayScore,
+    id_thesportsdb:  ev.idEvent,
+    home_team_badge: ev.strHomeTeamBadge ?? null,
+    away_team_badge: ev.strAwayTeamBadge ?? null,
+    updated_at:      new Date().toISOString(),
+  }, { onConflict: 'match_id' });
+
+  if (error) {
+    console.warn('[index]', ev.idEvent, error.message);
+    return null;
+  }
+
+  const changed = !avant || avant.status !== status || avant.home_score !== homeScore || avant.away_score !== awayScore;
+  const enDirectOuTermine = status === 'inprogress' || status === 'finished';
+
+  return {
+    matchId: ev.idEvent,
+    changed: changed && enDirectOuTermine && homeScore !== null && awayScore !== null,
+    row: { matchId: ev.idEvent, competition, homeTeam: ev.strHomeTeam, awayTeam: ev.strAwayTeam, homeScore, awayScore, status },
+  };
 }
 
-async function stockerMarche(matchId: string, slug: string, donnees: any, source: string): Promise<void> {
-  const { error } = await supabase.from('marches_bruts').upsert(
-    { match_id: matchId, marche_slug: slug, donnees, source, fetched_at: new Date().toISOString() },
-    { onConflict: 'match_id,marche_slug' },
-  );
-  if (error) console.warn(`[marches_bruts] ${matchId}/${slug}:`, error.message);
+async function diffuserSurFacebook(matches: any[]) {
+  if (!matches.length) return;
+  try {
+    await fetch(`${SUPABASE_URL}/functions/v1/facebook-post`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${CRON_SECRET}` },
+      body: JSON.stringify({ matches }),
+    });
+  } catch (e) {
+    console.error('[fetch-matches] Erreur appel facebook-post:', e);
+  }
 }
-
-// ─── Handler principal ────────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
-  if (!CRON_SECRET || req.headers.get('Authorization') !== `Bearer ${CRON_SECRET}`) {
-    return new Response('Unauthorized', { status: 401 });
+  const auth = req.headers.get('Authorization') ?? '';
+  if (CRON_SECRET && auth !== `Bearer ${CRON_SECRET}`) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
   }
 
-  const stats = {
-    ligues: 0, matchs: 0, tsdb_stats: 0, lineups: 0, forme: 0, erreurs: 0, supprimes: 0,
-  };
+  const stats = { indexes: 0, erreurs: 0, diffuses: 0 };
+  const matchsAModifier: any[] = [];
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // PHASE 0 — Nettoyage des matchs déjà joués
-  // Un match "finished" (ou dont l'heure est passée depuis >6h, au cas où le
-  // statut TheSportsDB ne serait pas encore remonté à FT) est supprimé de
-  // matchs_index. Le ON DELETE CASCADE des tables liées (marches_bruts,
-  // pronostics_pre_calcules, pronostics_finaux, analyse_confrontation,
-  // marches_bookmakers) nettoie tout le reste automatiquement. La prochaine
-  // ligue traitée en phase 1 récupère alors le NOUVEAU prochain match de cette
-  // compétition (eventsnextleague avance dès que l'ancien match est terminé).
-  // ════════════════════════════════════════════════════════════════════════════
-
-  {
-    const cutoff = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
-    const { data: aSupprimer, error: selErr } = await supabase
-      .from('matchs_index')
-      .select('match_id, home_team, away_team, competition, status, match_date')
-      .or(`status.eq.finished,match_date.lt.${cutoff}`);
-
-    if (selErr) {
-      console.error('[phase0-select]', selErr.message);
-    } else if (aSupprimer?.length) {
-      const ids = aSupprimer.map((m) => m.match_id);
-
-      // pronostics_finaux, analyse_confrontation et marches_bookmakers n'ont pas
-      // de contrainte ON DELETE CASCADE vers matchs_index (seuls marches_bruts et
-      // pronostics_pre_calcules l'ont) : on les nettoie explicitement pour éviter
-      // des lignes orphelines que le bot pourrait encore lire par erreur.
-      await supabase.from('pronostics_finaux').delete().in('match_id', ids);
-      await supabase.from('analyse_confrontation').delete().in('match_id', ids);
-      await supabase.from('marches_bookmakers').delete().in('match_id', ids);
-
-      const { error: delErr } = await supabase.from('matchs_index').delete().in('match_id', ids);
-      if (delErr) {
-        console.error('[phase0-delete]', delErr.message);
-      } else {
-        stats.supprimes = ids.length;
-        for (const m of aSupprimer) {
-          console.log(`[cleanup] ${m.home_team} vs ${m.away_team} (${m.competition}) supprimé — status=${m.status}`);
-        }
-      }
-    }
-  }
-
-  const matchsIndexes: Array<{
-    matchId: string; homeTeam: string; awayTeam: string; matchDate: string;
-    homeTeamId: string | null; awayTeamId: string | null;
-  }> = [];
-
-  // ════════════════════════════════════════════════════════════════════════════
-  // PHASE 1 — TheSportsDB → Calendrier des matchs
-  // ════════════════════════════════════════════════════════════════════════════
-
-  for (const league of LEAGUES) {
+  for (const ligue of LEAGUES) {
     const ok = await consommerQuota(supabase, 'thesportsdb');
     if (!ok) break;
 
     try {
-      const matchs = await getProchainMatchsLigue(league.tsdb_id);
-      const prochains = filtrerProchains(matchs).slice(0, MAX_MATCHS_PAR_LIGUE);
-      stats.ligues++;
+      const evenements = await getProchainMatchsLigue(ligue.tsdb_id);
+      const prochains = filtrerProchains(evenements ?? [], 14).slice(0, MAX_MATCHS_PAR_LIGUE);
 
       for (const ev of prochains) {
-        const matchId = await indexerMatch(ev, league.name);
-        if (!matchId) continue;
-        stats.matchs++;
-
-        // Stocker l'événement brut TheSportsDB
-        if (!await dejaFrais(matchId, 'tsdb_event', 12)) {
-          await stockerMarche(matchId, 'tsdb_event', ev, 'thesportsdb');
-        }
-
-        matchsIndexes.push({
-          matchId,
-          homeTeam:   ev.strHomeTeam,
-          awayTeam:   ev.strAwayTeam,
-          matchDate:  tsdbTimestampToDate(ev.strTimestamp).toISOString(),
-          homeTeamId: ev.idHomeTeam ?? null,
-          awayTeamId: ev.idAwayTeam ?? null,
-        });
+        const res = await indexerMatch(ev, ligue.name);
+        if (!res) { stats.erreurs++; continue; }
+        stats.indexes++;
+        if (res.changed) matchsAModifier.push(res.row);
       }
     } catch (e) {
-      console.error('[phase1]', league.name, e);
+      console.error('[fetch-matches]', ligue.name, e);
       stats.erreurs++;
     }
   }
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // PHASE 2 — TheSportsDB → Stats de base + Lineups
-  // ════════════════════════════════════════════════════════════════════════════
-
-  for (const { matchId } of matchsIndexes) {
-    // Stats de base
-    if (!await dejaFrais(matchId, 'tsdb_stats', 24)) {
-      const ok = await consommerQuota(supabase, 'thesportsdb');
-      if (!ok) break;
-      try {
-        const s = await getStatsMatch(matchId);
-        if (s) {
-          await stockerMarche(matchId, 'tsdb_stats', { eventstats: s }, 'thesportsdb');
-          stats.tsdb_stats++;
-        }
-      } catch (e) {
-        console.error('[phase2-stats]', matchId, e);
-        stats.erreurs++;
-      }
-    }
-
-    // Lineups
-    if (!await dejaFrais(matchId, 'lineups', 24)) {
-      const ok = await consommerQuota(supabase, 'thesportsdb');
-      if (!ok) break;
-      try {
-        const l = await getLineupsMatch(matchId);
-        if (l?.length) {
-          await stockerMarche(matchId, 'lineups', { lineup: l }, 'thesportsdb');
-          stats.lineups++;
-        }
-      } catch (e) {
-        console.error('[phase2-lineups]', matchId, e);
-        stats.erreurs++;
-      }
-    }
-  }
-
-  // ════════════════════════════════════════════════════════════════════════════
-  // PHASE 3 — TheSportsDB → Forme récente des équipes (buts marqués/concédés)
-  // Base du calcul de probabilités Poisson dans analyse-matches.
-  // ════════════════════════════════════════════════════════════════════════════
-
-  for (const { matchId, homeTeamId, awayTeamId } of matchsIndexes) {
-    if (homeTeamId && !await dejaFrais(matchId, 'forme_domicile', 24)) {
-      const ok = await consommerQuota(supabase, 'thesportsdb');
-      if (!ok) break;
-      try {
-        const derniers = await getDerniersMatchsEquipe(homeTeamId);
-        if (derniers?.length) {
-          await stockerMarche(matchId, 'forme_domicile', { equipe_id: homeTeamId, matchs: derniers }, 'thesportsdb');
-          stats.forme++;
-        }
-      } catch (e) {
-        console.error('[phase3-forme-dom]', matchId, e);
-        stats.erreurs++;
-      }
-    }
-
-    if (awayTeamId && !await dejaFrais(matchId, 'forme_exterieur', 24)) {
-      const ok = await consommerQuota(supabase, 'thesportsdb');
-      if (!ok) break;
-      try {
-        const derniers = await getDerniersMatchsEquipe(awayTeamId);
-        if (derniers?.length) {
-          await stockerMarche(matchId, 'forme_exterieur', { equipe_id: awayTeamId, matchs: derniers }, 'thesportsdb');
-          stats.forme++;
-        }
-      } catch (e) {
-        console.error('[phase3-forme-ext]', matchId, e);
-        stats.erreurs++;
-      }
-    }
-  }
-
-  // ─── Rapport final ─────────────────────────────────────────────────────────
+  await diffuserSurFacebook(matchsAModifier);
+  stats.diffuses = matchsAModifier.length;
 
   const quotas = await lireQuotas(supabase);
 
-  return new Response(JSON.stringify({
-    success: true,
-    ...stats,
-    quotas,
-    timestamp: new Date().toISOString(),
-  }), { headers: { 'Content-Type': 'application/json' } });
+  return new Response(JSON.stringify({ success: true, ...stats, quotas, timestamp: new Date().toISOString() }),
+    { headers: { 'Content-Type': 'application/json' } });
 });

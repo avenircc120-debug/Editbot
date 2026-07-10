@@ -1,82 +1,41 @@
-// ─── Configuration centralisée ────────────────────────────────────────────────
-// Source 1 : TheSportsDB  → calendrier des matchs + stats de base
-// Source 2 : The Odds API → cotes bookmakers
-// (SofaScore retiré — conflit de quota/cron avec The Odds API sur RapidAPI)
+// Configuration partagée : ligues suivies, modèle Groq, prompt système de l'assistant conversationnel.
 
-// ─── TheSportsDB ─────────────────────────────────────────────────────────────
-export const THESPORTSDB = {
-  BASE_URL: 'https://www.thesportsdb.com/api/v1/json',
-  // Clé env THESPORTSDB_KEY ; fallback '3' = tier gratuit public
-  get KEY(): string {
-    return Deno.env.get('THESPORTSDB_KEY') ?? '3';
-  },
-};
-
-// ─── The Odds API ──────────────────────────────────────────────────────────────
-// Cotes bookmakers réelles, spécialisé sport (dont soccer). Plan gratuit :
-// 500 requêtes/mois. Clé env : ODDS_API_KEY.
-// Doc : https://the-odds-api.com/liveapi/guides/v4/
-export const ODDS_API = {
-  BASE_URL: 'https://api.the-odds-api.com/v4',
-  get KEY(): string {
-    return Deno.env.get('ODDS_API_KEY') ?? '';
-  },
-  REGIONS: 'eu',
-  // 'btts' n'est PAS un marché supporté par l'endpoint /odds (422 systématique,
-  // confirmé le 10/07/2026) — remplacé par 'spreads' (handicap asiatique), qui
-  // fonctionne et ajoute un vrai marché supplémentaire.
-  MARKETS: 'h2h,totals,spreads',
-  ODDS_FORMAT: 'decimal',
-};
-
-// ─── Groq ─────────────────────────────────────────────────────────────────────
 export const GROQ = {
   BASE_URL:   'https://api.groq.com/openai/v1',
-  // llama3-70b-8192 a été décommissionné par Groq (juillet 2026)
   MODEL:      'llama-3.3-70b-versatile',
-  MAX_TOKENS: 800,
-  CACHE_H:    24,   // validité du pronostic en cache (heures)
+  MAX_TOKENS: 700,
 };
 
-// ─── Ligues supportées ────────────────────────────────────────────────────────
-// tsdb_id : ID TheSportsDB
-export const LEAGUES: Array<{
-  tsdb_id:   string;
-  name:      string;
-  // Clé sport The Odds API pour les cotes (null = pas de cotes pour cette ligue)
-  odds_key?: string;
-}> = [
-  { tsdb_id: '4334', name: 'Ligue 1',           odds_key: 'soccer_france_ligue_one' },
-  { tsdb_id: '4328', name: 'Premier League',    odds_key: 'soccer_epl' },
-  { tsdb_id: '4335', name: 'La Liga',           odds_key: 'soccer_spain_la_liga' },
-  { tsdb_id: '4331', name: 'Bundesliga',        odds_key: 'soccer_germany_bundesliga' },
-  { tsdb_id: '4332', name: 'Serie A',           odds_key: 'soccer_italy_serie_a' },
-  { tsdb_id: '4480', name: 'Champions League',  odds_key: 'soccer_uefa_champs_league' },
-  { tsdb_id: '4481', name: 'Europa League',     odds_key: 'soccer_uefa_europa_league' },
-  { tsdb_id: '4329', name: 'Championship',      odds_key: 'soccer_efl_champ' },
-  { tsdb_id: '4330', name: 'Scottish Premiership', odds_key: 'soccer_spl' },
-  { tsdb_id: '4337', name: 'Eredivisie',        odds_key: 'soccer_netherlands_eredivisie' },
-  { tsdb_id: '4344', name: 'Primeira Liga',     odds_key: 'soccer_portugal_primeira_liga' },
-  { tsdb_id: '4346', name: 'MLS',               odds_key: 'soccer_usa_mls' },
-  { tsdb_id: '4351', name: 'Brasileirão',       odds_key: 'soccer_brazil_campeonato' },
-  { tsdb_id: '4429', name: 'Coupe du Monde FIFA', odds_key: 'soccer_fifa_world_cup' },
-  // Ajoutées le 10/07/2026 : compétitions en cours en juillet (les ligues
-  // européennes ci-dessus sont en trêve estivale) pour donner plus de matchs
-  // aux utilisateurs qui veulent faire des combinés.
-  { tsdb_id: '4350', name: 'Liga MX',            odds_key: 'soccer_mexico_ligamx' },
-  { tsdb_id: '4406', name: 'Primera División Argentine', odds_key: 'soccer_argentina_primera_division' },
-  { tsdb_id: '4359', name: 'Chinese Super League', odds_key: 'soccer_china_superleague' },
+// ─── Compétitions suivies ──────────────────────────────────────────────────
+// tsdb_id : ID TheSportsDB (utilisé par fetch-matches pour l'ingestion des scores)
+export const LEAGUES: Array<{ tsdb_id: string; name: string }> = [
+  { tsdb_id: '4334', name: 'Ligue 1' },
+  { tsdb_id: '4328', name: 'Premier League' },
+  { tsdb_id: '4335', name: 'La Liga' },
+  { tsdb_id: '4331', name: 'Bundesliga' },
+  { tsdb_id: '4332', name: 'Serie A' },
+  { tsdb_id: '4480', name: 'Champions League' },
+  { tsdb_id: '4481', name: 'Europa League' },
+  { tsdb_id: '4329', name: 'Championship' },
+  { tsdb_id: '4330', name: 'Scottish Premiership' },
+  { tsdb_id: '4337', name: 'Eredivisie' },
+  { tsdb_id: '4344', name: 'Primeira Liga' },
+  { tsdb_id: '4346', name: 'MLS' },
+  { tsdb_id: '4351', name: 'Brasileirão' },
+  { tsdb_id: '4429', name: 'Coupe du Monde FIFA' },
+  { tsdb_id: '4350', name: 'Liga MX' },
+  { tsdb_id: '4406', name: 'Primera División Argentine' },
+  { tsdb_id: '4359', name: 'Chinese Super League' },
 ];
 
-// ─── Prompt système Groq ──────────────────────────────────────────────────────
-export const SYSTEM_PROMPT = `Tu es un expert analyste sportif passionné et rigoureux. Ton rôle est de conseiller les utilisateurs sur leurs paris en te basant sur des données statistiques réelles.
+// ─── Prompt système de l'assistant conversationnel (GROQ) ─────────────────
+// L'assistant n'émet plus aucune prédiction / pronostic / cote conseillée.
+// Il guide l'utilisateur (onboarding) et débriefe humainement les matchs du jour.
+export const SYSTEM_PROMPT = `Tu es l'assistant conversationnel d'Editbot, un guide chaleureux et compétent pour les passionnés de football sur Telegram.
 
-Tu ne te contentes pas de donner des chiffres, tu expliques le "pourquoi" (dynamique d'équipe, état de forme, historique des confrontations).
-
-Règles absolues :
-- Sois humain, professionnel et prudent.
-- Si une probabilité est faible (< 70%), avertis clairement l'utilisateur du risque.
-- Utilise uniquement les données statistiques fournies, ne les invente jamais.
-- Structure tes réponses de manière claire et concise.
-- Fournis toujours un indice de fiabilité entre 0 et 100.
-- Format de réponse JSON strict (voir instructions de chaque appel).`;
+Ton rôle :
+- Pour les nouveaux utilisateurs : accueille-les avec bienveillance, explique en quelques phrases simples comment fonctionne l'application (connecter Facebook via /connect_facebook, ouvrir son espace via /dashboard pour choisir ses compétitions et déposer ses codes coupons).
+- Pour toute question sur les matchs du jour : tu reçois dans le contexte la liste réelle des matchs (avant, en cours, terminés). Utilise uniquement ces données réelles pour informer l'utilisateur — jamais de données inventées.
+- Si des matchs sont terminés, débriefe humainement les scores et le déroulé, comme un ami passionné qui a suivi le match.
+- Tu ne donnes JAMAIS de pronostic, de cote, de probabilité de résultat ou de conseil de pari. Ce n'est plus le rôle de l'application.
+- Réponds toujours en français, de façon claire, chaleureuse et concise.`;

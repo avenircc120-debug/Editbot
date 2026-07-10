@@ -1,109 +1,90 @@
--- =============================================
--- Migration 007 — facebook_connections
--- Stocke les tokens d'accès aux Pages Facebook des utilisateurs.
--- RLS activé : seul le service_role peut lire/écrire (Edge Functions).
--- =============================================
+/**
+ * facebook.ts — Helpers Meta Graph API (OAuth + publication de posts)
+ *
+ * Utilisé par facebook-oauth (échange du code, récupération des Pages)
+ * et facebook-post (publication automatique des scores en direct).
+ */
 
--- ─── Table principale : connexions Facebook ───────────────────────────────────
-CREATE TABLE IF NOT EXISTS facebook_connections (
-  id                    BIGSERIAL PRIMARY KEY,
-  telegram_user_id      BIGINT NOT NULL,
-  fb_user_id            TEXT NOT NULL,
-  fb_page_id            TEXT NOT NULL,
-  fb_page_name          TEXT NOT NULL,
-  fb_page_access_token  TEXT NOT NULL,       -- long-lived token (60 jours)
-  is_active             BOOLEAN DEFAULT TRUE,
-  last_post_at          TIMESTAMPTZ,
-  created_at            TIMESTAMPTZ DEFAULT NOW(),
-  updated_at            TIMESTAMPTZ DEFAULT NOW(),
-  CONSTRAINT uq_fb_telegram_page UNIQUE (telegram_user_id, fb_page_id)
-);
+import { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-ALTER TABLE facebook_connections ENABLE ROW LEVEL SECURITY;
+const FB_APP_ID     = Deno.env.get('FACEBOOK_APP_ID')     ?? '';
+const FB_APP_SECRET = Deno.env.get('FACEBOOK_APP_SECRET') ?? '';
+const FB_API        = 'https://graph.facebook.com/v19.0';
 
--- Seul le service_role (Edge Functions) peut accéder à cette table.
--- Les tokens de page ne doivent jamais être exposés via l'API REST publique.
-CREATE POLICY "service_role_only_connections"
-  ON facebook_connections
-  FOR ALL
-  TO service_role
-  USING (true)
-  WITH CHECK (true);
+// ─── OAuth ──────────────────────────────────────────────────────────────────
 
-CREATE INDEX IF NOT EXISTS idx_fb_active  ON facebook_connections(is_active) WHERE is_active = TRUE;
-CREATE INDEX IF NOT EXISTS idx_fb_tg_user ON facebook_connections(telegram_user_id);
+/** Valide un nonce anti-CSRF à usage unique et renvoie le telegram_user_id associé. */
+export async function validerNonce(nonce: string, supabase: SupabaseClient): Promise<number | null> {
+  const { data, error } = await supabase
+    .from('facebook_oauth_states')
+    .select('telegram_user_id, expires_at')
+    .eq('nonce', nonce)
+    .maybeSingle();
 
-CREATE TRIGGER trg_fb_updated_at
-  BEFORE UPDATE ON facebook_connections
-  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  if (error || !data) return null;
+  if (new Date(data.expires_at).getTime() < Date.now()) return null;
 
--- ─── Table : logs des posts publiés (évite les doublons) ─────────────────────
-CREATE TABLE IF NOT EXISTS facebook_posts_log (
-  id              BIGSERIAL PRIMARY KEY,
-  connection_id   BIGINT NOT NULL REFERENCES facebook_connections(id) ON DELETE CASCADE,
-  match_id        TEXT NOT NULL,
-  post_date       DATE NOT NULL DEFAULT CURRENT_DATE, -- clé d'idempotence par jour
-  pronostic_type  TEXT NOT NULL,
-  fb_post_id      TEXT,
-  status          TEXT NOT NULL DEFAULT 'pending',  -- pending | success | error
-  error_message   TEXT,
-  posted_at       TIMESTAMPTZ DEFAULT NOW(),
-  -- Idempotence : un seul post par connexion + match + jour
-  CONSTRAINT uq_fb_post_log UNIQUE (connection_id, match_id, post_date)
-);
+  // Usage unique : on supprime immédiatement le nonce.
+  await supabase.from('facebook_oauth_states').delete().eq('nonce', nonce);
+  return Number(data.telegram_user_id);
+}
 
-ALTER TABLE facebook_posts_log ENABLE ROW LEVEL SECURITY;
+/** Échange le code d'autorisation contre un token de courte durée. */
+export async function echangerCode(code: string, redirectUri: string): Promise<string | null> {
+  const url = `${FB_API}/oauth/access_token?client_id=${FB_APP_ID}&client_secret=${FB_APP_SECRET}&redirect_uri=${encodeURIComponent(redirectUri)}&code=${code}`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data.access_token ?? null;
+}
 
-CREATE POLICY "service_role_only_posts_log"
-  ON facebook_posts_log
-  FOR ALL
-  TO service_role
-  USING (true)
-  WITH CHECK (true);
+/** Échange un token courte durée contre un token longue durée (~60 jours). */
+export async function prolongerToken(shortToken: string): Promise<string> {
+  const url = `${FB_API}/oauth/access_token?grant_type=fb_exchange_token&client_id=${FB_APP_ID}&client_secret=${FB_APP_SECRET}&fb_exchange_token=${shortToken}`;
+  const res = await fetch(url);
+  if (!res.ok) return shortToken;
+  const data = await res.json();
+  return data.access_token ?? shortToken;
+}
 
-CREATE INDEX IF NOT EXISTS idx_fb_log_connection ON facebook_posts_log(connection_id);
-CREATE INDEX IF NOT EXISTS idx_fb_log_date       ON facebook_posts_log(post_date);
+export async function recupererFbUserId(token: string): Promise<string> {
+  const res = await fetch(`${FB_API}/me?access_token=${token}`);
+  const data = await res.json();
+  return data.id ?? '';
+}
 
--- ─── Table : états OAuth (protection CSRF) ────────────────────────────────────
--- Nonce à usage unique, expire après 10 minutes.
-CREATE TABLE IF NOT EXISTS facebook_oauth_states (
-  nonce            TEXT PRIMARY KEY,
-  telegram_user_id BIGINT NOT NULL,
-  expires_at       TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '10 minutes'),
-  used             BOOLEAN DEFAULT FALSE,
-  created_at       TIMESTAMPTZ DEFAULT NOW()
-);
+export interface FbPage {
+  id: string;
+  name: string;
+  access_token: string;
+}
 
-ALTER TABLE facebook_oauth_states ENABLE ROW LEVEL SECURITY;
+/** Liste les Pages Facebook administrées par l'utilisateur. */
+export async function recupererPages(token: string): Promise<FbPage[]> {
+  const res = await fetch(`${FB_API}/me/accounts?access_token=${token}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (data.data ?? []).map((p: any) => ({ id: p.id, name: p.name, access_token: p.access_token }));
+}
 
-CREATE POLICY "service_role_only_oauth_states"
-  ON facebook_oauth_states
-  FOR ALL
-  TO service_role
-  USING (true)
-  WITH CHECK (true);
+// ─── Publication ────────────────────────────────────────────────────────────
 
--- Nettoyage automatique des états OAuth expirés
-CREATE OR REPLACE FUNCTION purger_oauth_states_expires()
-RETURNS VOID LANGUAGE sql AS $$
-  DELETE FROM facebook_oauth_states WHERE expires_at < NOW();
-$$;
-
--- ─── Nettoyage logs > 30 jours ────────────────────────────────────────────────
-CREATE OR REPLACE FUNCTION purger_facebook_posts_log()
-RETURNS VOID LANGUAGE sql AS $$
-  DELETE FROM facebook_posts_log WHERE posted_at < NOW() - INTERVAL '30 days';
-$$;
-
--- ─── RGPD : suppression complète des données d'un utilisateur ────────────────
-CREATE OR REPLACE FUNCTION supprimer_donnees_utilisateur(p_telegram_user_id BIGINT)
-RETURNS VOID LANGUAGE plpgsql AS $$
-BEGIN
-  -- Supprime facebook_connections (cascade sur facebook_posts_log via FK)
-  DELETE FROM facebook_connections    WHERE telegram_user_id = p_telegram_user_id;
-  -- Supprime les états OAuth en attente
-  DELETE FROM facebook_oauth_states   WHERE telegram_user_id = p_telegram_user_id;
-  -- Note : les données sportives agrégées (pronostics_finaux, etc.) sont anonymes
-  -- et ne contiennent pas d'identifiant personnel — elles ne sont pas supprimées.
-END;
-$$;
+/** Publie un message texte sur une Page Facebook. */
+export async function posterSurPage(
+  pageId: string,
+  pageAccessToken: string,
+  message: string,
+): Promise<{ success: boolean; postId?: string; error?: string }> {
+  try {
+    const res = await fetch(`${FB_API}/${pageId}/feed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, access_token: pageAccessToken }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { success: false, error: data?.error?.message ?? `HTTP ${res.status}` };
+    return { success: true, postId: data.id };
+  } catch (e) {
+    return { success: false, error: String(e) };
+  }
+}
