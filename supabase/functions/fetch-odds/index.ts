@@ -1,34 +1,38 @@
 /**
  * ─── MASAP fetch-odds ─────────────────────────────────────────────────────────
- * Edge Function — Mise à jour sélective des cotes toutes les 10 minutes
+ * Edge Function — Mise à jour des cotes via The Odds API
  *
- * Stratégie :
- * 1. Lit la whitelist_matchs (matchs actifs à venir dans les 48h)
- * 2. Pour chaque match éligible (intervalle de refresh écoulé), fetch /odds
- * 3. Normalise via market-mapper et upsert dans marches_bookmakers
- * 4. Met à jour dernier_refresh dans whitelist_matchs
- * 5. Rafraîchit la vue matérialisée meilleure_cote_par_match
+ * Stratégie (revue) :
+ * 1. Lit matchs_index pour les matchs à venir dans les 48h (source réelle des
+ *    matchs, alimentée par fetch-matches — remplace whitelist_matchs qui
+ *    n'était jamais peuplée).
+ * 2. Groupe les matchs par compétition, 1 seul appel The Odds API par ligue
+ *    active (renvoie tous les matchs de la ligue avec cotes en un coup).
+ * 3. Associe chaque match interne à son événement par nom d'équipes + horaire.
+ * 4. Normalise via market-mapper et upsert dans marches_bookmakers.
  *
- * Appelée par le CRON Supabase toutes les 10 minutes :
- *   schedule: every 10 minutes (cron: star-slash-10 star star star)
+ * Sécurité : header Authorization: Bearer {CRON_SECRET}
+ * Quota The Odds API : 500 req/mois (gratuit) → appelée peu fréquemment
+ * (recommandé : toutes les 3-6h, pas toutes les 10 min).
  */
 
-import { serve }                         from 'https://deno.land/std@0.177.0/http/server.ts';
-import { createClient }                  from 'https://esm.sh/@supabase/supabase-js@2';
-import { consommerQuotaStrict }          from '../_shared/quota.ts';
-import { fetchOdds }                     from '../_shared/odds.ts';
+import { createClient }        from 'npm:@supabase/supabase-js@2';
+import { LEAGUES }             from '../_shared/config.ts';
+import { consommerQuotaStrict } from '../_shared/quota.ts';
+import {
+  fetchOddsForLeague,
+  trouverEventOdds,
+  construireOddsResult,
+} from '../_shared/odds.ts';
 
-const CRON_SECRET = Deno.env.get('CRON_SECRET');
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
-const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+const CRON_SECRET  = Deno.env.get('CRON_SECRET') ?? '';
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
+const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 
 // Fenêtre de refresh : matchs dans les prochaines 48h seulement
 const HORIZON_HEURES = 48;
 
-// ─── Handler ──────────────────────────────────────────────────────────────────
-
-serve(async (req: Request) => {
-  // Auth CRON — fail-closed si secret absent ou incorrect
+Deno.serve(async (req) => {
   if (!CRON_SECRET || req.headers.get('Authorization') !== `Bearer ${CRON_SECRET}`) {
     return new Response('Unauthorized', { status: 401 });
   }
@@ -38,106 +42,106 @@ serve(async (req: Request) => {
   const horizon = new Date(now.getTime() + HORIZON_HEURES * 3600 * 1000);
 
   const stats = {
-    matchs_evalues:  0,
+    ligues_evaluees:  0,
+    ligues_appelees:  0,
+    matchs_evalues:   0,
     matchs_refreshes: 0,
-    matchs_skips:    0,
-    quota_epuise:    false,
-    erreurs:         0,
+    matchs_sans_cote: 0,
+    quota_epuise:     false,
+    erreurs:          0,
   };
 
-  // ─── 1. Charger la whitelist ──────────────────────────────────────────────
+  // ─── 1. Charger les matchs à venir depuis matchs_index ────────────────────
 
-  const { data: whitelist, error: wErr } = await supabase
-    .from('whitelist_matchs')
-    .select('*')
-    .eq('actif', true)
-    .lte('match_date', horizon.toISOString())   // dans les 48h
-    .gte('match_date', now.toISOString())       // pas encore joué
-    .order('match_date', { ascending: true });
+  const { data: matchs, error: mErr } = await supabase
+    .from('matchs_index')
+    .select('match_id, home_team, away_team, competition, match_date')
+    .eq('status', 'scheduled')
+    .lte('match_date', horizon.toISOString())
+    .gte('match_date', now.toISOString());
 
-  if (wErr) {
-    console.error('[fetch-odds] Erreur lecture whitelist:', wErr.message);
-    return new Response(JSON.stringify({ success: false, error: wErr.message }), {
+  if (mErr) {
+    console.error('[fetch-odds] Erreur lecture matchs_index:', mErr.message);
+    return new Response(JSON.stringify({ success: false, error: mErr.message }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
   }
 
-  if (!whitelist || whitelist.length === 0) {
-    return new Response(JSON.stringify({ success: true, message: 'Whitelist vide', stats }), {
+  if (!matchs || matchs.length === 0) {
+    return new Response(JSON.stringify({ success: true, message: 'Aucun match à venir', stats }), {
       headers: { 'Content-Type': 'application/json' },
     });
   }
 
-  console.log(`[fetch-odds] ${whitelist.length} matchs en whitelist`);
+  // ─── 2. Grouper par compétition ────────────────────────────────────────────
 
-  // ─── 2. Boucle sur chaque match éligible ─────────────────────────────────
+  const parCompetition = new Map<string, typeof matchs>();
+  for (const m of matchs) {
+    if (!parCompetition.has(m.competition)) parCompetition.set(m.competition, []);
+    parCompetition.get(m.competition)!.push(m);
+  }
 
-  for (const match of whitelist) {
-    stats.matchs_evalues++;
+  // ─── 3. Pour chaque ligue avec des matchs à venir, 1 appel The Odds API ───
 
-    if (!match.fixture_apif_id) {
-      console.warn(`[fetch-odds] Pas de fixture_apif_id pour ${match.match_id}`);
-      stats.matchs_skips++;
+  for (const [competition, matchsLigue] of parCompetition) {
+    stats.ligues_evaluees++;
+    stats.matchs_evalues += matchsLigue.length;
+
+    const league = LEAGUES.find((l) => l.name === competition);
+    if (!league?.odds_key) {
+      stats.matchs_sans_cote += matchsLigue.length;
       continue;
     }
 
-    // ── Claim atomique anti-race ──────────────────────────────────────────────
-    // On tente d'écrire dernier_refresh = NOW() uniquement si la ligne n'a pas
-    // déjà été réclamée par une exécution concurrente dans l'intervalle requis.
-    const intervalleMin = match.intervalle_refresh_min ?? 10;
-    const cutoffRefresh = new Date(now.getTime() - intervalleMin * 60 * 1000).toISOString();
-
-    const { count: claimed } = await supabase
-      .from('whitelist_matchs')
-      .update({ dernier_refresh: now.toISOString() })
-      .eq('id', match.id)
-      .or(`dernier_refresh.is.null,dernier_refresh.lt.${cutoffRefresh}`)
-      // count: 'exact' pour savoir si la ligne a vraiment été mise à jour
-      .select('id', { count: 'exact', head: true });
-
-    if (!claimed || claimed === 0) {
-      // Une autre instance a déjà réclamé ce match → skip
-      stats.matchs_skips++;
-      continue;
-    }
-
-    // Consomme le quota 'odds' (fail-closed pour protéger le budget)
-    const ok = await consommerQuotaStrict(supabase, 'odds');
-    if (!ok) {
+    const quotaOk = await consommerQuotaStrict(supabase, 'odds' as any);
+    if (!quotaOk) {
       console.warn('[fetch-odds] 🛑 Quota odds épuisé');
       stats.quota_epuise = true;
-      // Annule le claim pour que la prochaine exécution puisse le traiter
-      await supabase
-        .from('whitelist_matchs')
-        .update({ dernier_refresh: match.dernier_refresh ?? null })
-        .eq('id', match.id);
       break;
     }
 
-    // ─── 3. Fetch les cotes ─────────────────────────────────────────────────
-
+    let events: Awaited<ReturnType<typeof fetchOddsForLeague>> = [];
     try {
-      const result = await fetchOdds(match.fixture_apif_id);
+      events = await fetchOddsForLeague(league.odds_key);
+      stats.ligues_appelees++;
+    } catch (e) {
+      console.error('[fetch-odds] Erreur ligue', competition, e);
+      stats.erreurs++;
+      continue;
+    }
 
-      if (!result) {
-        stats.erreurs++;
+    if (!events.length) {
+      stats.matchs_sans_cote += matchsLigue.length;
+      continue;
+    }
+
+    // ─── 4. Associer + upsert pour chaque match de cette ligue ──────────────
+
+    for (const match of matchsLigue) {
+      const ev = trouverEventOdds(events, match.home_team, match.away_team, match.match_date);
+      if (!ev) {
+        stats.matchs_sans_cote++;
         continue;
       }
 
-      // ─── 4. Upsert dans marches_bookmakers ───────────────────────────────
+      const result = construireOddsResult(match.match_id, ev);
+      if (!result) {
+        stats.matchs_sans_cote++;
+        continue;
+      }
 
       const { error: upsertErr } = await supabase
         .from('marches_bookmakers')
         .upsert(
           {
-            match_id:      match.match_id,
-            nom_bookmaker: result.bookmakerName,
-            bookmaker_id:  result.bookmakerId,
+            match_id:       match.match_id,
+            nom_bookmaker:  result.bookmakerName,
+            bookmaker_id:   0,
             marche_donnees: result.donnees,
-            updated_at:    now.toISOString(),
+            updated_at:     now.toISOString(),
           },
-          { onConflict: 'match_id,nom_bookmaker' }
+          { onConflict: 'match_id,nom_bookmaker' },
         );
 
       if (upsertErr) {
@@ -146,35 +150,12 @@ serve(async (req: Request) => {
         continue;
       }
 
-      // ─── 5. Mise à jour dernier_refresh ──────────────────────────────────
-
-      await supabase
-        .from('whitelist_matchs')
-        .update({ dernier_refresh: now.toISOString() })
-        .eq('id', match.id);
-
       stats.matchs_refreshes++;
-
       const nbMarches = Object.keys(result.donnees.marches).length;
       console.log(
-        `[fetch-odds] ✅ ${match.equipe_domicile} vs ${match.equipe_exterieur}` +
+        `[fetch-odds] ✅ ${match.home_team} vs ${match.away_team}` +
         ` | ${result.bookmakerName} | ${nbMarches} marchés`
       );
-
-    } catch (e) {
-      console.error(`[fetch-odds] Exception ${match.match_id}:`, e);
-      stats.erreurs++;
-    }
-  }
-
-  // ─── 6. Rafraîchir la vue matérialisée ───────────────────────────────────
-
-  if (stats.matchs_refreshes > 0) {
-    try {
-      await supabase.rpc('rafraichir_meilleures_cotes');
-    } catch (e) {
-      // Vue pas critique — pas d'erreur fatale
-      console.warn('[fetch-odds] Vue matérialisée non rafraîchie:', e);
     }
   }
 
