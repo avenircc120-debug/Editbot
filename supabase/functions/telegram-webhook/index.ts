@@ -4,9 +4,14 @@
  * 100% conversationnel : aucune commande à taper. L'utilisateur écrit
  * librement, l'assistant GROQ comprend l'intention et répond. Quand l'accès
  * à l'espace web (compétitions/coupons) ou la connexion Facebook est
- * pertinente, l'assistant termine sa réponse par un marqueur invisible
- * ([[BUTTON:ESPACE]] ou [[BUTTON:FACEBOOK]]) que ce fichier transforme en
- * bouton cliquable Telegram — jamais de lien ou de commande écrite en clair.
+ * pertinente, un bouton cliquable est ajouté sous la réponse.
+ *
+ * Double garde-fou (le modèle GROQ hallucine parfois des commandes /xxx
+ * malgré le prompt) :
+ *  1. Détection déterministe de l'intention à partir du message utilisateur
+ *     (mots-clés), en plus des marqueurs [[BUTTON:...]] émis par le modèle.
+ *  2. Nettoyage systématique de toute mention de commande slash ("/xxx")
+ *     dans le texte final avant envoi à Telegram.
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
@@ -19,6 +24,10 @@ const FACEBOOK_APP_ID = Deno.env.get('FACEBOOK_APP_ID')           ?? '';
 const WEB_APP_URL     = Deno.env.get('WEB_APP_URL')                ?? '';
 const REDIRECT_URI    = `${SUPABASE_URL}/functions/v1/facebook-oauth`;
 const supabase        = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const RE_ESPACE   = /(compétition|compétitions|coupon|coupons|espace|dashboard|profil)/i;
+const RE_FACEBOOK = /facebook/i;
+const RE_SLASH    = /`?\/[a-zA-Z_]+`?/g;
 
 async function sendTelegram(chatId: number, text: string, replyMarkup?: unknown) {
   await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
@@ -78,6 +87,16 @@ async function genererLienFacebook(chatId: number): Promise<string> {
   return `https://www.facebook.com/v19.0/dialog/oauth?client_id=${FACEBOOK_APP_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${nonce}&scope=pages_manage_posts,pages_read_engagement,pages_show_list`;
 }
 
+/** Retire toute mention résiduelle de commande slash halluciné par le modèle. */
+function nettoyer(texte: string): string {
+  return texte
+    .replace(RE_SLASH, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 async function repondreConversation(chatId: number, texte: string, token: string, nouveau: boolean) {
   const { data: session } = await supabase.from('bot_sessions').select('history').eq('chat_id', chatId).maybeSingle();
   const brut = session?.history;
@@ -97,16 +116,19 @@ Statut utilisateur : ${nouveau ? "nouvel utilisateur, jamais accueilli jusqu'ici
 Connexion Facebook : ${facebookConnecte ? 'déjà connectée' : 'non connectée'}.`;
 
   let reponse = await chatAssistant(historique.slice(-10), contexte);
-  let boutons: unknown;
 
-  if (reponse.includes('[[BUTTON:FACEBOOK]]')) {
-    reponse = reponse.replace('[[BUTTON:FACEBOOK]]', '').trim();
-    if (!facebookConnecte) {
-      const lien = await genererLienFacebook(chatId);
-      boutons = { inline_keyboard: [[{ text: '🔗 Connecter Facebook', url: lien }]] };
-    }
-  } else if (reponse.includes('[[BUTTON:ESPACE]]')) {
-    reponse = reponse.replace('[[BUTTON:ESPACE]]', '').trim();
+  // Détection déterministe de l'intention (garde-fou en plus des marqueurs du modèle).
+  const veutFacebook = reponse.includes('[[BUTTON:FACEBOOK]]') || (RE_FACEBOOK.test(texte) && !facebookConnecte);
+  const veutEspace   = !veutFacebook && (reponse.includes('[[BUTTON:ESPACE]]') || RE_ESPACE.test(texte));
+
+  reponse = reponse.replace('[[BUTTON:FACEBOOK]]', '').replace('[[BUTTON:ESPACE]]', '');
+  reponse = nettoyer(reponse);
+
+  let boutons: unknown;
+  if (veutFacebook) {
+    const lien = await genererLienFacebook(chatId);
+    boutons = { inline_keyboard: [[{ text: '🔗 Connecter Facebook', url: lien }]] };
+  } else if (veutEspace) {
     boutons = { inline_keyboard: [[{ text: '🌐 Mon espace (compétitions & coupons)', url: `${WEB_APP_URL}?token=${token}` }]] };
   }
 
