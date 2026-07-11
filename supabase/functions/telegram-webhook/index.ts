@@ -2,10 +2,12 @@
  * telegram-webhook — Editbot
  *
  * 100% conversationnel : aucune commande à taper. L'utilisateur écrit
- * librement, l'assistant GROQ comprend l'intention et répond. Trois actions
- * bien distinctes peuvent être proposées, chacune avec son propre bouton :
- *   - Compétitions (choisir les ligues suivies)   → ouvre une page dans Telegram (Web App)
- *   - Coupons (codes 1xbet / 1win)                → ouvre une page dans Telegram (Web App)
+ * librement, l'assistant GROQ comprend l'intention et répond. Quatre actions
+ * bien distinctes peuvent être proposées, chacune avec son propre bouton,
+ * toutes ouvrant la même mini-app à onglets (app.html) sauf Facebook :
+ *   - Compétitions (choisir les ligues suivies)   → app.html?tab=competitions (Web App)
+ *   - Coupons (codes 1xbet / 1win)                → app.html?tab=coupons (Web App)
+ *   - Wallet (dépôt / retrait / historique)       → app.html?tab=wallet (Web App)
  *   - Connexion Facebook                          → ouvre un lien externe (obligatoire :
  *     Meta bloque l'OAuth dans les navigateurs embarqués/WebView, donc ce bouton ne
  *     peut pas être une Web App Telegram — c'est une contrainte de Facebook, pas un choix).
@@ -31,6 +33,7 @@ const supabase        = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const RE_COMPETITION = /(compétition|compétitions|ligue|ligues|championnat)/i;
 const RE_COUPON      = /(coupon|coupons|1xbet|1win|code promo|bookmaker)/i;
+const RE_WALLET       = /(wallet|portefeuille|solde|dépôt|depot|retrait|retirer|argent|gains?)/i;
 const RE_FACEBOOK     = /facebook/i;
 const RE_SLASH        = /`?\/[a-zA-Z_]+`?/g;
 
@@ -137,21 +140,25 @@ Connexion Facebook : ${facebookConnecte ? 'déjà connectée' : 'non connectée'
   let reponse = await chatAssistant(historique.slice(-10), contexte);
 
   // Détection déterministe de l'intention (garde-fou en plus des marqueurs du modèle) —
-  // trois boutons bien séparés, jamais fusionnés.
+  // quatre boutons bien séparés, jamais fusionnés.
   const veutFacebook     = reponse.includes('[[BUTTON:FACEBOOK]]')     || (RE_FACEBOOK.test(texte) && !facebookConnecte);
   const veutCompetitions = reponse.includes('[[BUTTON:COMPETITIONS]]') || RE_COMPETITION.test(texte);
   const veutCoupons      = reponse.includes('[[BUTTON:COUPONS]]')      || RE_COUPON.test(texte);
+  const veutWallet       = reponse.includes('[[BUTTON:WALLET]]')       || RE_WALLET.test(texte);
 
   reponse = reponse
     .replace('[[BUTTON:FACEBOOK]]', '')
     .replace('[[BUTTON:COMPETITIONS]]', '')
-    .replace('[[BUTTON:COUPONS]]', '');
+    .replace('[[BUTTON:COUPONS]]', '')
+    .replace('[[BUTTON:WALLET]]', '');
   reponse = nettoyer(reponse);
 
   // Chaque bouton sur sa propre ligne, jamais mélangés dans un seul lien.
+  // Compétitions, coupons et wallet sont trois onglets d'une même mini-app (app.html).
   const rangees: Array<Array<{ text: string; url?: string; web_app?: { url: string } }>> = [];
-  if (veutCompetitions) rangees.push([{ text: '🏆 Mes compétitions', web_app: { url: `${WEB_APP_URL}/competitions.html?token=${token}` } }]);
-  if (veutCoupons)      rangees.push([{ text: '🎟️ Mes coupons', web_app: { url: `${WEB_APP_URL}/coupons.html?token=${token}` } }]);
+  if (veutCompetitions) rangees.push([{ text: '🏆 Mes compétitions', web_app: { url: `${WEB_APP_URL}/app.html?tab=competitions&token=${token}` } }]);
+  if (veutCoupons)      rangees.push([{ text: '🎟️ Mes coupons', web_app: { url: `${WEB_APP_URL}/app.html?tab=coupons&token=${token}` } }]);
+  if (veutWallet)       rangees.push([{ text: '💰 Mon wallet', web_app: { url: `${WEB_APP_URL}/app.html?tab=wallet&token=${token}` } }]);
   if (veutFacebook) {
     const lien = await genererLienFacebook(chatId);
     // Bouton "url" classique (pas Web App) : Facebook refuse l'authentification dans un
