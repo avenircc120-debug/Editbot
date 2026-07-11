@@ -1,11 +1,13 @@
 /**
  * Quota journalier — protection des APIs gratuites
- * APIs gérées : thesportsdb | groq
+ * APIs gérées : thesportsdb | groq | rapidapi | apifootball | sofascore | odds
+ * (le type ci-dessous doit rester aligné avec les cases gérées par la fonction
+ * SQL quota_consommer() — voir migration correspondante).
  */
 
 import { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-export type Api = 'thesportsdb' | 'groq';
+export type Api = 'thesportsdb' | 'groq' | 'rapidapi' | 'apifootball' | 'sofascore' | 'odds';
 
 export async function consommerQuota(supabase: SupabaseClient, api: Api): Promise<boolean> {
   const { data, error } = await supabase.rpc('quota_consommer', { p_api: api });
