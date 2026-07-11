@@ -89,12 +89,14 @@ async function genererLienFacebook(chatId: number): Promise<string> {
 
 /** Retire toute mention résiduelle de commande slash halluciné par le modèle. */
 function nettoyer(texte: string): string {
-  return texte
-    .replace(RE_SLASH, '')
-    .replace(/\s{2,}/g, ' ')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  // On retire la phrase entière dès qu'elle mentionne une commande slash
+  // hallucinée par le modèle, plutôt que de laisser un fragment de phrase
+  // cassé (ex: "il suffit de taper . Cela te permettra...").
+  const segments = texte.split(/(?<=[.!?])\s+|\n+/);
+  const gardees = segments.filter((seg) =>
+    !RE_SLASH.test(seg) && !/\bcommandes?\b/i.test(seg) && !/\btaper\b/i.test(seg)
+  );
+  return gardees.join(' ').replace(/\s{2,}/g, ' ').trim();
 }
 
 async function repondreConversation(chatId: number, texte: string, token: string, nouveau: boolean) {
