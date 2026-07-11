@@ -18,10 +18,22 @@
  *     (mots-clés), en plus des marqueurs [[BUTTON:...]] émis par le modèle.
  *  2. Nettoyage systématique (au niveau phrase) de toute mention de commande
  *     slash ou du mot "commande"/"taper" dans le texte final avant envoi.
+ *
+ * Données réelles (jamais inventées) :
+ *  - Calendrier + scores : TheSportsDB (voir _shared/thesportsdb.ts), indexés
+ *    en base par la fonction cron fetch-matches dans matchs_index.
+ *  - Compositions d'équipe (lineups) : TheSportsDB lookuplineup, récupérées à
+ *    la volée pour les matchs en direct ou dans les 3h, uniquement quand
+ *    disponibles (souvent publiées ~1h avant le coup d'envoi).
+ *  - Recherche de joueur par nom : RapidAPI free-api-live-football-data
+ *    (_shared/apifootball.ts), utilisée à la volée quand le message
+ *    mentionne un nom propre.
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { chatAssistant, type ChatMessage } from '../_shared/groq.ts';
+import { getLineupsMatch } from '../_shared/thesportsdb.ts';
+import { searchPlayers } from '../_shared/apifootball.ts';
 
 const SUPABASE_URL    = Deno.env.get('SUPABASE_URL')              ?? '';
 const SUPABASE_KEY    = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -36,6 +48,10 @@ const RE_COUPON      = /(coupon|coupons|1xbet|1win|code promo|bookmaker)/i;
 const RE_WALLET       = /(wallet|portefeuille|solde|dépôt|depot|retrait|retirer|argent|gains?)/i;
 const RE_FACEBOOK     = /facebook/i;
 const RE_SLASH        = /`?\/[a-zA-Z_]+`?/g;
+
+// Mots français courants à exclure quand on extrait un possible nom de joueur
+// (majuscule en début de phrase, sinon on aurait trop de faux positifs).
+const MOTS_COURANTS = new Set(['Le','La','Les','Un','Une','Des','Il','Elle','Je','Tu','Nous','Vous','Ils','Elles','Est','Ce','Cette','Aujourd','Salut','Bonjour','Merci','Ligue','Championnat','Coupe','Match']);
 
 async function sendTelegram(chatId: number, text: string, replyMarkup?: unknown) {
   await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
@@ -64,7 +80,8 @@ async function assurerProfil(chatId: number): Promise<{ token: string; nouveau: 
   return { token: cree?.web_access_token ?? '', nouveau: true };
 }
 
-/** Construit un contexte matchs riche : aujourd'hui, à venir (7 jours), et résultats récents (48h). */
+/** Construit un contexte matchs riche : aujourd'hui, à venir (7 jours), résultats récents (48h),
+ *  et compositions d'équipe (lineups) réelles pour les matchs en direct ou imminents (±3h). */
 async function contexteMatchs(): Promise<string> {
   const maintenant = new Date();
   const debutHier = new Date(maintenant.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString();
@@ -72,7 +89,7 @@ async function contexteMatchs(): Promise<string> {
 
   const { data } = await supabase
     .from('matchs_index')
-    .select('competition, home_team, away_team, match_date, status, home_score, away_score')
+    .select('competition, home_team, away_team, match_date, status, home_score, away_score, id_thesportsdb')
     .gte('match_date', debutHier)
     .lte('match_date', finSemaine)
     .order('match_date', { ascending: true })
@@ -94,7 +111,52 @@ async function contexteMatchs(): Promise<string> {
   if (termines.length) sections.push('Résultats récents (48 dernières heures) :\n' + termines.map(ligne).join('\n'));
   if (aVenir.length)   sections.push('Matchs à venir (7 prochains jours, y compris aujourd\'hui) :\n' + aVenir.map(ligne).join('\n'));
 
+  // Compositions d'équipe réelles pour les matchs en direct ou dans les 3 prochaines heures
+  // (TheSportsDB ne les publie en général qu'à l'approche du coup d'envoi — on ne récupère
+  // donc que sur cette fenêtre pour ne pas gaspiller le quota sur des matchs lointains).
+  const troisHeures = 3 * 60 * 60 * 1000;
+  const imminents = data.filter((m) => {
+    const delta = new Date(m.match_date).getTime() - maintenant.getTime();
+    return m.id_thesportsdb && (Math.abs(delta) <= troisHeures || /live|1h|2h|ht|in progress/i.test(m.status));
+  }).slice(0, 3); // on limite pour ne pas multiplier les appels API à chaque message
+
+  const blocsCompos: string[] = [];
+  for (const m of imminents) {
+    const lineup = await getLineupsMatch(m.id_thesportsdb as string);
+    if (!lineup?.length) continue;
+    const parCamp = (home: boolean) => lineup
+      .filter((j) => (j.strHome === 'Yes') === home && j.strSubstitute !== 'Yes')
+      .map((j) => `${j.strPlayer} (${j.strPosition})`)
+      .join(', ');
+    const domicile = parCamp(true);
+    const exterieur = parCamp(false);
+    if (domicile || exterieur) {
+      blocsCompos.push(`Composition ${m.home_team} vs ${m.away_team} :\n- ${m.home_team} : ${domicile || 'non publiée'}\n- ${m.away_team} : ${exterieur || 'non publiée'}`);
+    }
+  }
+  if (blocsCompos.length) sections.push('Compositions officielles disponibles :\n' + blocsCompos.join('\n\n'));
+
   return sections.join('\n\n');
+}
+
+/** Si le message mentionne un nom propre qui ressemble à un joueur, cherche une correspondance
+ *  réelle (RapidAPI). Retourne un texte de contexte explicite, y compris quand rien n'est trouvé,
+ *  pour que le modèle ne devine jamais à la place d'une vraie donnée. */
+async function contexteJoueurMentionne(texte: string): Promise<string | null> {
+  const mots = texte.match(/\b[A-ZÀ-Ý][a-zà-ÿ'-]{2,}\b/g) ?? [];
+  const candidats = mots.filter((m) => !MOTS_COURANTS.has(m));
+  if (!candidats.length) return null;
+
+  // On essaie d'abord deux mots consécutifs (prénom + nom), sinon un seul mot.
+  const requete = candidats.slice(0, 2).join(' ');
+
+  const suggestions = await searchPlayers(requete, supabase);
+  if (!suggestions.length) {
+    return `Recherche joueur pour "${requete}" : aucune correspondance trouvée dans la base réelle. Ne pas inventer d'informations sur ce joueur — dis clairement que tu n'as pas cette donnée.`;
+  }
+
+  const lignes = suggestions.slice(0, 5).map((s) => `- ${s.name}${s.teamName ? ` (${s.teamName})` : ''}`);
+  return `Résultat recherche joueur pour "${requete}" (source réelle) :\n${lignes.join('\n')}`;
 }
 
 /** Génère un lien OAuth Facebook sécurisé (nonce anti-CSRF à usage unique, valable 10 min). */
@@ -110,7 +172,7 @@ async function genererLienFacebook(chatId: number): Promise<string> {
 }
 
 /** Retire toute phrase mentionnant une commande slash hallucinée (nettoyage au niveau phrase,
- *  pour ne jamais laisser un fragment cassé comme "il suffit de taper . Cela te permettra..."). */
+ *  pour ne jamais laisser un fragment cassé comme "il suffit de taper . Cela te permettra...").  */
 function nettoyer(texte: string): string {
   const segments = texte.split(/(?<=[.!?])\s+|\n+/);
   const gardees = segments.filter((seg) =>
@@ -126,13 +188,14 @@ async function repondreConversation(chatId: number, texte: string, token: string
 
   historique.push({ role: 'user', content: texte });
 
-  const [matchs, { data: connexions }] = await Promise.all([
+  const [matchs, { data: connexions }, joueur] = await Promise.all([
     contexteMatchs(),
     supabase.from('facebook_connections').select('id').eq('telegram_user_id', chatId).eq('is_active', true).limit(1),
+    contexteJoueurMentionne(texte),
   ]);
   const facebookConnecte = (connexions?.length ?? 0) > 0;
 
-  const contexte = `${matchs}
+  const contexte = `${matchs}${joueur ? `\n\n${joueur}` : ''}
 
 Statut utilisateur : ${nouveau ? "nouvel utilisateur, jamais accueilli jusqu'ici" : 'utilisateur déjà connu, ne pas ré-accueillir'}.
 Connexion Facebook : ${facebookConnecte ? 'déjà connectée' : 'non connectée'}.`;
