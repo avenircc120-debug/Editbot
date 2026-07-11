@@ -13,7 +13,10 @@
     * Les suggestions mélangent joueurs, équipes et coachs (champ "type").
     */
 
-    const APIFOOTBALL_HOST = 'free-api-live-football-data.p.rapidapi.com';
+    import { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { consommerQuota } from './quota.ts';
+
+const APIFOOTBALL_HOST = 'free-api-live-football-data.p.rapidapi.com';
     const APIFOOTBALL_BASE = `https://${APIFOOTBALL_HOST}`;
     const RAPIDAPI_KEY      = Deno.env.get('RAPIDAPI_KEY') ?? '';
 
@@ -57,8 +60,12 @@
     // GET /football-players-search?search={q}
     // Ne retourne que les suggestions de type "player" (filtre les équipes/coachs).
 
-    export async function searchPlayers(query: string): Promise<AfPlayerSuggestion[]> {
+    export async function searchPlayers(query: string, supabase?: SupabaseClient): Promise<AfPlayerSuggestion[]> {
     if (!query || !query.trim()) return [];
+    if (supabase) {
+      const ok = await consommerQuota(supabase, 'rapidapi');
+      if (!ok) return [];
+    }
     const data = await afGet(`/football-players-search?search=${encodeURIComponent(query.trim())}`);
     const suggestions: AfPlayerSuggestion[] = data?.response?.suggestions ?? [];
     return suggestions.filter((s) => s.type === 'player' && !s.isCoach);
