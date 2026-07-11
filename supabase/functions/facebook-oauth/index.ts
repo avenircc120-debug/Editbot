@@ -65,7 +65,7 @@ Deno.serve(async (req: Request) => {
   const telegramUserId = await validerNonce(state, supabase);
   if (!telegramUserId) {
     return htmlPage('⚠️', 'Lien expiré ou invalide',
-      'Ce lien a déjà été utilisé ou a expiré. Recommencez depuis Telegram avec /connect_facebook.');
+      'Ce lien a déjà été utilisé ou a expiré. Retourne sur Telegram et demande à nouveau à connecter ta Page Facebook.');
   }
 
   try {
@@ -81,7 +81,7 @@ Deno.serve(async (req: Request) => {
 
     if (!pages.length) {
       await sendTelegram(telegramUserId,
-        "❌ Aucune Page Facebook trouvée. Assurez-vous d'être administrateur d'au moins une Page, puis relancez /connect_facebook.");
+        "❌ Aucune Page Facebook trouvée. Assure-toi d'être administrateur d'au moins une Page, puis redemande à te connecter depuis Telegram.");
       return htmlPage('📭', 'Aucune Page trouvée',
         "Revenez sur Telegram. Assurez-vous d'administrer au moins une Page Facebook.");
     }
@@ -104,7 +104,7 @@ Deno.serve(async (req: Request) => {
       .select('web_access_token')
       .single();
 
-    const lienEspace = `${WEB_APP_URL}?token=${profil?.web_access_token ?? ''}`;
+    const lienEspace = `${WEB_APP_URL}/app.html?tab=competitions&token=${profil?.web_access_token ?? ''}`;
 
     await sendTelegram(
       telegramUserId,
@@ -117,7 +117,7 @@ Dernière étape : choisis les compétitions à diffuser sur ta Page et dépose 
     return htmlPage('✅', 'Facebook connecté !', 'Retourne sur Telegram pour configurer tes compétitions et tes coupons.');
   } catch (e) {
     console.error('[facebook-oauth]', e);
-    await sendTelegram(telegramUserId, "❌ Une erreur est survenue pendant la connexion Facebook. Réessaie avec /connect_facebook.");
-    return htmlPage('❌', 'Erreur', "Une erreur est survenue. Retourne sur Telegram et réessaie avec /connect_facebook.");
+    await sendTelegram(telegramUserId, "❌ Une erreur est survenue pendant la connexion Facebook. Retourne sur Telegram et redemande à te connecter.");
+    return htmlPage('❌', 'Erreur', "Une erreur est survenue. Retourne sur Telegram et réessaie de te connecter.");
   }
 });
