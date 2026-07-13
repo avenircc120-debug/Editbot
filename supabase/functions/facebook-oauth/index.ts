@@ -59,6 +59,16 @@ Deno.serve(async (req: Request) => {
   const erreur = url.searchParams.get('error');
 
   if (erreur || !code || !state) {
+    // Distingue les erreurs Facebook pour afficher un message utile
+    const errorReason = url.searchParams.get('error_reason') ?? erreur ?? '';
+    if (errorReason === 'application_inactive' || erreur === 'application_inactive') {
+      return htmlPage('🔧', 'Application en cours d\'activation',
+        'Cette application Facebook est en cours de validation par Meta. Réessaie dans quelques minutes ou contacte l\'administrateur du bot.');
+    }
+    if (erreur === 'access_denied') {
+      return htmlPage('🚫', 'Accès refusé',
+        'Tu as refusé l\'accès. Retourne sur Telegram et clique à nouveau sur "Connecter Facebook" si tu veux recommencer.');
+    }
     return htmlPage('❌', 'Connexion annulée', 'Vous pouvez fermer cette page et retourner sur Telegram.');
   }
 

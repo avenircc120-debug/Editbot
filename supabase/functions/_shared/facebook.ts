@@ -33,8 +33,12 @@ export async function validerNonce(nonce: string, supabase: SupabaseClient): Pro
 export async function echangerCode(code: string, redirectUri: string): Promise<string | null> {
   const url = `${FB_API}/oauth/access_token?client_id=${FB_APP_ID}&client_secret=${FB_APP_SECRET}&redirect_uri=${encodeURIComponent(redirectUri)}&code=${code}`;
   const res = await fetch(url);
-  if (!res.ok) return null;
   const data = await res.json();
+  if (!res.ok || data.error) {
+    // Log l'erreur Facebook réelle pour le diagnostic
+    console.error('[echangerCode] Facebook error:', JSON.stringify(data?.error ?? data));
+    return null;
+  }
   return data.access_token ?? null;
 }
 
