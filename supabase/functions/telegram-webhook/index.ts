@@ -48,11 +48,18 @@ interface ProfilUtilisateur {
 // ─── Utilitaires ───────────────────────────────────────────────────────────────
 
 async function sendTelegram(chatId: number, text: string, replyMarkup?: unknown): Promise<void> {
-  await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown', reply_markup: replyMarkup }),
-  });
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown', reply_markup: replyMarkup }),
+    });
+    if (!res.ok) {
+      console.error('[telegram] sendMessage HTTP', res.status, await res.text().catch(() => ''));
+    }
+  } catch (err) {
+    console.error('[telegram] sendMessage erreur réseau:', err);
+  }
 }
 
 async function assurerProfil(chatId: number): Promise<ProfilUtilisateur> {
@@ -400,6 +407,7 @@ Statut : ${profil.nouveau ? 'nouvel utilisateur' : 'utilisateur existant'}`;
 // ─── Handler principal ──────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
+  try {
   const update = await req.json().catch(() => null);
   if (!update) return new Response('ok');
 
@@ -571,4 +579,11 @@ Deno.serve(async (req: Request) => {
   // ── Conversation ouverte → GROQ ──────────────────────────────────────────────
   await repondreConversation(chatId, texte, profil.token, profil);
   return new Response('ok');
+
+  } catch (err) {
+    // Filet de sécurité global : on log l'erreur mais on retourne toujours 200
+    // pour éviter que Telegram ne réessaie en boucle et multiplie les erreurs.
+    console.error('[webhook] ERREUR NON CAPTURÉE:', err);
+    return new Response('ok');
+  }
 });

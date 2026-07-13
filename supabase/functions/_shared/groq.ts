@@ -27,25 +27,30 @@ export async function chatAssistant(history: ChatMessage[], contexte?: string): 
     ...history,
   ];
 
-  const res = await fetch(`${GROQ.BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type':  'application/json',
-      'Authorization': `Bearer ${GROQ_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model:       GROQ.MODEL,
-      max_tokens:  GROQ.MAX_TOKENS,
-      temperature: 0.7,
-      messages,
-    }),
-  });
+  try {
+    const res = await fetch(`${GROQ.BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model:       GROQ.MODEL,
+        max_tokens:  GROQ.MAX_TOKENS,
+        temperature: 0.7,
+        messages,
+      }),
+    });
 
-  if (!res.ok) {
-    console.error('[groq] HTTP', res.status, await res.text());
-    return "Désolé, je rencontre un souci technique. Réessaie dans un instant.";
+    if (!res.ok) {
+      console.error('[groq] HTTP', res.status, await res.text());
+      return "Je rencontre un souci technique momentané. Dis-moi *\"en direct\"*, *\"aujourd'hui\"* ou *\"programme\"* pour voir les matchs.";
+    }
+
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content?.trim() ?? "Je n'ai pas pu traiter ta demande. Dis-moi *\"en direct\"* ou *\"programme\"* pour voir les matchs.";
+  } catch (err) {
+    console.error('[groq] Erreur réseau:', err);
+    return "Je rencontre un souci technique momentané. Dis-moi *\"en direct\"*, *\"aujourd'hui\"* ou *\"programme\"* pour voir les matchs.";
   }
-
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content?.trim() ?? "Désolé, je n'ai pas compris.";
 }
