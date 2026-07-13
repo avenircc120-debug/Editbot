@@ -20,12 +20,13 @@ import {
   recupererFbUserId,
 } from '../_shared/facebook.ts';
 
-const SUPABASE_URL   = Deno.env.get('SUPABASE_URL')              ?? '';
-const SUPABASE_KEY   = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const TELEGRAM_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN')        ?? '';
-const WEB_APP_URL    = (Deno.env.get('WEB_APP_URL') ?? '').replace(/\/$/, '');
-const REDIRECT_URI   = `${SUPABASE_URL}/functions/v1/facebook-oauth`;
-const supabase       = createClient(SUPABASE_URL, SUPABASE_KEY);
+const SUPABASE_URL    = Deno.env.get('SUPABASE_URL')              ?? '';
+const SUPABASE_KEY    = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const TELEGRAM_TOKEN  = Deno.env.get('TELEGRAM_BOT_TOKEN')        ?? '';
+const WEB_APP_URL     = (Deno.env.get('WEB_APP_URL') ?? '').replace(/\/$/, '');
+const FACEBOOK_APP_ID = Deno.env.get('FACEBOOK_APP_ID')           ?? '';
+const REDIRECT_URI    = `${SUPABASE_URL}/functions/v1/facebook-oauth`;
+const supabase        = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 /** Envoie un message Telegram — jamais lancé d'exception, jamais bloquant. */
 async function sendTelegram(chatId: number, text: string, replyMarkup?: unknown): Promise<void> {
@@ -77,9 +78,29 @@ Deno.serve(async (req: Request) => {
   const code   = url.searchParams.get('code');
   const state  = url.searchParams.get('state');
   const erreur = url.searchParams.get('error');
+  const init   = url.searchParams.get('init');
 
-  console.log('[facebook-oauth] requête reçue — code:', !!code, 'state:', !!state, 'error:', erreur ?? 'aucun');
+  console.log('[facebook-oauth] requête reçue — init:', init, 'code:', !!code, 'state:', !!state, 'error:', erreur ?? 'aucun');
   console.log('[facebook-oauth] REDIRECT_URI utilisé:', REDIRECT_URI);
+
+  // ── Redirect initial : le bouton Telegram pointe ici (?init=1&nonce=...)
+  //    On fait un 302 côté serveur vers Facebook pour contourner l'interception
+  //    de l'app Facebook Lite sur Android (App Links ne se déclenchent pas sur
+  //    les redirects HTTP du navigateur, seulement sur les clics directs).
+  if (init === '1') {
+    const nonce = url.searchParams.get('nonce') ?? '';
+    if (!nonce) {
+      return htmlPage('❌', 'Lien invalide', 'Paramètre nonce manquant. Retourne sur Telegram et réessaie.');
+    }
+    const fbUrl = `https://www.facebook.com/v22.0/dialog/oauth`
+      + `?client_id=${encodeURIComponent(FACEBOOK_APP_ID)}`
+      + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
+      + `&state=${encodeURIComponent(nonce)}`
+      + `&scope=pages_manage_posts,pages_read_engagement,pages_show_list`
+      + `&display=touch`;
+    console.log('[facebook-oauth] init redirect → Facebook:', fbUrl.substring(0, 80) + '…');
+    return new Response(null, { status: 302, headers: { Location: fbUrl } });
+  }
 
   // ── Cas d'erreur retournée par Facebook (app inactive, accès refusé, etc.) ──
   if (erreur || !code || !state) {

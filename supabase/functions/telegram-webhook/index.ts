@@ -169,9 +169,11 @@ async function genererLienFacebook(chatId: number): Promise<string> {
     expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
   });
 
-  // On utilise m.facebook.com + display=touch pour éviter que l'app Facebook
-  // mobile n'intercepte l'URL et n'empêche le flux OAuth de se terminer.
-  return `https://m.facebook.com/dialog/oauth?client_id=${FACEBOOK_APP_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${nonce}&scope=pages_manage_posts,pages_read_engagement,pages_show_list&display=touch`;
+  // On retourne une URL Supabase (pas facebook.com) pour éviter que l'OS Android
+  // n'intercepte le clic via App Links et n'ouvre l'app Facebook Lite directement.
+  // La fonction facebook-oauth fera elle-même le redirect 302 vers Facebook —
+  // les redirects HTTP côté navigateur ne déclenchent pas les App Links Android.
+  return `${REDIRECT_URI}?init=1&nonce=${nonce}`;
 }
 
 /** Retire toute phrase mentionnant une commande slash hallucinée (nettoyage au niveau phrase,
