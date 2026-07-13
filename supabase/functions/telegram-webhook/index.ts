@@ -12,6 +12,10 @@
  *     Meta bloque l'OAuth dans les navigateurs embarqués/WebView, donc ce bouton ne
  *     peut pas être une Web App Telegram — c'est une contrainte de Facebook, pas un choix).
  *
+ * Multi-comptes Facebook : un utilisateur peut connecter autant de Pages Facebook
+ * qu'il le souhaite (comptes différents ou pages différentes d'un même compte).
+ * La déconnexion se fait page par page, jamais en masse.
+ *
  * Double garde-fou (le modèle GROQ hallucine parfois des commandes /xxx
  * malgré le prompt) :
  *  1. Détection déterministe de l'intention à partir du message utilisateur
@@ -48,6 +52,8 @@ const RE_COUPON           = /(coupon|coupons|1xbet|1win|code promo|bookmaker)/i;
 const RE_WALLET            = /(wallet|portefeuille|solde|dépôt|depot|retrait|retirer|argent|gains?)/i;
 const RE_FACEBOOK          = /facebook/i;
 const RE_DECONNECTER_FB    = /(déconnecter|deconnecter|supprimer|retirer|enlever|désactiver|desactiver).{0,20}facebook/i;
+const RE_MES_PAGES         = /(mes pages|mes comptes|mes connexions|voir.{0,15}facebook|combien.{0,15}facebook|facebook.{0,15}connect)/i;
+const RE_AJOUTER_FB        = /(ajouter|connecter|lier|relier|nouveau.{0,10}compte|autre.{0,10}compte|nouvelle.{0,10}page|autre.{0,10}page).{0,20}facebook/i;
 const RE_SLASH             = /`?\/[a-zA-Z_]+`?/g;
 
 // Mots français courants à exclure quand on extrait un possible nom de joueur
@@ -186,6 +192,49 @@ function nettoyer(texte: string): string {
   return gardees.join(' ').replace(/\s{2,}/g, ' ').trim();
 }
 
+/** Envoie la liste des Pages Facebook connectées avec un bouton de déconnexion par page.
+ *  Ajoute toujours un bouton pour connecter un compte/page supplémentaire. */
+async function envoyerListePages(chatId: number): Promise<void> {
+  const { data: connexions } = await supabase
+    .from('facebook_connections')
+    .select('id, fb_page_name, fb_page_id, last_post_at')
+    .eq('telegram_user_id', chatId)
+    .eq('is_active', true)
+    .order('created_at', { ascending: true });
+
+  if (!connexions?.length) {
+    await sendTelegram(chatId,
+      '📭 *Aucune Page Facebook connectée.*\n\nDis-moi *"connecter Facebook"* pour relier ta première Page.');
+    return;
+  }
+
+  const nPages = connexions.length;
+  const liste = connexions.map((c, i) => {
+    const dernierPost = c.last_post_at
+      ? `dernier post : ${new Date(c.last_post_at).toLocaleDateString('fr-FR')}`
+      : 'aucun post encore';
+    return `${i + 1}. *${c.fb_page_name}* — ${dernierPost}`;
+  }).join('\n');
+
+  // Un bouton de déconnexion par page + un bouton pour ajouter une page
+  const rangees: Array<Array<{ text: string; url?: string; callback_data?: string }>> = [];
+  for (const c of connexions) {
+    rangees.push([{
+      text: `❌ Déconnecter "${c.fb_page_name}"`,
+      callback_data: `deconnect_fb_page:${c.id}`,
+    }]);
+  }
+
+  // Bouton pour ajouter une nouvelle page
+  rangees.push([{ text: '➕ Connecter une autre Page Facebook', callback_data: 'ajouter_fb_page' }]);
+
+  await sendTelegram(
+    chatId,
+    `📄 *Tes Pages Facebook connectées (${nPages}) :*\n\n${liste}\n\nLes pronostics sont publiés sur toutes ces pages automatiquement. Tu peux déconnecter une page individuelle ou en ajouter une nouvelle.`,
+    { inline_keyboard: rangees },
+  );
+}
+
 async function repondreConversation(chatId: number, texte: string, token: string, nouveau: boolean) {
   const { data: session } = await supabase.from('bot_sessions').select('history').eq('chat_id', chatId).maybeSingle();
   const brut = session?.history;
@@ -195,25 +244,31 @@ async function repondreConversation(chatId: number, texte: string, token: string
 
   const [matchs, { data: connexions }, joueur] = await Promise.all([
     contexteMatchs(),
-    supabase.from('facebook_connections').select('id').eq('telegram_user_id', chatId).eq('is_active', true).limit(1),
+    // On récupère toutes les connexions actives (pas juste 1) pour le contexte et l'affichage
+    supabase.from('facebook_connections').select('id, fb_page_name').eq('telegram_user_id', chatId).eq('is_active', true),
     contexteJoueurMentionne(texte),
   ]);
-  const facebookConnecte = (connexions?.length ?? 0) > 0;
+  const nPagesConnectees = connexions?.length ?? 0;
+  const facebookConnecte = nPagesConnectees > 0;
+  const resumePages = facebookConnecte
+    ? `connectée (${nPagesConnectees} page${nPagesConnectees > 1 ? 's' : ''} : ${connexions!.map(c => c.fb_page_name).join(', ')})`
+    : 'non connectée';
 
   const contexte = `${matchs}${joueur ? `\n\n${joueur}` : ''}
 
 Statut utilisateur : ${nouveau ? "nouvel utilisateur, jamais accueilli jusqu'ici" : 'utilisateur déjà connu, ne pas ré-accueillir'}.
-Connexion Facebook : ${facebookConnecte ? 'déjà connectée' : 'non connectée'}.`;
+Connexion Facebook : ${resumePages}.
+Note : l'utilisateur peut connecter plusieurs Pages Facebook différentes (comptes différents ou pages différentes d'un même compte). Ne jamais laisser entendre qu'une seule page est possible.`;
 
   let reponse = await chatAssistant(historique.slice(-10), contexte);
 
-  // Détection déterministe de l'intention (garde-fou en plus des marqueurs du modèle) —
-  // quatre boutons bien séparés, jamais fusionnés.
-  const veutFacebook          = reponse.includes('[[BUTTON:FACEBOOK]]')     || (RE_FACEBOOK.test(texte) && !facebookConnecte);
-  const veutDeconnecterFb     = facebookConnecte && (RE_DECONNECTER_FB.test(texte) || (RE_FACEBOOK.test(texte) && reponse.includes('[[BUTTON:FACEBOOK]]')));
-  const veutCompetitions      = reponse.includes('[[BUTTON:COMPETITIONS]]') || RE_COMPETITION.test(texte);
-  const veutCoupons           = reponse.includes('[[BUTTON:COUPONS]]')      || RE_COUPON.test(texte);
-  const veutWallet             = reponse.includes('[[BUTTON:WALLET]]')       || RE_WALLET.test(texte);
+  // Détection déterministe de l'intention (garde-fou en plus des marqueurs du modèle)
+  const veutVoirPages      = facebookConnecte && (RE_MES_PAGES.test(texte) || reponse.includes('[[BUTTON:FACEBOOK]]'));
+  const veutAjouterFb      = RE_AJOUTER_FB.test(texte) || (!facebookConnecte && RE_FACEBOOK.test(texte) && !RE_DECONNECTER_FB.test(texte));
+  const veutDeconnecterFb  = facebookConnecte && RE_DECONNECTER_FB.test(texte);
+  const veutCompetitions   = reponse.includes('[[BUTTON:COMPETITIONS]]') || RE_COMPETITION.test(texte);
+  const veutCoupons        = reponse.includes('[[BUTTON:COUPONS]]')      || RE_COUPON.test(texte);
+  const veutWallet          = reponse.includes('[[BUTTON:WALLET]]')       || RE_WALLET.test(texte);
 
   reponse = reponse
     .replace('[[BUTTON:FACEBOOK]]', '')
@@ -223,20 +278,22 @@ Connexion Facebook : ${facebookConnecte ? 'déjà connectée' : 'non connectée'
   reponse = nettoyer(reponse);
 
   // Chaque bouton sur sa propre ligne, jamais mélangés dans un seul lien.
-  // Compétitions, coupons et wallet sont trois onglets d'une même mini-app (app.html).
   const rangees: Array<Array<{ text: string; url?: string; web_app?: { url: string }; callback_data?: string }>> = [];
   if (veutCompetitions) rangees.push([{ text: '🏆 Mes compétitions', web_app: { url: `${WEB_APP_URL}/app.html?tab=competitions&token=${token}` } }]);
   if (veutCoupons)      rangees.push([{ text: '🎟️ Mes coupons', web_app: { url: `${WEB_APP_URL}/app.html?tab=coupons&token=${token}` } }]);
   if (veutWallet)       rangees.push([{ text: '💰 Mon wallet', web_app: { url: `${WEB_APP_URL}/app.html?tab=wallet&token=${token}` } }]);
-  if (veutFacebook && !facebookConnecte) {
+
+  // Ajouter une (nouvelle) page Facebook — toujours un lien OAuth externe
+  if (veutAjouterFb) {
     const lien = await genererLienFacebook(chatId);
-    // Bouton "url" classique (pas Web App) : Facebook refuse l'authentification dans un
-    // navigateur embarqué/WebView, ce lien doit s'ouvrir dans le navigateur externe.
-    rangees.push([{ text: '🔗 Connecter Facebook', url: lien }]);
+    rangees.push([{ text: facebookConnecte ? '➕ Ajouter une Page Facebook' : '🔗 Connecter Facebook', url: lien }]);
   }
-  if (veutDeconnecterFb) {
-    rangees.push([{ text: '🔌 Déconnecter Facebook', callback_data: 'deconnect_facebook' }]);
+
+  // Voir / gérer les pages connectées
+  if (veutVoirPages || veutDeconnecterFb) {
+    rangees.push([{ text: '📄 Voir mes Pages Facebook', callback_data: 'list_fb_pages' }]);
   }
+
   const boutons = rangees.length ? { inline_keyboard: rangees } : undefined;
 
   historique.push({ role: 'assistant', content: reponse });
@@ -256,29 +313,71 @@ Deno.serve(async (req: Request) => {
 
   // ── Callback query (clic sur un bouton inline) ──────────────────────────
   const cb = update.callback_query;
-  if (cb?.data === 'deconnect_facebook') {
+  if (cb) {
     const cbChatId = cb.message?.chat?.id as number;
+    const cbData: string = cb.data ?? '';
 
-    // Désactive toutes les pages Facebook de l'utilisateur
-    await supabase
-      .from('facebook_connections')
-      .update({ is_active: false, updated_at: new Date().toISOString() })
-      .eq('telegram_user_id', cbChatId);
-
-    // Acquitte le callback (supprime le spinner sur le bouton)
+    // Acquitte toujours le callback pour supprimer le spinner Telegram
     await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/answerCallbackQuery`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ callback_query_id: cb.id }),
     });
 
-    // Informe l'utilisateur
-    await sendTelegram(
-      cbChatId,
-      '✅ Ta Page Facebook a été déconnectée. Les scores ne seront plus publiés automatiquement.\n\nDis-moi *"connecter Facebook"* quand tu voudras reconnecter une Page.',
-    );
+    // ── Afficher la liste des pages connectées ──────────────────────────
+    if (cbData === 'list_fb_pages') {
+      await envoyerListePages(cbChatId);
+      return new Response('ok');
+    }
 
-    return new Response('ok');
+    // ── Ajouter une nouvelle page Facebook (générer un lien OAuth) ──────
+    if (cbData === 'ajouter_fb_page') {
+      const lien = await genererLienFacebook(cbChatId);
+      await sendTelegram(
+        cbChatId,
+        '🔗 Clique sur le bouton ci-dessous pour connecter une nouvelle Page Facebook.\n\n_Le lien est valable 10 minutes._',
+        { inline_keyboard: [[{ text: '➕ Connecter une Page Facebook', url: lien }]] },
+      );
+      return new Response('ok');
+    }
+
+    // ── Déconnecter UNE page spécifique ─────────────────────────────────
+    if (cbData.startsWith('deconnect_fb_page:')) {
+      const pageId = parseInt(cbData.split(':')[1], 10);
+      if (!isNaN(pageId)) {
+        // Récupère le nom de la page avant de la désactiver
+        const { data: page } = await supabase
+          .from('facebook_connections')
+          .select('fb_page_name')
+          .eq('id', pageId)
+          .eq('telegram_user_id', cbChatId)   // sécurité : l'utilisateur ne peut déconnecter que ses propres pages
+          .maybeSingle();
+
+        await supabase
+          .from('facebook_connections')
+          .update({ is_active: false, updated_at: new Date().toISOString() })
+          .eq('id', pageId)
+          .eq('telegram_user_id', cbChatId);
+
+        const nomPage = page?.fb_page_name ?? 'cette Page';
+        await sendTelegram(
+          cbChatId,
+          `✅ *"${nomPage}"* a été déconnectée. Les pronostics ne seront plus publiés sur cette page.\n\nTes autres Pages restent actives. Dis-moi *"mes pages Facebook"* pour voir la liste mise à jour.`,
+        );
+      }
+      return new Response('ok');
+    }
+
+    // ── Compatibilité ascendante : déconnexion globale (ancien bouton) ──
+    if (cbData === 'deconnect_facebook') {
+      // Redirige vers la liste plutôt que de tout couper d'un coup
+      await envoyerListePages(cbChatId);
+      await sendTelegram(
+        cbChatId,
+        '⚠️ Choisis la Page à déconnecter dans la liste ci-dessus. Les pronostics continueront sur les autres Pages.',
+      );
+      return new Response('ok');
+    }
   }
 
   // ── Message texte ordinaire ─────────────────────────────────────────────
