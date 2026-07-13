@@ -43,11 +43,12 @@ const WEB_APP_URL     = (Deno.env.get('WEB_APP_URL') ?? '').replace(/\/$/, '');
 const REDIRECT_URI    = `${SUPABASE_URL}/functions/v1/facebook-oauth`;
 const supabase        = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const RE_COMPETITION = /(compétition|compétitions|ligue|ligues|championnat)/i;
-const RE_COUPON      = /(coupon|coupons|1xbet|1win|code promo|bookmaker)/i;
-const RE_WALLET       = /(wallet|portefeuille|solde|dépôt|depot|retrait|retirer|argent|gains?)/i;
-const RE_FACEBOOK     = /facebook/i;
-const RE_SLASH        = /`?\/[a-zA-Z_]+`?/g;
+const RE_COMPETITION      = /(compétition|compétitions|ligue|ligues|championnat)/i;
+const RE_COUPON           = /(coupon|coupons|1xbet|1win|code promo|bookmaker)/i;
+const RE_WALLET            = /(wallet|portefeuille|solde|dépôt|depot|retrait|retirer|argent|gains?)/i;
+const RE_FACEBOOK          = /facebook/i;
+const RE_DECONNECTER_FB    = /(déconnecter|deconnecter|supprimer|retirer|enlever|désactiver|desactiver).{0,20}facebook/i;
+const RE_SLASH             = /`?\/[a-zA-Z_]+`?/g;
 
 // Mots français courants à exclure quand on extrait un possible nom de joueur
 // (majuscule en début de phrase, sinon on aurait trop de faux positifs).
@@ -204,10 +205,11 @@ Connexion Facebook : ${facebookConnecte ? 'déjà connectée' : 'non connectée'
 
   // Détection déterministe de l'intention (garde-fou en plus des marqueurs du modèle) —
   // quatre boutons bien séparés, jamais fusionnés.
-  const veutFacebook     = reponse.includes('[[BUTTON:FACEBOOK]]')     || (RE_FACEBOOK.test(texte) && !facebookConnecte);
-  const veutCompetitions = reponse.includes('[[BUTTON:COMPETITIONS]]') || RE_COMPETITION.test(texte);
-  const veutCoupons      = reponse.includes('[[BUTTON:COUPONS]]')      || RE_COUPON.test(texte);
-  const veutWallet       = reponse.includes('[[BUTTON:WALLET]]')       || RE_WALLET.test(texte);
+  const veutFacebook          = reponse.includes('[[BUTTON:FACEBOOK]]')     || (RE_FACEBOOK.test(texte) && !facebookConnecte);
+  const veutDeconnecterFb     = facebookConnecte && (RE_DECONNECTER_FB.test(texte) || (RE_FACEBOOK.test(texte) && reponse.includes('[[BUTTON:FACEBOOK]]')));
+  const veutCompetitions      = reponse.includes('[[BUTTON:COMPETITIONS]]') || RE_COMPETITION.test(texte);
+  const veutCoupons           = reponse.includes('[[BUTTON:COUPONS]]')      || RE_COUPON.test(texte);
+  const veutWallet             = reponse.includes('[[BUTTON:WALLET]]')       || RE_WALLET.test(texte);
 
   reponse = reponse
     .replace('[[BUTTON:FACEBOOK]]', '')
@@ -218,15 +220,18 @@ Connexion Facebook : ${facebookConnecte ? 'déjà connectée' : 'non connectée'
 
   // Chaque bouton sur sa propre ligne, jamais mélangés dans un seul lien.
   // Compétitions, coupons et wallet sont trois onglets d'une même mini-app (app.html).
-  const rangees: Array<Array<{ text: string; url?: string; web_app?: { url: string } }>> = [];
+  const rangees: Array<Array<{ text: string; url?: string; web_app?: { url: string }; callback_data?: string }>> = [];
   if (veutCompetitions) rangees.push([{ text: '🏆 Mes compétitions', web_app: { url: `${WEB_APP_URL}/app.html?tab=competitions&token=${token}` } }]);
   if (veutCoupons)      rangees.push([{ text: '🎟️ Mes coupons', web_app: { url: `${WEB_APP_URL}/app.html?tab=coupons&token=${token}` } }]);
   if (veutWallet)       rangees.push([{ text: '💰 Mon wallet', web_app: { url: `${WEB_APP_URL}/app.html?tab=wallet&token=${token}` } }]);
-  if (veutFacebook) {
+  if (veutFacebook && !facebookConnecte) {
     const lien = await genererLienFacebook(chatId);
     // Bouton "url" classique (pas Web App) : Facebook refuse l'authentification dans un
     // navigateur embarqué/WebView, ce lien doit s'ouvrir dans le navigateur externe.
     rangees.push([{ text: '🔗 Connecter Facebook', url: lien }]);
+  }
+  if (veutDeconnecterFb) {
+    rangees.push([{ text: '🔌 Déconnecter Facebook', callback_data: 'deconnect_facebook' }]);
   }
   const boutons = rangees.length ? { inline_keyboard: rangees } : undefined;
 
@@ -245,6 +250,34 @@ Deno.serve(async (req: Request) => {
   const update = await req.json().catch(() => null);
   if (!update) return new Response('ok');
 
+  // ── Callback query (clic sur un bouton inline) ──────────────────────────
+  const cb = update.callback_query;
+  if (cb?.data === 'deconnect_facebook') {
+    const cbChatId = cb.message?.chat?.id as number;
+
+    // Désactive toutes les pages Facebook de l'utilisateur
+    await supabase
+      .from('facebook_connections')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('telegram_user_id', cbChatId);
+
+    // Acquitte le callback (supprime le spinner sur le bouton)
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/answerCallbackQuery`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ callback_query_id: cb.id }),
+    });
+
+    // Informe l'utilisateur
+    await sendTelegram(
+      cbChatId,
+      '✅ Ta Page Facebook a été déconnectée. Les scores ne seront plus publiés automatiquement.\n\nDis-moi *"connecter Facebook"* quand tu voudras reconnecter une Page.',
+    );
+
+    return new Response('ok');
+  }
+
+  // ── Message texte ordinaire ─────────────────────────────────────────────
   const message = update.message;
   if (!message?.chat?.id) return new Response('ok');
 
