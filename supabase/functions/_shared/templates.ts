@@ -1,30 +1,18 @@
-// Messages Telegram pré-formatés — Editbot (assistant + dashboard, sans pronostics)
+// Templates de messages — Editbot (Live Scores)
 
-export function messageBienvenue(): string {
-  return `👋 *Bienvenue sur Editbot !*
+/** Message de réveil matinal : liste des matchs du jour pour une compétition */
+export function messageReveilMatinal(competition: string, matchs: Array<{ home_team: string; away_team: string; match_date: string }>): string {
+  const lignes = matchs.map(m => {
+    const heure = new Date(m.match_date).toLocaleTimeString('fr-FR', {
+      hour: '2-digit', minute: '2-digit', timeZone: 'UTC',
+    });
+    return `⚽ ${m.home_team} vs ${m.away_team} — ${heure} UTC`;
+  });
 
-Je suis ton assistant foot. Discute avec moi librement pour tout savoir sur les matchs du jour (avant, pendant, après).
-
-Pour aller plus loin :
-🔗 /connect_facebook — relie ta Page Facebook pour diffuser automatiquement les scores en direct
-📊 /dashboard — ouvre ton espace pour choisir tes compétitions et déposer tes codes coupons
-❓ /aide — revoir cette aide`;
+  return `📅 *${competition}* — Matchs d'aujourd'hui\n\n${lignes.join('\n')}\n\nLes scores seront publiés en direct sur ta Page Facebook dès le coup d'envoi.`;
 }
 
-export function messageAide(): string {
-  return `*Commandes disponibles*
-
-/dashboard — ton espace (compétitions suivies + coupons)
-/connect_facebook — connecter ta Page Facebook
-/aide — cette aide
-
-Sinon, écris-moi directement — je réponds à toutes tes questions sur les matchs du jour !`;
-}
-
-export function messageReveilMatinal(nbMatchs: number): string {
-  return `Il y a des matchs aujourd'hui ! Préparez vos coupons ! ⚽ (${nbMatchs} match${nbMatchs > 1 ? 's' : ''} au programme)`;
-}
-
+/** Post Facebook pour un score en direct ou terminé */
 export function formatScoreFacebook(data: {
   competition: string;
   homeTeam: string;
@@ -33,8 +21,10 @@ export function formatScoreFacebook(data: {
   awayScore: number;
   status: string;
 }): string {
-  const statutLabel = data.status === 'finished' ? 'Match terminé' : 'En direct 🔴';
-  return `⚽ ${statutLabel} — ${data.competition}
+  const statutLabel = data.status === 'finished' ? '⬛ Match terminé' : '🔴 En direct';
+  return `${statutLabel} — ${data.competition}
 
-${data.homeTeam} ${data.homeScore} - ${data.awayScore} ${data.awayTeam}`;
+${data.homeTeam} ${data.homeScore} - ${data.awayScore} ${data.awayTeam}
+
+#Football #${data.competition.replace(/\s/g, '')}`;
 }
