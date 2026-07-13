@@ -42,12 +42,18 @@
     });
     }
 
-    /** Détecte si une erreur Facebook correspond à un token révoqué ou invalide. */
+    /** Détecte si une erreur Facebook correspond à un token révoqué ou invalide.
+     *  On se fie UNIQUEMENT aux codes d'erreur Facebook connus — les mots-clés
+     *  "token"/"session"/"expired" sont trop génériques et génèrent des faux positifs
+     *  sur des erreurs transitoires (rate-limit, réseau). */
     function estErreurToken(erreurMessage: string): boolean {
-    const codeMatch = erreurMessage.match(/#(\d+)/);
-    if (codeMatch && FB_TOKEN_ERROR_CODES.has(Number(codeMatch[1]))) return true;
-    const msg = erreurMessage.toLowerCase();
-    return msg.includes('token') || msg.includes('session') || msg.includes('expired');
+    const codeMatch = erreurMessage.match(/\b(\d+)\b/g);
+    if (codeMatch) {
+      for (const c of codeMatch) {
+        if (FB_TOKEN_ERROR_CODES.has(Number(c))) return true;
+      }
+    }
+    return false;
     }
 
     Deno.serve(async (req: Request) => {
@@ -63,16 +69,26 @@
     const rapport = { postsPublies: 0, erreurs: 0, tokensRevoques: 0, details: [] as string[] };
 
     for (const match of matches) {
-      const { data: connexions } = await supabase
+      // Étape 1 : utilisateurs ayant sélectionné cette compétition
+      const { data: abonnes } = await supabase
         .from('user_competitions')
-        .select('telegram_user_id, facebook_connections!inner(id, fb_page_id, fb_page_name, fb_page_access_token, is_active)')
+        .select('telegram_user_id')
         .eq('competition', match.competition)
-        .eq('active', true)
-        .eq('facebook_connections.is_active', true);
+        .eq('active', true);
 
-      for (const row of (connexions as any[]) ?? []) {
-        const connexion  = row.facebook_connections;
-        const telegramId = Number(row.telegram_user_id);
+      const userIds = (abonnes ?? []).map((r: any) => r.telegram_user_id);
+      if (!userIds.length) continue;
+
+      // Étape 2 : Pages Facebook actives de ces utilisateurs
+      // (pas de FK directe entre user_competitions et facebook_connections — on joint via telegram_user_id)
+      const { data: connexions } = await supabase
+        .from('facebook_connections')
+        .select('id, telegram_user_id, fb_page_id, fb_page_name, fb_page_access_token')
+        .eq('is_active', true)
+        .in('telegram_user_id', userIds);
+
+      for (const connexion of (connexions as any[]) ?? []) {
+        const telegramId = Number(connexion.telegram_user_id);
         try {
           const message = formatScoreFacebook(match);
           const result  = await posterSurPage(connexion.fb_page_id, connexion.fb_page_access_token, message);
