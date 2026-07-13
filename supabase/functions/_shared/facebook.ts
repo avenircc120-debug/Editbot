@@ -9,7 +9,7 @@ import { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const FB_APP_ID     = Deno.env.get('FACEBOOK_APP_ID')     ?? '';
 const FB_APP_SECRET = Deno.env.get('FACEBOOK_APP_SECRET') ?? '';
-const FB_API        = 'https://graph.facebook.com/v19.0';
+const FB_API        = 'https://graph.facebook.com/v22.0';
 
 // ─── OAuth ──────────────────────────────────────────────────────────────────
 
