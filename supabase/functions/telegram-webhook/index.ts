@@ -169,7 +169,9 @@ async function genererLienFacebook(chatId: number): Promise<string> {
     expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
   });
 
-  return `https://www.facebook.com/v22.0/dialog/oauth?client_id=${FACEBOOK_APP_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${nonce}&scope=pages_manage_posts,pages_read_engagement,pages_show_list`;
+  // On utilise m.facebook.com + display=touch pour éviter que l'app Facebook
+  // mobile n'intercepte l'URL et n'empêche le flux OAuth de se terminer.
+  return `https://m.facebook.com/dialog/oauth?client_id=${FACEBOOK_APP_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${nonce}&scope=pages_manage_posts,pages_read_engagement,pages_show_list&display=touch`;
 }
 
 /** Retire toute phrase mentionnant une commande slash hallucinée (nettoyage au niveau phrase,
