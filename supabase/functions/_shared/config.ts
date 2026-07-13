@@ -1,5 +1,14 @@
 // Configuration partagée : ligues suivies, modèle Groq, prompt système de l'assistant conversationnel.
 
+// ─── TheSportsDB ──────────────────────────────────────────────────────────────
+export const THESPORTSDB = {
+  BASE_URL: 'https://www.thesportsdb.com/api/v1/json',
+  // Clé env THESPORTSDB_KEY ; fallback '3' = tier gratuit public
+  get KEY(): string {
+    return Deno.env.get('THESPORTSDB_KEY') ?? '3';
+  },
+};
+
 export const GROQ = {
   BASE_URL:   'https://api.groq.com/openai/v1',
   MODEL:      'llama-3.3-70b-versatile',
