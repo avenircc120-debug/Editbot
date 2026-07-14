@@ -312,6 +312,22 @@ async function handleFacebookDelete(chatId: number, pageId: string): Promise<Res
   return json({ ok: true });
 }
 
+/** Génère un lien OAuth Facebook à usage unique (nonce anti-CSRF, valable 10 min). */
+async function handleFacebookConnectUrl(chatId: number): Promise<Response> {
+  const nonce = crypto.randomUUID();
+  const { error } = await supabase
+    .from('facebook_oauth_states')
+    .insert({ nonce, telegram_user_id: chatId });
+
+  if (error) {
+    console.error('[mini-app-api] Erreur création nonce Facebook:', error);
+    return json({ error: 'Erreur génération du lien Facebook' }, 500);
+  }
+
+  const url = `${SUPABASE_URL}/functions/v1/facebook-oauth?init=1&nonce=${nonce}`;
+  return json({ url });
+}
+
 // ─── Router principal ─────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
@@ -346,6 +362,7 @@ Deno.serve(async (req: Request) => {
     if (route === 'coupons'     && req.method === 'POST')  return handleCouponsPost(req, chatId);
     if (parentRoute === 'coupons'  && req.method === 'DELETE') return handleCouponsDelete(chatId, route);
     if (route === 'facebook'       && req.method === 'GET')    return handleFacebookGet(chatId);
+    if (route === 'connect-url' && parentRoute === 'facebook' && req.method === 'GET') return handleFacebookConnectUrl(chatId);
     if (parentRoute === 'facebook' && req.method === 'DELETE') return handleFacebookDelete(chatId, route);
 
     return json({ error: 'Route inconnue' }, 404);

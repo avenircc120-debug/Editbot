@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { Match, Profile } from '@/api';
-import { getProfile, getMatches, toggleBroadcast, disconnectFacebookPage } from '@/api';
+import { getProfile, getMatches, toggleBroadcast } from '@/api';
 import CompetitionModal from '@/components/CompetitionModal';
 
 type Filter = 'all' | 'live' | 'today';
@@ -154,16 +154,6 @@ export default function MatchsTab({ token }: Props) {
     setMatches(prev => prev.map(m => m.match_id === matchId ? { ...m, isBroadcasting: active } : m));
   }
 
-  async function handleDisconnect(pageId: number, pageName: string) {
-    if (!window.confirm(`Déconnecter "${pageName}" ?`)) return;
-    try {
-      await disconnectFacebookPage(token, pageId);
-      setProfile(prev => prev ? { ...prev, fbPages: prev.fbPages.filter(p => p.id !== pageId) } : prev);
-    } catch {
-      // silent
-    }
-  }
-
   const live      = matches.filter(m => m.status === 'inprogress');
   const todayMtch = matches.filter(m => m.status === 'scheduled' && isToday(m.match_date) && isFuture(m.match_date));
   const upcoming  = matches.filter(m => m.status === 'scheduled' && !isToday(m.match_date) && isFuture(m.match_date));
@@ -255,36 +245,6 @@ export default function MatchsTab({ token }: Props) {
             </div>
           )}
         </>
-      )}
-
-      {/* Facebook strip */}
-      {!loading && profile && (
-        <div className="fb-strip">
-          <div className="fb-strip-header">
-            Pages Facebook
-            <span className="badge">{profile.fbPages.length}</span>
-          </div>
-          {profile.fbPages.length === 0 ? (
-            <p style={{ fontSize: 12, color: 'var(--muted)' }}>Aucune page connectée</p>
-          ) : (
-            profile.fbPages.map(page => (
-              <div key={page.id} className="fb-page-row">
-                <div className="fb-icon">f</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="fb-page-name">{page.fb_page_name}</div>
-                  <div className="fb-page-meta">
-                    {page.last_post_at
-                      ? `Dernier post : ${new Date(page.last_post_at).toLocaleDateString('fr-FR')}`
-                      : 'Jamais posté'}
-                  </div>
-                </div>
-                <button className="btn-disconnect" onClick={() => handleDisconnect(page.id, page.fb_page_name)}>
-                  Déconnecter
-                </button>
-              </div>
-            ))
-          )}
-        </div>
       )}
 
       {/* Competition modal */}

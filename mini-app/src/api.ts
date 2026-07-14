@@ -164,6 +164,13 @@ export async function disconnectFacebookPage(token: string, pageId: number): Pro
   if (!res.ok) throw new Error('Erreur déconnexion Facebook');
 }
 
+export async function getFacebookConnectUrl(token: string): Promise<string> {
+  const res = await apiFetch('/facebook/connect-url', token);
+  if (!res.ok) throw new Error('Erreur génération du lien Facebook');
+  const data = await res.json();
+  return (data as { url: string }).url;
+}
+
 // ─── Wallet ───────────────────────────────────────────────────────────────────
 
 export async function getWallet(token: string): Promise<WalletData> {

@@ -333,6 +333,24 @@ html, body, #root {
   flex-shrink: 0;
 }
 
+.btn-connect-fb {
+  margin: 10px 12px 4px;
+  width: calc(100% - 24px);
+  padding: 13px;
+  background: var(--blue);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.btn-connect-fb:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ── Competition Modal ── */
 .modal-overlay {
   position: fixed;

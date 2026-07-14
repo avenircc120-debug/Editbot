@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { authenticate } from '@/api';
 import MatchsTab from '@/tabs/MatchsTab';
+import FacebookTab from '@/tabs/FacebookTab';
 import WalletTab from '@/tabs/WalletTab';
 import CouponsTab from '@/tabs/CouponsTab';
 import BottomNav from '@/components/BottomNav';
@@ -14,12 +15,13 @@ declare global {
         ready: () => void;
         expand: () => void;
         close: () => void;
+        openLink?: (url: string, options?: { try_instant_view?: boolean }) => void;
       };
     };
   }
 }
 
-type Tab = 'matchs' | 'wallet' | 'coupons';
+type Tab = 'matchs' | 'facebook' | 'wallet' | 'coupons';
 
 export default function App() {
   const [token, setToken] = useState<string | null>(null);
@@ -115,9 +117,10 @@ export default function App() {
   return (
     <div className="app">
       <div className="tab-content">
-        {tab === 'matchs'  && <MatchsTab  token={token} />}
-        {tab === 'wallet'  && <WalletTab  token={token} />}
-        {tab === 'coupons' && <CouponsTab token={token} />}
+        {tab === 'matchs'   && <MatchsTab   token={token} />}
+        {tab === 'facebook' && <FacebookTab token={token} />}
+        {tab === 'wallet'   && <WalletTab   token={token} />}
+        {tab === 'coupons'  && <CouponsTab  token={token} />}
       </div>
       <BottomNav active={tab} onSelect={setTab} />
     </div>
