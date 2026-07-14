@@ -1,15 +1,11 @@
 /**
- * TheSportsDB — Source 1 : calendrier des matchs + stats de base + lineups
+ * TheSportsDB — Calendrier des matchs et scores en direct
  *
  * Clé env THESPORTSDB_KEY (fallback '3' = tier gratuit public)
- * Pas de rate limit documenté sur le tier gratuit → quota très permissif (500/j)
  *
  * Endpoints utilisés :
  *   eventsnextleague  → prochains matchs d'une ligue
- *   eventspastleague  → derniers matchs (vérification résultats)
- *   eventsseason      → tous les matchs d'une saison (historique H2H)
- *   lookupeventstats  → stats post-match (tirs cadrés/non cadrés, bloqués…)
- *   lookuplineup      → compositions d'équipes
+ *   eventspastleague  → derniers matchs terminés (résultats)
  */
 
 import { THESPORTSDB } from './config.ts';
@@ -40,108 +36,57 @@ async function tsdbGet(endpoint: string, params: Record<string, string> = {}): P
   }
 }
 
-// ─── Types internes ────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface TsdbMatch {
-  idEvent:        string;
-  strEvent:       string;
-  strSeason:      string;
-  idLeague:       string;
-  strLeague:      string;
-  strHomeTeam:    string;
-  strAwayTeam:    string;
-  idHomeTeam:     string;
-  idAwayTeam:     string;
-  intRound:       string | null;
-  intHomeScore:   string | null;
-  intAwayScore:   string | null;
-  strTimestamp:   string;         // ISO 8601 : "2026-08-22T15:00:00"
-  dateEvent:      string;
-  strTime:        string;
-  strVenue:       string | null;
-  strStatus:      string;         // "NS" | "FT" | "HT" | "1H" | "2H" …
-  strPostponed:   string;
-  idAPIfootball:  string | null;  // ← pont vers api-football (ex: "1545409")
-  strHomeTeamBadge?: string | null; // logo équipe domicile (URL)
-  strAwayTeamBadge?: string | null; // logo équipe extérieur (URL)
+  idEvent:             string;
+  strEvent:            string;
+  strSeason:           string;
+  idLeague:            string;
+  strLeague:           string;
+  strHomeTeam:         string;
+  strAwayTeam:         string;
+  idHomeTeam:          string;
+  idAwayTeam:          string;
+  intRound:            string | null;
+  intHomeScore:        string | null;
+  intAwayScore:        string | null;
+  strTimestamp:        string;   // ISO 8601 : "2026-08-22T15:00:00"
+  dateEvent:           string;
+  strTime:             string;
+  strVenue:            string | null;
+  strStatus:           string;   // "NS" | "FT" | "HT" | "1H" | "2H" …
+  strPostponed:        string;
+  idAPIfootball:       string | null;
+  strHomeTeamBadge?:   string | null;
+  strAwayTeamBadge?:   string | null;
 }
 
-// ─── Prochains matchs d'une ligue (≤ 5 en tier gratuit) ─────────────────────
+// ─── Prochains matchs d'une ligue ─────────────────────────────────────────────
 
 export async function getProchainMatchsLigue(tsdbLeagueId: string): Promise<TsdbMatch[]> {
   const data = await tsdbGet('eventsnextleague.php', { id: tsdbLeagueId });
   return (data?.events ?? []) as TsdbMatch[];
 }
 
-// ─── Derniers matchs terminés d'une ligue (pour vérifier les résultats) ──────
+// ─── Derniers matchs terminés d'une ligue (résultats) ────────────────────────
 
 export async function getDerniersMatchsLigue(tsdbLeagueId: string): Promise<TsdbMatch[]> {
   const data = await tsdbGet('eventspastleague.php', { id: tsdbLeagueId });
   return (data?.events ?? []) as TsdbMatch[];
 }
 
-// ─── Tous les matchs d'une saison (historique / H2H) ─────────────────────────
-// Saison format : "2024-2025"
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-export async function getMatchsSaison(tsdbLeagueId: string, saison: string): Promise<TsdbMatch[]> {
-  const data = await tsdbGet('eventsseason.php', { id: tsdbLeagueId, s: saison });
-  return (data?.events ?? []) as TsdbMatch[];
-}
-
-// ─── Stats post-match (tirs cadrés, non-cadrés, bloqués…) ────────────────────
-
-export interface TsdbStat {
-  strStat:  string;   // "Shots on Goal" | "Shots off Goal" | "Total Shots" …
-  intHome:  string;
-  intAway:  string;
-}
-
-export async function getStatsMatch(idEvent: string): Promise<TsdbStat[] | null> {
-  const data = await tsdbGet('lookupeventstats.php', { id: idEvent });
-  const stats = data?.eventstats;
-  if (!stats?.length) return null;
-  return stats as TsdbStat[];
-}
-
-// ─── Compositions d'équipes ────────────────────────────────────────────────────
-
-export interface TsdbLineupPlayer {
-  strPlayer:      string;
-  strPosition:    string;
-  intSquadNumber: string;
-  strHome:        'Yes' | 'No';
-  strSubstitute:  'Yes' | 'No';
-  strTeam:        string;
-}
-
-export async function getLineupsMatch(idEvent: string): Promise<TsdbLineupPlayer[] | null> {
-  const data = await tsdbGet('lookuplineup.php', { id: idEvent });
-  const lineup = data?.lineup;
-  if (!lineup?.length) return null;
-  return lineup as TsdbLineupPlayer[];
-}
-
-// ─── Derniers matchs terminés d'une équipe (pour le modèle statistique) ──────
-// Utilisé pour estimer la force offensive/défensive réelle (buts marqués /
-// concédés sur les derniers matchs), base du calcul de probabilités Poisson.
-
-export async function getDerniersMatchsEquipe(teamId: string): Promise<TsdbMatch[]> {
-  const data = await tsdbGet('eventslast.php', { id: teamId });
-  return (data?.results ?? []) as TsdbMatch[];
-}
-
-// ─── Helpers ───────────────────────────────────────────────────────────────────
-
-/** Convertit un timestamp ISO TheSportsDB en objet Date */
+/** Convertit un timestamp ISO TheSportsDB en objet Date (UTC) */
 export function tsdbTimestampToDate(strTimestamp: string, strTime?: string): Date {
-  // strTimestamp peut être "2026-08-22T15:00:00" ou juste "2026-08-22"
   const raw = strTimestamp.includes('T')
     ? strTimestamp
     : `${strTimestamp}T${strTime ?? '00:00:00'}`;
-  return new Date(raw + 'Z'); // TheSportsDB renvoie en UTC
+  return new Date(raw + 'Z');
 }
 
-/** Filtre les matchs dans les prochains jours (14 par défaut, relevé de 7 pour donner plus de matchs à combiner) */
+/** Filtre les matchs dans les prochains N jours (14 par défaut) */
 export function filtrerProchains(matchs: TsdbMatch[], joursMax = 14): TsdbMatch[] {
   const now    = Date.now();
   const limite = now + joursMax * 24 * 3600 * 1000;
