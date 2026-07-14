@@ -49,7 +49,21 @@ async function sendTelegram(chatId: number, text: string, replyMarkup?: unknown)
   }
 }
 
+// Supabase force le Content-Type des réponses de Edge Functions à "text/plain"
+// sur le domaine partagé functions.supabase.co (pas de support HTML natif hors
+// domaine personnalisé) : servir du HTML inline ici corrompt les accents/emoji
+// (mojibake) et le navigateur affiche le code source au lieu de la page.
+// On redirige donc vers une page statique hébergée sur Vercel (Content-Type
+// correct, garanti par Vercel) qui affiche le message à partir de l'URL.
 function htmlPage(icon: string, titre: string, corps: string): Response {
+  if (WEB_APP_URL) {
+    const dest = `${WEB_APP_URL}/fb-status.html`
+      + `?icon=${encodeURIComponent(icon)}`
+      + `&titre=${encodeURIComponent(titre)}`
+      + `&corps=${encodeURIComponent(corps)}`;
+    return new Response(null, { status: 302, headers: { Location: dest } });
+  }
+  // Filet de sécurité si WEB_APP_URL n'est pas configuré (ne devrait pas arriver en prod).
   return new Response(
     `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">

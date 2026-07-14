@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Facebook</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:system-ui,sans-serif;background:#0f1117;color:#e2e8f0;
+    display:flex;justify-content:center;align-items:center;min-height:100vh;padding:24px}
+  .c{background:#1a1f2e;border:1px solid #2d3748;border-radius:16px;
+    padding:40px;max-width:420px;width:100%;text-align:center}
+  .i{font-size:52px;margin-bottom:16px}
+  h2{color:#fff;font-size:22px;margin-bottom:12px}
+  p{color:#a0aec0;line-height:1.7;font-size:15px}
+</style>
+</head>
+<body>
+  <div class="c">
+    <div class="i" id="icon"></div>
+    <h2 id="titre"></h2>
+    <p id="corps"></p>
+  </div>
+  <script>
+    var params = new URLSearchParams(window.location.search);
+    var icon = params.get('icon') || 'ℹ️';
+    var titre = params.get('titre') || 'Facebook';
+    var corps = params.get('corps') || '';
+    document.getElementById('icon').textContent = icon;
+    document.getElementById('titre').textContent = titre;
+    document.title = titre;
+    document.getElementById('corps').textContent = corps;
+  </script>
+</body>
+</html>
