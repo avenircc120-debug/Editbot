@@ -317,7 +317,11 @@ async function handleFacebookConnectUrl(chatId: number): Promise<Response> {
   const nonce = crypto.randomUUID();
   const { error } = await supabase
     .from('facebook_oauth_states')
-    .insert({ nonce, telegram_user_id: chatId });
+    .insert({
+      nonce,
+      telegram_user_id: chatId,
+      expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+    });
 
   if (error) {
     console.error('[mini-app-api] Erreur création nonce Facebook:', error);
