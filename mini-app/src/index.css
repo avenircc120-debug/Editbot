@@ -406,6 +406,32 @@ html, body, #root {
 .league-flag { font-size: 22px; }
 .league-name { flex: 1; font-size: 15px; font-weight: 500; }
 .checkmark { color: var(--green); font-size: 18px; }
+/* ── Live badge compétition ── */
+.live-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(248, 81, 73, 0.15);
+  border: 1px solid rgba(248, 81, 73, 0.35);
+  color: var(--red);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px 2px 5px;
+  border-radius: 20px;
+  margin-left: auto;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+
+.live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--red);
+  animation: pulse-live 1.5s infinite;
+  flex-shrink: 0;
+}
+
 
 /* ── Bottom sheet modal ── */
 .sheet-overlay {
