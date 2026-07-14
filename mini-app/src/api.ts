@@ -222,9 +222,17 @@ export async function deleteCoupon(token: string, couponId: number): Promise<voi
 
 // ─── Live counts par compétition ─────────────────────────────────────────────
 
-export async function getLiveCounts(token: string): Promise<Record<string, number>> {
+export interface MatchCounts {
+  liveCounts:      Record<string, number>;
+  scheduledCounts: Record<string, number>;
+}
+
+export async function getMatchCounts(token: string): Promise<MatchCounts> {
   const res = await apiFetch('/live-counts', token);
-  if (!res.ok) return {};
-  const data = await res.json();
-  return (data as { liveCounts: Record<string, number> }).liveCounts;
+  if (!res.ok) return { liveCounts: {}, scheduledCounts: {} };
+  const data = await res.json() as MatchCounts;
+  return {
+    liveCounts:      data.liveCounts      ?? {},
+    scheduledCounts: data.scheduledCounts ?? {},
+  };
 }
