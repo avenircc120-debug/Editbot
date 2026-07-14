@@ -1,6 +1,6 @@
 /**
- * web-portal — Mon espace Editbot v2
- * Wallet | Facebook | Coupons — imports inlinés
+ * web-portal — Mon espace Editbot v3
+ * Wallet | Facebook | Coupons | Competitions
  */
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
@@ -15,7 +15,6 @@ const CORS = {
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
-
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status, headers: { 'Content-Type': 'application/json', ...CORS },
@@ -32,12 +31,14 @@ async function getProfil(token) {
   return data ?? null;
 }
 
-async function handleGet(token, action) {
+async function handleGet(token, url) {
   const profil = await getProfil(token);
   if (!profil) return json({ error: 'Lien invalide ou expiré. Génère un nouveau lien depuis Telegram.' }, 401);
 
   const chatId = profil.telegram_user_id;
+  const action = url.searchParams.get('action') ?? '';
 
+  // URL OAuth Facebook
   if (action === 'fb_connect_url') {
     const nonce = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -50,11 +51,47 @@ async function handleGet(token, action) {
     return json({ url: fbUrl });
   }
 
+  // Matchs d'une compétition
+  if (action === 'matches') {
+    const competitionId = url.searchParams.get('competitionId') ?? '';
+    const filter        = url.searchParams.get('filter') ?? 'all';
+    const now     = new Date();
+    const moins2h = new Date(now.getTime() - 2  * 60 * 60 * 1000).toISOString();
+    const j7      = new Date(now.getTime() + 7  * 24 * 60 * 60 * 1000).toISOString();
+    const debJour = now.toISOString().slice(0, 10) + 'T00:00:00.000Z';
+    const finJour = now.toISOString().slice(0, 10) + 'T23:59:59.999Z';
+
+    let q = supabase
+      .from('matchs_index')
+      .select('match_id,home_team,away_team,match_date,status,home_score,away_score,competition,tournament_id')
+      .order('match_date', { ascending: true })
+      .limit(60);
+
+    if (competitionId) q = q.eq('tournament_id', competitionId);
+    if (filter === 'live')       q = q.eq('status', 'inprogress');
+    else if (filter === 'today') q = q.gte('match_date', debJour).lte('match_date', finJour);
+    else                         q = q.gte('match_date', moins2h).lte('match_date', j7);
+
+    const [{ data: matchs }, { data: selections }] = await Promise.all([
+      q,
+      supabase.from('broadcast_selections')
+        .select('match_id')
+        .eq('telegram_user_id', chatId)
+        .eq('is_active', true),
+    ]);
+
+    return json({
+      matches: matchs ?? [],
+      broadcastIds: (selections ?? []).map(s => s.match_id),
+    });
+  }
+
+  // Données principales
   const [walletRes, txRes, fbRes, couponsRes] = await Promise.all([
     supabase.from('wallets').select('balance').eq('telegram_user_id', chatId).maybeSingle(),
     supabase.from('wallet_transactions').select('id,type,amount,status,methode,note,created_at')
       .eq('telegram_user_id', chatId).order('created_at', { ascending: false }).limit(20),
-    supabase.from('facebook_connections').select('id,fb_page_name,connected_at,is_active,last_post_at')
+    supabase.from('facebook_connections').select('id,fb_page_name,connected_at,is_active')
       .eq('telegram_user_id', chatId).eq('is_active', true).order('connected_at', { ascending: false }),
     supabase.from('coupons').select('id,bookmaker,code,description,price,created_at')
       .eq('telegram_user_id', chatId).eq('active', true).order('created_at', { ascending: false }),
@@ -70,7 +107,6 @@ async function handleGet(token, action) {
 async function handlePost(token, req) {
   const profil = await getProfil(token);
   if (!profil) return json({ error: 'Lien invalide ou expiré.' }, 401);
-
   const chatId = profil.telegram_user_id;
   const body   = await req.json().catch(() => ({}));
 
@@ -85,20 +121,33 @@ async function handlePost(token, req) {
   }
 
   if (body.disconnectFbPageId) {
-    await supabase.from('facebook_connections')
-      .update({ is_active: false })
-      .eq('id', Number(body.disconnectFbPageId))
-      .eq('telegram_user_id', chatId);
+    await supabase.from('facebook_connections').update({ is_active: false })
+      .eq('id', Number(body.disconnectFbPageId)).eq('telegram_user_id', chatId);
     return json({ ok: true });
+  }
+
+  if (body.broadcast) {
+    const { matchId, active, competition, homeTeam, awayTeam } = body.broadcast;
+    if (!matchId) return json({ error: 'matchId requis' }, 400);
+    if (active) {
+      await supabase.from('broadcast_selections').upsert({
+        telegram_user_id: chatId, match_id: matchId,
+        competition: competition ?? null, home_team: homeTeam ?? null, away_team: awayTeam ?? null,
+        is_active: true, created_at: new Date().toISOString(),
+      }, { onConflict: 'telegram_user_id,match_id' });
+    } else {
+      await supabase.from('broadcast_selections').update({ is_active: false })
+        .eq('telegram_user_id', chatId).eq('match_id', matchId);
+    }
+    return json({ ok: true, matchId, active });
   }
 
   if (body.coupon) {
     const { bookmaker, code, description, price } = body.coupon;
     if (!bookmaker || !code) return json({ error: 'bookmaker et code requis' }, 400);
     const { data: coupon, error } = await supabase.from('coupons').insert({
-      telegram_user_id: chatId, bookmaker,
-      code: String(code).trim(), description: description || null,
-      price: price ? Number(price) : null, active: true,
+      telegram_user_id: chatId, bookmaker, code: String(code).trim(),
+      description: description || null, price: price ? Number(price) : null, active: true,
     }).select().single();
     if (error) return json({ error: 'Erreur: ' + error.message }, 500);
     return json({ ok: true, coupon });
@@ -116,11 +165,10 @@ async function handlePost(token, req) {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
   try {
-    const url    = new URL(req.url);
-    const token  = url.searchParams.get('token') ?? '';
-    const action = url.searchParams.get('action') ?? '';
+    const url = new URL(req.url);
+    const token = url.searchParams.get('token') ?? '';
     if (!token) return json({ error: 'Token manquant. Ouvre cette page depuis Telegram.' }, 401);
-    if (req.method === 'GET')  return handleGet(token, action);
+    if (req.method === 'GET')  return handleGet(token, url);
     if (req.method === 'POST') return handlePost(token, req);
     return json({ error: 'Méthode non supportée' }, 405);
   } catch (err) {
