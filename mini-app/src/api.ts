@@ -219,3 +219,12 @@ export async function deleteCoupon(token: string, couponId: number): Promise<voi
   const res = await apiFetch(`/coupons/${couponId}`, token, { method: 'DELETE' });
   if (!res.ok) throw new Error('Erreur suppression coupon');
 }
+
+// ─── Live counts par compétition ─────────────────────────────────────────────
+
+export async function getLiveCounts(token: string): Promise<Record<string, number>> {
+  const res = await apiFetch('/live-counts', token);
+  if (!res.ok) return {};
+  const data = await res.json();
+  return (data as { liveCounts: Record<string, number> }).liveCounts;
+}
