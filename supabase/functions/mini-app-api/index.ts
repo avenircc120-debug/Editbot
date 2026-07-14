@@ -332,6 +332,22 @@ async function handleFacebookConnectUrl(chatId: number): Promise<Response> {
   return json({ url });
 }
 
+
+async function handleLiveCounts(): Promise<Response> {
+  const { data } = await supabase
+    .from('matchs_index')
+    .select('tournament_id')
+    .eq('status', 'inprogress');
+
+  const counts: Record<string, number> = {};
+  for (const m of (data ?? [])) {
+    if (m.tournament_id) {
+      counts[m.tournament_id] = (counts[m.tournament_id] ?? 0) + 1;
+    }
+  }
+  return json({ liveCounts: counts });
+}
+
 // ─── Router principal ─────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
@@ -357,6 +373,7 @@ Deno.serve(async (req: Request) => {
     if (!chatId) return json({ error: 'Token invalide ou expiré' }, 401);
 
     if (route === 'profile'     && req.method === 'GET')   return handleProfile(chatId);
+    if (route === 'live-counts'  && req.method === 'GET')   return handleLiveCounts();
     if (route === 'competition' && req.method === 'PATCH') return handleUpdateCompetition(req, chatId);
     if (route === 'matches'     && req.method === 'GET')   return handleMatches(chatId, url);
     if (route === 'broadcast'   && req.method === 'POST')  return handleBroadcast(req, chatId);
