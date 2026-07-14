@@ -334,18 +334,22 @@ async function handleFacebookConnectUrl(chatId: number): Promise<Response> {
 
 
 async function handleLiveCounts(): Promise<Response> {
-  const { data } = await supabase
-    .from('matchs_index')
-    .select('tournament_id')
-    .eq('status', 'inprogress');
+  const [{ data: liveData }, { data: schedData }] = await Promise.all([
+    supabase.from('matchs_index').select('tournament_id').eq('status', 'inprogress'),
+    supabase.from('matchs_index').select('tournament_id').eq('status', 'scheduled'),
+  ]);
 
-  const counts: Record<string, number> = {};
-  for (const m of (data ?? [])) {
-    if (m.tournament_id) {
-      counts[m.tournament_id] = (counts[m.tournament_id] ?? 0) + 1;
-    }
+  const liveCounts: Record<string, number> = {};
+  for (const m of (liveData ?? [])) {
+    if (m.tournament_id) liveCounts[m.tournament_id] = (liveCounts[m.tournament_id] ?? 0) + 1;
   }
-  return json({ liveCounts: counts });
+
+  const scheduledCounts: Record<string, number> = {};
+  for (const m of (schedData ?? [])) {
+    if (m.tournament_id) scheduledCounts[m.tournament_id] = (scheduledCounts[m.tournament_id] ?? 0) + 1;
+  }
+
+  return json({ liveCounts, scheduledCounts });
 }
 
 // ─── Router principal ─────────────────────────────────────────────────────────
