@@ -1,37 +1,48 @@
 /**
  * web-portal — Page "Mon espace" Editbot
- *
- * Accessible via ?token=xxx (web_access_token stocké dans user_profiles)
- *
- * GET  ?token=xxx                              → { leagues, selectedCompetitions, coupons }
- * POST ?token=xxx  { competitions: string[] }  → met à jour les compétitions suivies
- * POST ?token=xxx  { coupon: {...} }            → ajoute un coupon
- * POST ?token=xxx  { deleteCouponId: number }  → supprime un coupon
+ * Déployé via API — imports relatifs inlinés
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { LEAGUES } from '../_shared/config.ts';
 
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL')              ?? '';
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const supabase     = createClient(SUPABASE_URL, SUPABASE_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const CORS = {
-  'Access-Control-Allow-Origin':  '*',
+  'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-function json(body: unknown, status = 200) {
+const LEAGUES = [
+  { tsdb_id: '4334', name: 'Ligue 1',             flag: '🇫🇷' },
+  { tsdb_id: '4328', name: 'Premier League',       flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+  { tsdb_id: '4335', name: 'La Liga',              flag: '🇪🇸' },
+  { tsdb_id: '4331', name: 'Bundesliga',           flag: '🇩🇪' },
+  { tsdb_id: '4332', name: 'Serie A',              flag: '🇮🇹' },
+  { tsdb_id: '4480', name: 'Champions League',     flag: '🏆' },
+  { tsdb_id: '4481', name: 'Europa League',        flag: '🟠' },
+  { tsdb_id: '4329', name: 'Championship',         flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+  { tsdb_id: '4337', name: 'Eredivisie',           flag: '🇳🇱' },
+  { tsdb_id: '4344', name: 'Primeira Liga',        flag: '🇵🇹' },
+  { tsdb_id: '4346', name: 'MLS',                  flag: '🇺🇸' },
+  { tsdb_id: '4351', name: 'Brasileirao',          flag: '🇧🇷' },
+  { tsdb_id: '4350', name: 'Liga MX',              flag: '🇲🇽' },
+  { tsdb_id: '4406', name: 'Liga Argentina',       flag: '🇦🇷' },
+  { tsdb_id: '4359', name: 'Chinese Super League', flag: '🇨🇳' },
+  { tsdb_id: '4429', name: 'Coupe du Monde FIFA',  flag: '🌍' },
+  { tsdb_id: '4330', name: 'Scottish Premiership', flag: '🏴󠁧󠁢󠁳󠁣󠁴󠁿' },
+];
+
+function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'Content-Type': 'application/json', ...CORS },
   });
 }
 
-// ─── Valider le token et récupérer le profil ───────────────────────────────────
-
-async function getProfil(token: string): Promise<{ telegram_user_id: number; competition_suivie: string | null } | null> {
+async function getProfil(token) {
   if (!token) return null;
   const { data } = await supabase
     .from('user_profiles')
@@ -41,9 +52,7 @@ async function getProfil(token: string): Promise<{ telegram_user_id: number; com
   return data ?? null;
 }
 
-// ─── GET — données de l'espace ────────────────────────────────────────────────
-
-async function handleGet(token: string): Promise<Response> {
+async function handleGet(token) {
   const profil = await getProfil(token);
   if (!profil) return json({ error: 'Lien invalide ou expiré. Génère un nouveau lien depuis Telegram.' }, 401);
 
@@ -54,26 +63,22 @@ async function handleGet(token: string): Promise<Response> {
     .eq('active', true)
     .order('created_at', { ascending: false });
 
-  const leagues = LEAGUES.map(l => `${l.flag} ${l.name}`);
+  const leagues = LEAGUES.map(l => l.flag + ' ' + l.name);
   const selectedCompetitions = profil.competition_suivie ? [profil.competition_suivie] : [];
 
   return json({ leagues, selectedCompetitions, coupons: coupons ?? [] });
 }
 
-// ─── POST — mise à jour ────────────────────────────────────────────────────────
-
-async function handlePost(token: string, req: Request): Promise<Response> {
+async function handlePost(token, req) {
   const profil = await getProfil(token);
   if (!profil) return json({ error: 'Lien invalide ou expiré.' }, 401);
 
   const body = await req.json().catch(() => ({}));
 
-  // Mise à jour des compétitions suivies
   if (body.competitions !== undefined) {
-    const selected: string[] = body.competitions ?? [];
-    // On garde la première compétition sélectionnée comme compétition principale
+    const selected = body.competitions ?? [];
     const principale = selected.length > 0 ? selected[0] : null;
-    const league = LEAGUES.find(l => `${l.flag} ${l.name}` === principale);
+    const league = principale ? LEAGUES.find(l => (l.flag + ' ' + l.name) === principale) : null;
     await supabase
       .from('user_profiles')
       .update({
@@ -84,7 +89,6 @@ async function handlePost(token: string, req: Request): Promise<Response> {
     return json({ ok: true });
   }
 
-  // Ajout d'un coupon
   if (body.coupon) {
     const { bookmaker, code, description, price } = body.coupon;
     if (!bookmaker || !code) return json({ error: 'bookmaker et code sont requis' }, 400);
@@ -95,16 +99,15 @@ async function handlePost(token: string, req: Request): Promise<Response> {
         bookmaker,
         code: String(code).trim(),
         description: description || null,
-        price:       price ? Number(price) : null,
-        active:      true,
+        price: price ? Number(price) : null,
+        active: true,
       })
       .select()
       .single();
-    if (error) return json({ error: 'Erreur lors de l\'ajout du coupon' }, 500);
+    if (error) return json({ error: "Erreur ajout coupon: " + error.message }, 500);
     return json({ ok: true, coupon });
   }
 
-  // Suppression d'un coupon
   if (body.deleteCouponId) {
     await supabase
       .from('coupons')
@@ -117,18 +120,14 @@ async function handlePost(token: string, req: Request): Promise<Response> {
   return json({ error: 'Action non reconnue' }, 400);
 }
 
-// ─── Router ────────────────────────────────────────────────────────────────────
-
-Deno.serve(async (req: Request) => {
+Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
 
   try {
     const url   = new URL(req.url);
     const token = url.searchParams.get('token') ?? '';
 
-    if (!token) {
-      return json({ error: 'Token manquant. Ouvre cette page depuis le bouton sur Telegram.' }, 401);
-    }
+    if (!token) return json({ error: 'Token manquant. Ouvre cette page depuis Telegram.' }, 401);
 
     if (req.method === 'GET')  return handleGet(token);
     if (req.method === 'POST') return handlePost(token, req);
