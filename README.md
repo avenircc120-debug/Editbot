@@ -1,109 +1,82 @@
-# 🤖 Editbot — Moteur de Pronostics Sportifs
+# 🤖 Editbot — Diffusion de Scores en Direct
 
-Bot Telegram de pronostics sportifs automatisé basé sur l'analyse IA des données historiques.
+Bot Telegram qui diffuse automatiquement les scores de football en direct sur les Pages Facebook de ses utilisateurs.
 
-## Architecture
-
-Source API : agrégateur de cotes fiable (type OddsPapi / The Odds API) qui alimente les
-tables de données brutes. **Interdiction formelle d'interroger l'API en temps réel lors des
-requêtes utilisateurs** — toutes les données sont récupérées via des cron jobs à intervalles
-réguliers (Batch).
+## Fonctionnement
 
 ```
-Source API (OddsPapi / The Odds API)
-     │  (cron — jamais en direct)
-     ▼
-historique_performances   ← résultats passés, stats (possession, tirs, etc.)
+TheSportsDB API (cron toutes les minutes)
      │
      ▼
-analyse_confrontation     ← moteur de calcul : croise historique_performances
-     │                       + cotes brutes → probabilités & analyses
+fetch-matches  → indexe les matchs dans matchs_index
+     │  (dès qu'un score change)
      ▼
-pronostics_finaux         ← table de consultation, résumé "prêt à servir"
-     │
-     ▼
-telegram-webhook (Edge Function)
-     │
-     ├── SELECT simple sur pronostics_finaux (aucun calcul en direct)
-     └── Réponse instantanée à l'utilisateur Telegram
+facebook-post  → publie automatiquement sur les Pages Facebook concernées
 ```
 
-### Objectifs de performance
+## Fonctionnalités
 
-- **Zéro latence** : le bot répond en quelques millisecondes (SELECT simple sur
-  `pronostics_finaux`, jamais de calcul en direct).
-- **Gestion des quotas** : mise à jour périodique (Batch) via cron → on reste largement
-  dans les limites des plans gratuits des API.
-- **Indépendance** : en cas de coupure de l'API externe, le bot reste fonctionnel car il
-  s'appuie sur les données déjà calculées et stockées.
+- **Scores en direct** : Telegram affiche les matchs live, d'aujourd'hui et le programme à venir
+- **Diffusion Facebook** : publication automatique des scores sur les Pages Facebook connectées
+- **Mini App Telegram** : interface pour choisir sa compétition, connecter sa Page Facebook, gérer son wallet et ses coupons
+- **IA conversationnelle** : réponses naturelles via Groq (LLaMA 3.3 70B)
 
 ## Stack
 
 - **Runtime** : Supabase Edge Functions (Deno)
 - **Base de données** : Supabase PostgreSQL
-- **IA** : Groq API (llama3-70b-8192)
-- **Données** : SofaScore via RapidAPI
+- **IA** : Groq API (LLaMA 3.3 70B)
+- **Données sportives** : TheSportsDB
 - **Bot** : Telegram Bot API
+- **Mini App** : React + Vite (déployé sur Vercel)
 
 ## Tables Supabase
 
 | Table | Rôle |
 |---|---|
-| `historique_performances` | Résultats passés, stats (possession, tirs, etc.) |
-| `marches_bookmakers` | Cotes brutes par bookmaker |
-| `analyse_confrontation` | Moteur de calcul : croise historique + cotes → probabilités/analyses |
-| `pronostics_finaux` | **Table de consultation** — seule table lue par le bot, résumé prêt à servir |
-| `whitelist_matchs` | Matchs prioritaires pour le refresh sélectif des cotes |
-| `matchs_historique` *(legacy)* | Ancienne table de matchs, conservée pour compatibilité |
-| `pronostics_pre_calcules` *(legacy)* | Ancien cache de pronostics, conservé en écriture parallèle |
+| `user_profiles` | Profils utilisateurs Telegram |
+| `bot_sessions` | Sessions et historique de conversation |
+| `matchs_index` | Index des matchs (scores en direct) |
+| `broadcast_selections` | Compétitions sélectionnées pour diffusion Facebook |
+| `facebook_connections` | Pages Facebook connectées |
+| `facebook_posts_log` | Historique des publications Facebook |
+| `facebook_oauth_states` | États temporaires OAuth Facebook |
+| `quota_journalier` | Quota d'appels API TheSportsDB par jour |
+| `wallets` + `wallet_transactions` | Système de portefeuille |
+| `coupons` | Codes coupons bookmakers |
 
 ## Edge Functions
 
 | Fonction | Déclencheur | Rôle |
 |---|---|---|
-| `telegram-webhook` | Webhook Telegram | Répond aux utilisateurs |
-| `fetch-matches` | CRON quotidien | Ingestion SofaScore |
-| `analyse-matches` | CRON quotidien | Génère pronostics via Groq |
+| `telegram-webhook` | Webhook Telegram | Répond aux messages des utilisateurs |
+| `fetch-matches` | CRON (toutes les minutes) | Récupère les scores et déclenche la diffusion |
+| `facebook-post` | Appelé par fetch-matches | Publie les scores sur les Pages Facebook |
+| `facebook-oauth` | Lien OAuth | Connecte une Page Facebook |
+| `mini-app-api` | Mini App | API REST de la Mini App Telegram |
+| `morning-wakeup` | CRON quotidien | Réveil quotidien du bot |
 | `setup-webhook` | Manuel | Configure le webhook Telegram |
 
-## Commandes Telegram
-
-| Commande | Description |
-|---|---|
-| `/pronostics` | Top 5 pronostics du jour |
-| `/ligue1` | Matchs Ligue 1 |
-| `/pl` | Matchs Premier League |
-| `/ldc` | Matchs Champions League |
-| `/detail [id]` | Analyse complète |
-| `/aide` | Aide |
-
-## Secrets requis (Supabase Vault)
+## Secrets requis (Supabase)
 
 - `TELEGRAM_BOT_TOKEN`
 - `GROQ_API_KEY`
-- `RAPIDAPI_KEY`
+- `THESPORTSDB_KEY`
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `CRON_SECRET`
+- `FACEBOOK_APP_ID`
+- `FACEBOOK_APP_SECRET`
+- `WEB_APP_URL` ← URL de la Mini App Vercel
 
 ## Déploiement
 
 ```bash
 supabase functions deploy telegram-webhook
 supabase functions deploy fetch-matches
-supabase functions deploy analyse-matches
+supabase functions deploy facebook-post
+supabase functions deploy facebook-oauth
+supabase functions deploy mini-app-api
+supabase functions deploy morning-wakeup
 supabase functions deploy setup-webhook
 ```
-
-## Configuration Webhook
-
-Appeler une fois après déploiement :
-```
-GET https://<project>.supabase.co/functions/v1/setup-webhook?url=https://<project>.supabase.co/functions/v1/telegram-webhook
-```
-
-## Stratégie économie de quotas
-
-- **Anti-doublon** : Vérification en base avant chaque appel SofaScore
-- **Cache Groq** : Pronostic valide 6h, jamais régénéré si existant
-- **Tokens optimisés** : Résumés statistiques envoyés à Groq (pas de raw data)
-- **Limite** : 500 req SofaScore/mois, Groq gratuit jusqu'à 14,400 req/jour
