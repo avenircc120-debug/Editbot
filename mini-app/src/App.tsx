@@ -23,11 +23,18 @@ declare global {
 
 type Tab = 'matchs' | 'facebook' | 'wallet' | 'coupons';
 
+const VALID_TABS: Tab[] = ['matchs', 'facebook', 'wallet', 'coupons'];
+
+function initialTab(): Tab {
+  const requested = new URLSearchParams(window.location.search).get('tab');
+  return (VALID_TABS as string[]).includes(requested ?? '') ? (requested as Tab) : 'matchs';
+}
+
 export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<Tab>('matchs');
+  const [tab, setTab] = useState<Tab>(initialTab);
 
   useEffect(() => {
     window.Telegram?.WebApp?.expand();

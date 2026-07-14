@@ -197,13 +197,14 @@ Deno.serve(async (req: Request) => {
       .single();
     if (profilErr) console.error('[facebook-oauth] Erreur upsert profil:', profilErr);
 
-    const lienEspace = `${WEB_APP_URL}/app.html?tab=competitions&token=${profil?.web_access_token ?? ''}`;
-
-    // 6. Notification Telegram de succès
+    // 6. Notification Telegram de succès — ouvre la Mini App directement sur l'onglet Facebook
+    const boutonMiniApp = WEB_APP_URL
+      ? { inline_keyboard: [[{ text: '🌐 Ouvrir mon espace', web_app: { url: `${WEB_APP_URL}?tab=facebook` } }]] }
+      : undefined;
     await sendTelegram(
       telegramUserId,
-      `✅ *Facebook connecté* (${pages.map((p) => p.name).join(', ')}) !\n\nDernière étape : choisis les compétitions à diffuser sur ta Page et dépose tes codes coupons dans ton espace 👇`,
-      { inline_keyboard: [[{ text: '🌐 Ouvrir mon espace', url: lienEspace }]] },
+      `✅ *Facebook connecté* (${pages.map((p) => p.name).join(', ')}) !\n\nDernière étape : active la diffusion sur tes matchs en direct depuis l'onglet Facebook 👇`,
+      boutonMiniApp,
     );
 
     console.log('[facebook-oauth] ✅ Connexion réussie pour', telegramUserId);
