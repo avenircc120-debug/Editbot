@@ -171,6 +171,7 @@ const BOUTONS_NAVIGATION = {
       { text: '📆 Programme 7j',    callback_data: 'voir_programme' },
       { text: '🔄 Changer compét.', callback_data: 'menu_compet'   },
     ],
+    ...(WEB_APP_URL ? [[{ text: '🟢 Ouvrir la Mini App', web_app: { url: WEB_APP_URL } }]] : []),
   ],
 };
 

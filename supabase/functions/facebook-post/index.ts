@@ -1,11 +1,11 @@
 /**
  * facebook-post — Diffusion automatique des scores en direct sur les Pages Facebook
  *
- * Body attendu : { matches: [{ matchId, competition, homeTeam, awayTeam, homeScore, awayScore, status }] }
+ * Body attendu : { matches: [{ matchId, competition, homeTeam, awayTeay, homeScore, awayScore, status }] }
  *
  * Flux : fetch-matches détecte un changement de score → appelle cette fonction →
- *        on cherche les utilisateurs dont competition_suivie correspond au match
- *        → on poste sur leurs Pages Facebook actives.
+ *        on cherche les utilisateurs qui ont activé explicitement CE match dans
+ *        broadcast_selections → on poste sur leurs Pages Facebook actives.
  *
  * Garanties :
  *   - Idempotence : UNIQUE (connection_id, match_id, post_date) sur facebook_posts_log
@@ -68,16 +68,18 @@ Deno.serve(async (req: Request) => {
   const rapport = { postsPublies: 0, erreurs: 0, tokensRevoques: 0, details: [] as string[] };
 
   for (const match of matches) {
-    // ── Étape 1 : utilisateurs ayant cette compétition sélectionnée ────────────
-    // On cherche dans user_profiles.competition_suivie (le nom de la compétition)
-    const { data: abonnes } = await supabase
-      .from('user_profiles')
+    // ── Étape 1 : utilisateurs ayant activé CE match spécifiquement ────────────
+    // On ne diffuse que pour les utilisateurs qui ont toggle ON ce match
+    const { data: selections } = await supabase
+      .from('broadcast_selections')
       .select('telegram_user_id')
-      .eq('competition_suivie', match.competition);
+      .eq('match_id', match.matchId)
+      .eq('is_active', true);
 
-    const userIds = (abonnes ?? []).map((r: any) => r.telegram_user_id);
+    const userIds = (selections ?? []).map((r: { telegram_user_id: number }) => r.telegram_user_id);
+
     if (!userIds.length) {
-      rapport.details.push(`Aucun abonné pour ${match.competition}`);
+      rapport.details.push(`Aucun broadcast actif pour ${match.matchId}`);
       continue;
     }
 
@@ -88,7 +90,13 @@ Deno.serve(async (req: Request) => {
       .eq('is_active', true)
       .in('telegram_user_id', userIds);
 
-    for (const connexion of (connexions as any[]) ?? []) {
+    for (const connexion of (connexions as Array<{
+      id: number;
+      telegram_user_id: number;
+      fb_page_id: string;
+      fb_page_name: string;
+      fb_page_access_token: string;
+    }>) ?? []) {
       const telegramId = Number(connexion.telegram_user_id);
       try {
         const message = formatScoreFacebook(match);
@@ -122,7 +130,7 @@ Deno.serve(async (req: Request) => {
 
             await notifierUtilisateur(
               telegramId,
-              `⚠️ *Connexion Facebook expirée*\n\nTa Page *${connexion.fb_page_name}* n'est plus accessible (token révoqué).\n\nDis-moi *"connecter Facebook"* pour reconnecter ta Page.`,
+              `⚠️ *Connexion Facebook expirée*\n\nTa Page *${connexion.fb_page_name}* n'est plus accessible (token révoqué).\n\nOuvre la Mini App pour reconnecter ta Page.`,
             );
           }
         }
