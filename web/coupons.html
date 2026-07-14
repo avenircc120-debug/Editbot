@@ -1,9 +1,0 @@
-<!DOCTYPE html>
-<html lang="fr"><head><meta charset="UTF-8"><meta http-equiv="refresh" content="0"></head>
-<body>
-<script>
-  const params = new URLSearchParams(location.search);
-  const token = params.get('token') || '';
-  location.replace('./app.html?tab=coupons' + (token ? '&token=' + encodeURIComponent(token) : ''));
-</script>
-</body></html>
