@@ -122,7 +122,7 @@ async function handleProfile(chatId: number): Promise<Response> {
       .maybeSingle(),
     supabase
       .from('facebook_connections')
-      .select('id, fb_page_name, last_post_at, created_at')
+      .select('id, fb_page_name, last_post_at, connected_at')
       .eq('telegram_user_id', chatId)
       .eq('is_active', true),
     supabase
@@ -297,7 +297,7 @@ async function handleCouponsDelete(chatId: number, couponId: string): Promise<Re
 async function handleFacebookGet(chatId: number): Promise<Response> {
   const { data } = await supabase
     .from('facebook_connections')
-    .select('id, fb_page_name, last_post_at, created_at')
+    .select('id, fb_page_name, last_post_at, connected_at')
     .eq('telegram_user_id', chatId)
     .eq('is_active', true);
   return json({ pages: data ?? [] });
