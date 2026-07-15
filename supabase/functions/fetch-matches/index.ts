@@ -1,26 +1,33 @@
 /**
  * fetch-matches — Ingestion des scores en direct (TheSportsDB)
  *
- * Récupère le calendrier + les scores des prochains matchs pour chaque
- * compétition suivie et les indexe dans matchs_index (source de vérité
- * des scores en direct, conservée intégralement).
+ * Récupère TOUS les matchs de football de la journée (toutes compétitions
+ * confondues, via eventsday.php) et les indexe dans matchs_index (source de
+ * vérité des scores en direct, conservée intégralement).
+ *
+ * Pourquoi "par jour" et non "par ligue" : eventsday.php renvoie en 1 seul
+ * appel API tous les matchs du monde entier pour une date donnée, peu importe
+ * la compétition. Ça permet de couvrir absolument toutes les ligues sans
+ * multiplier les appels (contrairement à l'ancienne version qui faisait
+ * 2 appels par ligue suivie et finissait par épuiser le quota journalier
+ * en ~1h, laissant le bot "silencieux" le reste de la journée).
+ *
+ * Fréquence : ce job tourne toutes les 4 minutes et ré-indexe "aujourd'hui"
+ * à chaque passage (1 appel = les scores en direct + le programme du jour
+ * à jour en quasi temps réel). Une fois par heure, il élargit aussi la
+ * fenêtre à hier + les 3 prochains jours (4 appels de plus) pour garder le
+ * programme à jour, sans jamais dépasser le quota gratuit de 500 appels/jour.
  *
  * Dès qu'un score/statut change sur un match, déclenche immédiatement
  * facebook-post pour diffuser ce match aux Pages Facebook concernées.
- *
- * Fix : appelle aussi eventspastleague pour mettre à jour les matchs
- * déjà commencés (live) ou terminés — filtrerProchains (ts > now)
- * les excluait complètement.
  *
  * Sécurité : header Authorization: Bearer {CRON_SECRET}
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { LEAGUES } from '../_shared/config.ts';
 import { consommerQuota, lireQuotas } from '../_shared/quota.ts';
 import {
-  getProchainMatchsLigue,
-  getDerniersMatchsLigue,
+  getMatchsDuJour,
   tsdbTimestampToDate,
   type TsdbMatch,
 } from '../_shared/thesportsdb.ts';
@@ -30,7 +37,9 @@ const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const CRON_SECRET  = Deno.env.get('CRON_SECRET') ?? '';
 const supabase     = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const MAX_MATCHS_PAR_LIGUE = 15;
+// Garde-fou : nombre max de matchs traités par appel eventsday (sécurité, pas
+// une limite fonctionnelle — une journée de foot mondiale reste bien en dessous).
+const MAX_EVENEMENTS_PAR_JOUR = 1500;
 
 function normaliserStatus(strStatus: string | undefined): string {
   switch ((strStatus ?? '').toUpperCase()) {
@@ -39,6 +48,10 @@ function normaliserStatus(strStatus: string | undefined): string {
     case 'PST': case 'CANC': case 'ABD': return 'postponed';
     default: return 'scheduled';
   }
+}
+
+function dateISO(d: Date): string {
+  return d.toISOString().slice(0, 10);
 }
 
 async function indexerMatch(ev: TsdbMatch, competition: string): Promise<{ matchId: string; changed: boolean; row: any } | null> {
@@ -105,6 +118,30 @@ async function diffuserSurFacebook(matches: any[]) {
   }
 }
 
+/** Ingère toutes les compétitions pour une journée donnée (1 appel API). */
+async function ingererJournee(dateStr: string, stats: { indexes: number; erreurs: number }, matchsAModifier: any[]): Promise<boolean> {
+  const ok = await consommerQuota(supabase, 'thesportsdb');
+  if (!ok) {
+    console.warn('[fetch-matches] Quota thesportsdb épuisé — arrêt pour cette exécution');
+    return false;
+  }
+
+  try {
+    const evenements = (await getMatchsDuJour(dateStr) ?? []).slice(0, MAX_EVENEMENTS_PAR_JOUR);
+    for (const ev of evenements) {
+      const res = await indexerMatch(ev, ev.strLeague || 'Autre compétition');
+      if (!res) { stats.erreurs++; continue; }
+      stats.indexes++;
+      if (res.changed) matchsAModifier.push(res.row);
+    }
+  } catch (e) {
+    console.error('[fetch-matches] Erreur ingestion', dateStr, e);
+    stats.erreurs++;
+  }
+
+  return true;
+}
+
 Deno.serve(async (req) => {
   const auth = req.headers.get('Authorization') ?? '';
   if (CRON_SECRET && auth !== `Bearer ${CRON_SECRET}`) {
@@ -113,45 +150,20 @@ Deno.serve(async (req) => {
 
   const stats = { indexes: 0, erreurs: 0, diffuses: 0 };
   const matchsAModifier: any[] = [];
-  const now = Date.now();
+  const now = new Date();
 
-  for (const ligue of LEAGUES) {
-    // 1er quota : eventsnextleague
-    const okNext = await consommerQuota(supabase, 'thesportsdb');
-    if (!okNext) { console.warn('[fetch-matches] Quota thesportsdb épuisé'); break; }
+  // Aujourd'hui : à chaque exécution (toutes les 4 min) → scores en direct
+  // et programme du jour quasi temps réel, pour TOUTES les compétitions.
+  const continuer = await ingererJournee(dateISO(now), stats, matchsAModifier);
 
-    try {
-      // ── Prochains matchs (inclut les matchs live dont l'heure de début est passée récemment)
-      const prochains = await getProchainMatchsLigue(ligue.tsdb_id);
-
-      // Fenêtre : matchs démarrés il y a moins de 3h → jusqu'à +14j
-      const filtresNext = (prochains ?? []).filter(ev => {
-        const ts = tsdbTimestampToDate(ev.strTimestamp).getTime();
-        return ts > now - 3 * 3600 * 1000 && ts < now + 14 * 24 * 3600 * 1000;
-      });
-
-      // 2e quota : eventspastleague pour les matchs terminés récents
-      const okPast = await consommerQuota(supabase, 'thesportsdb');
-      const derniers = okPast ? await getDerniersMatchsLigue(ligue.tsdb_id) : [];
-
-      // Fenêtre : derniers 5 jours, sans doublons avec filtresNext
-      const nextIds = new Set(filtresNext.map(e => e.idEvent));
-      const filtresPast = (derniers ?? []).filter(ev => {
-        const ts = tsdbTimestampToDate(ev.strTimestamp).getTime();
-        return ts > now - 5 * 24 * 3600 * 1000 && !nextIds.has(ev.idEvent);
-      });
-
-      const tous = [...filtresNext, ...filtresPast].slice(0, MAX_MATCHS_PAR_LIGUE);
-
-      for (const ev of tous) {
-        const res = await indexerMatch(ev, ligue.name);
-        if (!res) { stats.erreurs++; continue; }
-        stats.indexes++;
-        if (res.changed) matchsAModifier.push(res.row);
-      }
-    } catch (e) {
-      console.error('[fetch-matches]', ligue.name, e);
-      stats.erreurs++;
+  // Une fois par heure : élargit à hier + les 3 prochains jours pour garder
+  // le programme à jour (résultats de fin de journée, matchs à venir).
+  if (continuer && now.getUTCMinutes() < 4) {
+    for (const decalage of [-1, 1, 2, 3]) {
+      const d = new Date(now);
+      d.setUTCDate(d.getUTCDate() + decalage);
+      const ok = await ingererJournee(dateISO(d), stats, matchsAModifier);
+      if (!ok) break;
     }
   }
 
