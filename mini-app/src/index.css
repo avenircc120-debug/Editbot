@@ -792,3 +792,33 @@ html, body, #root {
   color: var(--muted);
   font-size: 13px;
 }
+
+
+/* ── Live toggle bouton (modal compétitions) ── */
+.btn-live-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.btn-live-toggle .live-dot { background: var(--muted); animation: none; }
+
+.btn-live-toggle.active {
+  background: rgba(248, 81, 73, 0.15);
+  border-color: rgba(248, 81, 73, 0.4);
+  color: var(--red);
+}
+
+.btn-live-toggle.active .live-dot {
+  background: var(--red);
+  animation: pulse-live 1.5s infinite;
+}
