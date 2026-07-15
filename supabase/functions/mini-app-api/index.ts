@@ -18,6 +18,8 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { LEAGUES } from '../_shared/config.ts';
+import { posterSurPage } from '../_shared/facebook.ts';
+import { formatAnnonceFacebook, formatScoreFacebook } from '../_shared/templates.ts';
 
 const SUPABASE_URL  = Deno.env.get('SUPABASE_URL')              ?? '';
 const SUPABASE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -218,6 +220,29 @@ async function handleBroadcast(req: Request, chatId: number): Promise<Response> 
       is_active:        true,
       created_at:       new Date().toISOString(),
     }, { onConflict: 'telegram_user_id,match_id' });
+
+      // ── Post immédiat sur Facebook dès l'activation ────────────────────────
+      const [{ data: matchRow }, { data: fbPages }] = await Promise.all([
+        supabase.from('matchs_index')
+          .select('home_team, away_team, competition, status, match_date, home_score, away_score, home_goal_details, away_goal_details, match_minute')
+          .eq('match_id', matchId).maybeSingle(),
+        supabase.from('facebook_connections')
+          .select('fb_page_id, fb_page_name, fb_page_access_token')
+          .eq('telegram_user_id', chatId).eq('is_active', true),
+      ]);
+      if (matchRow && fbPages && (fbPages as any[]).length > 0) {
+        const m   = matchRow as any;
+        const mst = m.status ?? 'scheduled';
+        const fbMsg = (mst !== 'inprogress' && mst !== 'finished')
+          ? formatAnnonceFacebook({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, matchDate: m.match_date })
+          : formatScoreFacebook({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null, minute: m.match_minute ?? null });
+        Promise.allSettled(
+          (fbPages as Array<{ fb_page_id: string; fb_page_name: string; fb_page_access_token: string }>).map(page =>
+            posterSurPage(page.fb_page_id, page.fb_page_access_token, fbMsg)
+              .then(r => console.log(r.success ? `[broadcast] ✓ ${page.fb_page_name}` : `[broadcast] ✗ ${page.fb_page_name}: ${r.error}`))
+          )
+        );
+      }
   } else {
     await supabase
       .from('broadcast_selections')
