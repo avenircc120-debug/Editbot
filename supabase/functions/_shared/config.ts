@@ -34,6 +34,9 @@ export const LEAGUES: Array<{ tsdb_id: string; name: string; flag: string }> = [
   { tsdb_id: '4359', name: 'Chinese Super League',      flag: '🇨🇳' },
   { tsdb_id: '4429', name: 'Coupe du Monde FIFA',       flag: '🌍' },
   { tsdb_id: '4330', name: 'Scottish Premiership',      flag: '🏴󠁧󠁢󠁳󠁣󠁴󠁿' },
+  { tsdb_id: '4339', name: 'Turkish Super Lig',         flag: '🇹🇷' },
+  { tsdb_id: '4355', name: 'Russian Premier League',    flag: '🇷🇺' },
+  { tsdb_id: '4356', name: 'Australian A-League',       flag: '🇦🇺' },
 ];
 
 // ─── Prompt système ────────────────────────────────────────────────────────────
