@@ -27,13 +27,16 @@ const supabase       = createClient(SUPABASE_URL, SUPABASE_KEY);
 const FB_TOKEN_ERROR_CODES = new Set([190, 102, 467, 458, 460, 463, 464, 492]);
 
 interface LiveMatch {
-  matchId:     string;
-  competition: string;
-  homeTeam:    string;
-  awayTeam:    string;
-  homeScore:   number;
-  awayScore:   number;
-  status:      string;
+  matchId:          string;
+  competition:      string;
+  homeTeam:         string;
+  awayTeam:         string;
+  homeScore:        number;
+  awayScore:        number;
+  status:           string;
+  homeGoalDetails?: string | null;
+  awayGoalDetails?: string | null;
+  minute?:          number | null;
 }
 
 async function notifierUtilisateur(telegramUserId: number, texte: string): Promise<void> {
@@ -99,7 +102,17 @@ Deno.serve(async (req: Request) => {
     }>) ?? []) {
       const telegramId = Number(connexion.telegram_user_id);
       try {
-        const message = formatScoreFacebook(match);
+        const message = formatScoreFacebook({
+          competition:     match.competition,
+          homeTeam:        match.homeTeam,
+          awayTeam:        match.awayTeam,
+          homeScore:       match.homeScore,
+          awayScore:       match.awayScore,
+          status:          match.status,
+          homeGoalDetails: match.homeGoalDetails ?? null,
+          awayGoalDetails: match.awayGoalDetails ?? null,
+          minute:          match.minute ?? null,
+        });
         const result  = await posterSurPage(connexion.fb_page_id, connexion.fb_page_access_token, message);
 
         await supabase.from('facebook_posts_log').upsert({
