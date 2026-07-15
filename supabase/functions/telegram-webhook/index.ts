@@ -32,7 +32,7 @@ interface ProfilUtilisateur {
 
 // ─── Boutons ───────────────────────────────────────────────────────────────────
 
-function miniAppBtn(label = '🟢 Ouvrir la Mini App') {
+function miniAppBtn(label = '🟢 Mon espace') {
   return WEB_APP_URL ? { text: label, web_app: { url: WEB_APP_URL } } : null;
 }
 
