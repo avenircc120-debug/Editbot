@@ -105,3 +105,18 @@ export function filtrerProchains(matchs: TsdbMatch[], joursMax = 14): TsdbMatch[
     return ts > now && ts < limite;
   });
 }
+
+    // ─── Détails complets d'un match : buteurs et minute (lookupevent) ───────────
+    export async function getEvenementDetails(eventId: string): Promise<{
+    homeGoalDetails: string | null; awayGoalDetails: string | null; minute: number | null;
+    } | null> {
+    const data = await tsdbGet('lookupevent.php', { id: eventId });
+    const ev   = data?.events?.[0];
+    if (!ev) return null;
+    return {
+      homeGoalDetails: (ev.strHomeGoalDetails as string | null) ?? null,
+      awayGoalDetails: (ev.strAwayGoalDetails as string | null) ?? null,
+      minute:          ev.intMinute != null ? Number(ev.intMinute) : null,
+    };
+    }
+    
