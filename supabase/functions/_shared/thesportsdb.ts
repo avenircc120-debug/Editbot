@@ -76,6 +76,16 @@ export async function getDerniersMatchsLigue(tsdbLeagueId: string): Promise<Tsdb
   return (data?.events ?? []) as TsdbMatch[];
 }
 
+// ─── Tous les matchs (toutes compétitions confondues) d'une journée ──────────
+// 1 seul appel API = tous les matchs de la planète pour ce jour-là (peu importe
+// la ligue) : c'est ce qui permet de couvrir "toutes les compétitions" sans
+// exploser le quota journalier (contrairement à un appel par ligue).
+
+export async function getMatchsDuJour(dateISO: string, sport = 'Soccer'): Promise<TsdbMatch[]> {
+  const data = await tsdbGet('eventsday.php', { d: dateISO, s: sport });
+  return (data?.events ?? []) as TsdbMatch[];
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Convertit un timestamp ISO TheSportsDB en objet Date (UTC) */
