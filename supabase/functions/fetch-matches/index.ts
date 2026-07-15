@@ -28,6 +28,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 import { consommerQuota, lireQuotas } from '../_shared/quota.ts';
 import {
   getMatchsDuJour,
+  getEvenementDetails,
   tsdbTimestampToDate,
   type TsdbMatch,
 } from '../_shared/thesportsdb.ts';
@@ -86,6 +87,24 @@ async function indexerMatch(ev: TsdbMatch, competition: string): Promise<{ match
     updated_at:      new Date().toISOString(),
   }, { onConflict: 'match_id' });
 
+  // Dès qu'un but est marqué → 1 appel API pour récupérer les buteurs
+  let homeGoalDetails: string | null = null;
+  let awayGoalDetails: string | null = null;
+  let matchMinute: number | null = null;
+  const butMarque = avant && status === 'inprogress' && (avant.home_score !== homeScore || avant.away_score !== awayScore);
+  if (butMarque) {
+    const quotaOk = await consommerQuota(supabase, 'thesportsdb');
+    if (quotaOk) {
+      const det = await getEvenementDetails(ev.idEvent);
+      if (det) {
+        homeGoalDetails = det.homeGoalDetails;
+        awayGoalDetails = det.awayGoalDetails;
+        matchMinute     = det.minute;
+        await supabase.from('matchs_index').update({ home_goal_details: homeGoalDetails, away_goal_details: awayGoalDetails, match_minute: matchMinute }).eq('match_id', ev.idEvent);
+      }
+    }
+  }
+
   if (error) {
     console.warn('[index]', ev.idEvent, error.message);
     return null;
@@ -101,7 +120,7 @@ async function indexerMatch(ev: TsdbMatch, competition: string): Promise<{ match
   return {
     matchId: ev.idEvent,
     changed:  changed && enDirectOuTermine && homeScore !== null && awayScore !== null,
-    row: { matchId: ev.idEvent, competition, homeTeam: ev.strHomeTeam, awayTeam: ev.strAwayTeam, homeScore, awayScore, status },
+    row: { matchId: ev.idEvent, competition, homeTeam: ev.strHomeTeam, awayTeam: ev.strAwayTeam, homeScore, awayScore, status, homeGoalDetails, awayGoalDetails, minute: matchMinute },
   };
 }
 
