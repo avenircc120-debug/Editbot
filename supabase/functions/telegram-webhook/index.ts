@@ -43,6 +43,18 @@ function miniAppTabBtn(tab: 'matchs' | 'facebook' | 'wallet' | 'coupons', label:
   return WEB_APP_URL ? { text: label, web_app: { url: `${WEB_APP_URL}?tab=${tab}` } } : null;
 }
 
+/**
+ * Inline keyboard avec TOUJOURS deux boutons côte à côte :
+ *  1. bouton direct vers l'onglet
+ *  2. bouton "🟢 Mon espace" (accueil de la Mini App)
+ */
+function clavierAvecMonEspace(tab: 'matchs' | 'facebook' | 'wallet' | 'coupons', labelTab: string) {
+  const btnTab     = miniAppTabBtn(tab, labelTab);
+  const btnAccueil = miniAppBtn();
+  const row: object[] = [...(btnTab ? [btnTab] : []), ...(btnAccueil ? [btnAccueil] : [])];
+  return row.length ? { inline_keyboard: [row] } : undefined;
+}
+
 const BOUTONS_SCORES = () => {
   const btn = miniAppBtn();
   return {
@@ -284,13 +296,17 @@ async function repondreConversation(chatId: number, texte: string, profil: Profi
       { onConflict: 'chat_id' },
     );
 
+    // Toujours afficher "Mon espace" + boutons d'onglet si détectés
+    const btnAccueil = miniAppBtn();
     let keyboard: unknown;
     if (boutonsTrouves.length > 0) {
       const rows = boutonsTrouves.map(o => miniAppTabBtn(o.tab, o.label)).filter(Boolean);
-      keyboard = rows.length ? { inline_keyboard: rows.map(b => [b!]) } : undefined;
+      // Chaque onglet dans sa propre ligne + "Mon espace" en dernière ligne
+      const lines = rows.map(b => [b!]);
+      if (btnAccueil) lines.push([btnAccueil]);
+      keyboard = lines.length ? { inline_keyboard: lines } : undefined;
     } else {
-      const btn = miniAppBtn();
-      keyboard = btn ? { inline_keyboard: [[btn]] } : undefined;
+      keyboard = btnAccueil ? { inline_keyboard: [[btnAccueil]] } : undefined;
     }
 
     await sendTelegram(chatId, reponse, keyboard);
@@ -411,26 +427,34 @@ Deno.serve(async (req: Request) => {
 
     // ── Routing par onglet ────────────────────────────────────────────────────
     if (RE_WALLET.test(texte)) {
-      const btn = miniAppTabBtn('wallet', '💰 Voir mon solde');
-      await sendTelegram(chatId, '💰 Ton solde et tes opérations sont dans l\'onglet *Solde* de Mon espace 👇', btn ? { inline_keyboard: [[btn]] } : undefined);
+      await sendTelegram(chatId,
+        '💰 Ton solde et tes opérations sont dans l\'onglet *Solde* de Mon espace 👇',
+        clavierAvecMonEspace('wallet', '💰 Voir mon solde'),
+      );
       return new Response('ok');
     }
 
     if (RE_COUPONS.test(texte)) {
-      const btn = miniAppTabBtn('coupons', '🎟 Mes coupons');
-      await sendTelegram(chatId, '🎟 Tes codes coupons se gèrent dans l\'onglet *Coupons* de Mon espace 👇', btn ? { inline_keyboard: [[btn]] } : undefined);
+      await sendTelegram(chatId,
+        '🎟 Tes codes coupons se gèrent dans l\'onglet *Coupons* de Mon espace 👇',
+        clavierAvecMonEspace('coupons', '🎟 Mes coupons'),
+      );
       return new Response('ok');
     }
 
     if (RE_FACEBOOK_TAB.test(texte) && !RE_AJOUTER_FB.test(texte)) {
-      const btn = miniAppTabBtn('facebook', '📘 Mes pages Facebook');
-      await sendTelegram(chatId, '📘 Tes pages Facebook se gèrent dans Mon espace 👇', btn ? { inline_keyboard: [[btn]] } : undefined);
+      await sendTelegram(chatId,
+        '📘 Tes pages Facebook se gèrent dans Mon espace 👇',
+        clavierAvecMonEspace('facebook', '📘 Mes pages Facebook'),
+      );
       return new Response('ok');
     }
 
     if (RE_COMPETITIONS.test(texte)) {
-      const btn = miniAppTabBtn('matchs', '🏆 Choisir ma compétition');
-      await sendTelegram(chatId, '🏆 Change ta compétition directement dans Mon espace 👇', btn ? { inline_keyboard: [[btn]] } : undefined);
+      await sendTelegram(chatId,
+        '🏆 Change ta compétition directement dans Mon espace 👇',
+        clavierAvecMonEspace('matchs', '🏆 Choisir ma compétition'),
+      );
       return new Response('ok');
     }
 
