@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-    import type { League, MatchCounts } from '@/api';
-    import { updateCompetition, getMatchCounts } from '@/api';
+    import type { League } from '@/api';
+    import { updateCompetition, getLiveCounts } from '@/api';
 
     interface Props {
     token: string;
@@ -12,10 +12,10 @@ import { useState, useEffect } from 'react';
 
     export default function CompetitionModal({ token, leagues, currentId, onClose, onSelected }: Props) {
     const [updating, setUpdating] = useState<string | null>(null);
-    const [counts, setCounts] = useState<MatchCounts>({ liveCounts: {}, scheduledCounts: {} });
+    const [liveCounts, setLiveCounts] = useState<Record<string, number>>({});
 
     useEffect(() => {
-      getMatchCounts(token).then(setCounts).catch(() => {});
+      getLiveCounts(token).then(setLiveCounts).catch(() => {});
     }, [token]);
 
     async function select(tsdbId: string) {
@@ -38,8 +38,7 @@ import { useState, useEffect } from 'react';
         </div>
         <div className="modal-list">
           {leagues.map(l => {
-            const liveCount      = counts.liveCounts[l.tsdb_id]      ?? 0;
-            const scheduledCount = counts.scheduledCounts[l.tsdb_id] ?? 0;
+            const count = liveCounts[l.tsdb_id] ?? 0;
             return (
               <div
                 key={l.tsdb_id}
@@ -49,17 +48,12 @@ import { useState, useEffect } from 'react';
               >
                 <span className="league-flag">{l.flag}</span>
                 <span className="league-name">{l.name}</span>
-                <div className="league-badges">
-                  {scheduledCount > 0 && (
-                    <span className="scheduled-badge">{scheduledCount}</span>
-                  )}
-                  {liveCount > 0 && (
-                    <span className="live-badge">
-                      <span className="live-dot" />
-                      {liveCount}
-                    </span>
-                  )}
-                </div>
+                {count > 0 && (
+                  <span className="live-badge">
+                    <span className="live-dot" />
+                    {count}
+                  </span>
+                )}
                 {updating === l.tsdb_id ? (
                   <div className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }} />
                 ) : l.tsdb_id === currentId ? (
