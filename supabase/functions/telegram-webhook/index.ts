@@ -19,7 +19,10 @@ const supabase       = createClient(SUPABASE_URL, SUPABASE_KEY);
 const RE_EN_DIRECT   = /(en direct|live|score.{0,10}(direct|maintenant)|ce qui se passe|qu.est.ce qui se joue)/i;
 const RE_AUJOURD_HUI = /(aujourd.?hui|ce soir|ce matin|matchs? du jour|y a.t.il)/i;
 const RE_PROGRAMME   = /(programme|calendrier|planning|cette semaine|prochains? matchs?|à venir|quand.{0,10}joue)/i;
-const RE_MINI_APP    = /(compétition|competition|championnat|ligue|chang|choisir|sélectionn|selectionn|coupon|wallet|portefeuille|solde|dépôt|depot|retrait|facebook|page)/i;
+const RE_WALLET       = /(solde|wallet|portefeuille|dépôt|depot|retrait|argent|combien.{0,15}ai|mon compte)/i;
+const RE_COUPONS      = /(coupon|code.{0,10}promo|bookmaker|1xbet|1win|code.{0,10}réduc|réduction)/i;
+const RE_FACEBOOK_TAB = /(mes? pages? facebook|page.{0,15}(connecter|relier|gérer|voir)|diffus|broadcast)/i;
+const RE_COMPETITIONS = /(compétition|competition|championnat|ligue|chang.{0,15}comp|choisir.{0,15}comp|sélectionn|selectionn)/i;
 const RE_AJOUTER_FB  = /(ajouter|connecter|lier|relier).{0,20}facebook/i;
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -34,6 +37,10 @@ interface ProfilUtilisateur {
 
 function miniAppBtn(label = '🟢 Mon espace') {
   return WEB_APP_URL ? { text: label, web_app: { url: WEB_APP_URL } } : null;
+}
+
+function miniAppTabBtn(tab: 'matchs' | 'facebook' | 'wallet' | 'coupons', label: string) {
+  return WEB_APP_URL ? { text: label, web_app: { url: `${WEB_APP_URL}?tab=${tab}` } } : null;
 }
 
 const BOUTONS_SCORES = () => {
@@ -257,17 +264,37 @@ async function repondreConversation(chatId: number, texte: string, profil: Profi
   const contexte = `${contexteMatchs}\n\nStatut : ${profil.nouveau ? 'nouvel utilisateur' : 'utilisateur existant'}\nMini App disponible : ${WEB_APP_URL ? 'oui' : 'non'}`;
 
   let reponse = await chatAssistant(historique.slice(-10), contexte);
-  reponse = reponse.replace(/\[\[BUTTON:[A-Z_]+\]\]/g, '').replace(/\s{2,}/g, ' ').trim();
 
-  historique.push({ role: 'assistant', content: reponse });
-  await supabase.from('bot_sessions').upsert(
-    { chat_id: chatId, history: historique.slice(-20), updated_at: new Date().toISOString() },
-    { onConflict: 'chat_id' },
-  );
+    // Convertir les marqueurs [[BUTTON:...]] en boutons vers les onglets de Mon espace
+    const ONGLET_MAP: Record<string, { label: string; tab: 'matchs' | 'facebook' | 'wallet' | 'coupons' }> = {
+      'COMPETITIONS': { label: '🏆 Choisir ma compétition', tab: 'matchs'   },
+      'WALLET':       { label: '💰 Mon solde',               tab: 'wallet'   },
+      'COUPONS':      { label: '🎟 Mes coupons',             tab: 'coupons'  },
+      'FACEBOOK':     { label: '📘 Ma page Facebook',        tab: 'facebook' },
+    };
+    const boutonsTrouves = [...reponse.matchAll(/\[\[BUTTON:([A-Z_]+)\]\]/g)]
+      .map(m => ONGLET_MAP[m[1]])
+      .filter(Boolean) as { label: string; tab: 'matchs' | 'facebook' | 'wallet' | 'coupons' }[];
 
-  const btn = miniAppBtn();
-  await sendTelegram(chatId, reponse, btn ? { inline_keyboard: [[btn]] } : undefined);
-}
+    reponse = reponse.replace(/\[\[BUTTON:[A-Z_]+\]\]/g, '').replace(/\s{2,}/g, ' ').trim();
+
+    historique.push({ role: 'assistant', content: reponse });
+    await supabase.from('bot_sessions').upsert(
+      { chat_id: chatId, history: historique.slice(-20), updated_at: new Date().toISOString() },
+      { onConflict: 'chat_id' },
+    );
+
+    let keyboard: unknown;
+    if (boutonsTrouves.length > 0) {
+      const rows = boutonsTrouves.map(o => miniAppTabBtn(o.tab, o.label)).filter(Boolean);
+      keyboard = rows.length ? { inline_keyboard: rows.map(b => [b!]) } : undefined;
+    } else {
+      const btn = miniAppBtn();
+      keyboard = btn ? { inline_keyboard: [[btn]] } : undefined;
+    }
+
+    await sendTelegram(chatId, reponse, keyboard);
+    }
 
 // ─── Handler principal ──────────────────────────────────────────────────────────
 
@@ -382,9 +409,28 @@ Deno.serve(async (req: Request) => {
       return new Response('ok');
     }
 
-    // ── Tout le reste (compétition, wallet, coupons, pages…) → Mini App ───────
-    if (RE_MINI_APP.test(texte)) {
-      await renvoyerMiniApp(chatId, '🟢 Tout ça se gère dans la Mini App :');
+    // ── Routing par onglet ────────────────────────────────────────────────────
+    if (RE_WALLET.test(texte)) {
+      const btn = miniAppTabBtn('wallet', '💰 Voir mon solde');
+      await sendTelegram(chatId, '💰 Ton solde et tes opérations sont dans l\'onglet *Solde* de Mon espace 👇', btn ? { inline_keyboard: [[btn]] } : undefined);
+      return new Response('ok');
+    }
+
+    if (RE_COUPONS.test(texte)) {
+      const btn = miniAppTabBtn('coupons', '🎟 Mes coupons');
+      await sendTelegram(chatId, '🎟 Tes codes coupons se gèrent dans l\'onglet *Coupons* de Mon espace 👇', btn ? { inline_keyboard: [[btn]] } : undefined);
+      return new Response('ok');
+    }
+
+    if (RE_FACEBOOK_TAB.test(texte) && !RE_AJOUTER_FB.test(texte)) {
+      const btn = miniAppTabBtn('facebook', '📘 Mes pages Facebook');
+      await sendTelegram(chatId, '📘 Tes pages Facebook se gèrent dans Mon espace 👇', btn ? { inline_keyboard: [[btn]] } : undefined);
+      return new Response('ok');
+    }
+
+    if (RE_COMPETITIONS.test(texte)) {
+      const btn = miniAppTabBtn('matchs', '🏆 Choisir ma compétition');
+      await sendTelegram(chatId, '🏆 Change ta compétition directement dans Mon espace 👇', btn ? { inline_keyboard: [[btn]] } : undefined);
       return new Response('ok');
     }
 
