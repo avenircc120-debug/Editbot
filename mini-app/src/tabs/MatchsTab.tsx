@@ -32,7 +32,8 @@ interface PagePickerProps {
 }
 
 function PagePicker({ pages, onConfirm, onCancel }: PagePickerProps) {
-  const [selected, setSelected] = useState<Set<string>>(new Set(pages.map(p => p.fb_page_id)));
+  // Aucune page pré-cochée : l'utilisateur choisit explicitement
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   function toggle(id: string) {
     setSelected(prev => {
@@ -50,7 +51,9 @@ function PagePicker({ pages, onConfirm, onCancel }: PagePickerProps) {
     }} onClick={onCancel}>
       <div style={{
         background: 'var(--card, #1c1c1e)', borderRadius: '16px 16px 0 0',
-        width: '100%', maxWidth: 480, padding: '20px 16px 28px',
+        width: '100%', maxWidth: 480,
+        padding: '20px 16px',
+        paddingBottom: 'calc(var(--nav-h, 64px) + 20px)',
         boxShadow: '0 -4px 24px rgba(0,0,0,0.4)',
       }} onClick={e => e.stopPropagation()}>
         <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14, color: 'var(--text, #fff)' }}>
@@ -59,7 +62,7 @@ function PagePicker({ pages, onConfirm, onCancel }: PagePickerProps) {
         {pages.map(page => (
           <label key={page.fb_page_id} style={{
             display: 'flex', alignItems: 'center', gap: 10,
-            padding: '10px 4px', cursor: 'pointer',
+            padding: '12px 4px', cursor: 'pointer',
             borderBottom: '1px solid rgba(255,255,255,0.07)',
             color: 'var(--text, #fff)',
           }}>
@@ -67,28 +70,28 @@ function PagePicker({ pages, onConfirm, onCancel }: PagePickerProps) {
               type="checkbox"
               checked={selected.has(page.fb_page_id)}
               onChange={() => toggle(page.fb_page_id)}
-              style={{ width: 18, height: 18, accentColor: 'var(--green, #30d158)', cursor: 'pointer' }}
+              style={{ width: 20, height: 20, accentColor: 'var(--green, #30d158)', cursor: 'pointer', flexShrink: 0 }}
             />
-            <span style={{ fontSize: 14 }}>{page.fb_page_name}</span>
+            <span style={{ fontSize: 15 }}>{page.fb_page_name}</span>
           </label>
         ))}
-        <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+        <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
           <button onClick={onCancel} style={{
-            flex: 1, padding: '11px 0', borderRadius: 10, border: 'none',
+            flex: 1, padding: '13px 0', borderRadius: 10, border: 'none',
             background: 'rgba(255,255,255,0.1)', color: 'var(--text, #fff)',
-            fontSize: 14, cursor: 'pointer',
+            fontSize: 15, cursor: 'pointer',
           }}>Annuler</button>
           <button
             disabled={selected.size === 0}
             onClick={() => onConfirm([...selected])}
             style={{
-              flex: 2, padding: '11px 0', borderRadius: 10, border: 'none',
+              flex: 2, padding: '13px 0', borderRadius: 10, border: 'none',
               background: selected.size === 0 ? 'rgba(255,255,255,0.1)' : 'var(--green, #30d158)',
               color: selected.size === 0 ? 'rgba(255,255,255,0.4)' : '#000',
-              fontSize: 14, fontWeight: 600, cursor: selected.size === 0 ? 'not-allowed' : 'pointer',
+              fontSize: 15, fontWeight: 600, cursor: selected.size === 0 ? 'not-allowed' : 'pointer',
             }}
           >
-            Diffuser {selected.size > 0 ? `(${selected.size})` : ''}
+            {selected.size === 0 ? 'Sélectionner une page' : `✓ Diffuser (${selected.size})`}
           </button>
         </div>
       </div>
@@ -112,19 +115,19 @@ function MatchCard({ match, token, pages, onToggle }: MatchCardProps) {
   const isFinished = match.status === 'finished';
   const showScore  = isLive || isFinished;
 
-  async function doToggle(pageIds?: string[]) {
-    const next = !match.isBroadcasting;
-    onToggle(match.match_id, next);
+  // `activate` est capturé au moment du clic → pas de risque de closure stale
+  async function doToggle(activate: boolean, pageIds?: string[]) {
+    onToggle(match.match_id, activate);
     setBusy(true);
     try {
-      await toggleBroadcast(token, match.match_id, next, {
+      await toggleBroadcast(token, match.match_id, activate, {
         competition: match.competition,
         homeTeam:    match.home_team,
         awayTeam:    match.away_team,
-        pageIds:     next ? (pageIds ?? []) : undefined,
+        pageIds:     activate ? (pageIds ?? []) : undefined,
       });
     } catch {
-      onToggle(match.match_id, !next);
+      onToggle(match.match_id, !activate);
     } finally {
       setBusy(false);
     }
@@ -132,19 +135,19 @@ function MatchCard({ match, token, pages, onToggle }: MatchCardProps) {
 
   function handleToggle() {
     if (busy) return;
-    const next = !match.isBroadcasting;
+    const activate = !match.isBroadcasting;
     // Activation + plusieurs pages → afficher le sélecteur
-    if (next && pages.length > 1) {
+    if (activate && pages.length > 1) {
       setShowPicker(true);
       return;
     }
     // Désactivation ou 1 seule page → direct
-    doToggle(pages.length === 1 ? [pages[0].fb_page_id] : []);
+    doToggle(activate, activate && pages.length === 1 ? [pages[0].fb_page_id] : undefined);
   }
 
   function handlePickerConfirm(pageIds: string[]) {
     setShowPicker(false);
-    doToggle(pageIds);
+    doToggle(true, pageIds);
   }
 
   return (
