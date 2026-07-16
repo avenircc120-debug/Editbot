@@ -166,7 +166,7 @@ async function handleMatches(chatId: number, url: URL): Promise<Response> {
   const filter        = url.searchParams.get('filter') ?? 'all';
 
   const now     = new Date();
-  const moins2h = new Date(now.getTime() - 2  * 60 * 60 * 1000).toISOString();
+  const moins2h = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
   const j7      = new Date(now.getTime() + 7  * 24 * 60 * 60 * 1000).toISOString();
   const debJour = now.toISOString().slice(0, 10) + 'T00:00:00.000Z';
   const finJour = now.toISOString().slice(0, 10) + 'T23:59:59.999Z';
@@ -361,7 +361,8 @@ async function handleFacebookConnectUrl(chatId: number): Promise<Response> {
 async function handleLiveCounts(): Promise<Response> {
   const [{ data: liveData }, { data: schedData }] = await Promise.all([
     supabase.from('matchs_index').select('tournament_id').eq('status', 'inprogress'),
-    supabase.from('matchs_index').select('tournament_id').eq('status', 'scheduled'),
+    supabase.from('matchs_index').select('tournament_id').eq('status', 'scheduled')
+        .gte('match_date', new Date(Date.now() - 2 * 3600000).toISOString()),
   ]);
 
   const liveCounts: Record<string, number> = {};
