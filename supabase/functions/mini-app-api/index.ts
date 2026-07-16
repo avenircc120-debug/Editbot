@@ -434,7 +434,7 @@ Deno.serve(async (req: Request) => {
     if (route === 'coupons'     && req.method === 'POST')  return handleCouponsPost(req, chatId);
     if (parentRoute === 'coupons'  && req.method === 'DELETE') return handleCouponsDelete(chatId, route);
     if (route === 'facebook'       && req.method === 'GET')    return handleFacebookGet(chatId);
-    if (route === 'connect-url' && parentRoute === 'facebook' && req.method === 'GET') return handleFacebookConnectUrl(chatId, reqUrl.searchParams.get('add') === '1');
+    if (route === 'connect-url' && parentRoute === 'facebook' && req.method === 'GET') return handleFacebookConnectUrl(chatId, url.searchParams.get('add') === '1');
     if (parentRoute === 'account' && parts[parts.length - 3] === 'facebook' && req.method === 'DELETE') return handleFacebookAccountDelete(chatId, route);
     if (parentRoute === 'facebook' && route !== 'account' && req.method === 'DELETE') return handleFacebookDelete(chatId, route);
 
