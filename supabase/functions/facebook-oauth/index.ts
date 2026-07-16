@@ -113,7 +113,7 @@ Deno.serve(async (req: Request) => {
       + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
       + `&state=${encodeURIComponent(nonce)}`
       + `&scope=pages_manage_posts,pages_read_engagement,pages_show_list`
-      + `&auth_type=rerequest`;
+      + ``;
     console.log('[facebook-oauth] init redirect → Facebook:', fbUrl.substring(0, 80) + '…');
     return new Response(null, { status: 302, headers: { Location: fbUrl } });
   }

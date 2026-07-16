@@ -42,12 +42,8 @@ async function handleGet(token, url) {
   if (action === 'fb_connect_url') {
     const nonce = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-    await supabase.from('facebook_oauth_states').insert({ state: nonce, telegram_user_id: chatId, expires_at: expiresAt });
-    const fbUrl = 'https://www.facebook.com/v19.0/dialog/oauth'
-      + '?client_id=' + FACEBOOK_APP_ID
-      + '&redirect_uri=' + encodeURIComponent(REDIRECT_URI)
-      + '&state=' + nonce
-      + '&scope=pages_manage_posts%2Cpages_read_engagement%2Cpages_show_list';
+    await supabase.from('facebook_oauth_states').insert({ nonce, telegram_user_id: chatId, expires_at: expiresAt });
+    const fbUrl = `${SUPABASE_URL}/functions/v1/facebook-oauth?init=1&nonce=${nonce}`;
     return json({ url: fbUrl });
   }
 
