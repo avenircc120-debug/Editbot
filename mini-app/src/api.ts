@@ -214,8 +214,9 @@ export async function getFacebookPages(token: string): Promise<FBPage[]> {
   return (data as { pages: FBPage[] }).pages;
 }
 
-export async function getFacebookConnectUrl(token: string): Promise<string> {
-  const res = await apiFetch('/facebook/connect-url', token);
+export async function getFacebookConnectUrl(token: string, isAdditional = false): Promise<string> {
+  const path = isAdditional ? '/facebook/connect-url?add=1' : '/facebook/connect-url';
+  const res = await apiFetch(path, token);
   if (!res.ok) throw new Error('Erreur génération lien Facebook');
   const data = await res.json();
   return (data as { url: string }).url;

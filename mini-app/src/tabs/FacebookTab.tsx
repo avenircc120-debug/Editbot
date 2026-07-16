@@ -324,7 +324,7 @@ export default function FacebookTab({ token }: { token: string }) {
   async function handleConnect() {
     setConnecting(true);
     try {
-      const url = await getFacebookConnectUrl(token);
+      const url = await getFacebookConnectUrl(token, accounts.length > 0);
       openExternal(url);
     } catch (e: unknown) {
       setError((e as Error).message);

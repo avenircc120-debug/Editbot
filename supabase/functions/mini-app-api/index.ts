@@ -357,8 +357,9 @@ async function handleFacebookAccountDelete(chatId: number, fbUserId: string): Pr
   return json({ ok: true });
 }
 
-/** Génère un lien OAuth Facebook à usage unique (nonce anti-CSRF, valable 10 min). */
-async function handleFacebookConnectUrl(chatId: number): Promise<Response> {
+/** Génère un lien OAuth Facebook à usage unique (nonce anti-CSRF, valable 10 min).
+ *  Si add=true, le lien force reauthenticate pour permettre un autre compte Facebook. */
+async function handleFacebookConnectUrl(chatId: number, add: boolean): Promise<Response> {
   const nonce = crypto.randomUUID();
   const { error } = await supabase
     .from('facebook_oauth_states')
@@ -373,7 +374,7 @@ async function handleFacebookConnectUrl(chatId: number): Promise<Response> {
     return json({ error: 'Erreur génération du lien Facebook' }, 500);
   }
 
-  const url = `${SUPABASE_URL}/functions/v1/facebook-oauth?init=1&nonce=${nonce}`;
+  const url = `${SUPABASE_URL}/functions/v1/facebook-oauth?init=1&nonce=${nonce}` + (add ? '&add=1' : '');
   return json({ url });
 }
 
@@ -433,7 +434,7 @@ Deno.serve(async (req: Request) => {
     if (route === 'coupons'     && req.method === 'POST')  return handleCouponsPost(req, chatId);
     if (parentRoute === 'coupons'  && req.method === 'DELETE') return handleCouponsDelete(chatId, route);
     if (route === 'facebook'       && req.method === 'GET')    return handleFacebookGet(chatId);
-    if (route === 'connect-url' && parentRoute === 'facebook' && req.method === 'GET') return handleFacebookConnectUrl(chatId);
+    if (route === 'connect-url' && parentRoute === 'facebook' && req.method === 'GET') return handleFacebookConnectUrl(chatId, reqUrl.searchParams.get('add') === '1');
     if (parentRoute === 'account' && parts[parts.length - 3] === 'facebook' && req.method === 'DELETE') return handleFacebookAccountDelete(chatId, route);
     if (parentRoute === 'facebook' && route !== 'account' && req.method === 'DELETE') return handleFacebookDelete(chatId, route);
 

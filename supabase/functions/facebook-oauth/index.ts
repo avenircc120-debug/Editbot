@@ -105,16 +105,21 @@ Deno.serve(async (req: Request) => {
   //    les redirects HTTP du navigateur, seulement sur les clics directs).
   if (init === '1') {
     const nonce = url.searchParams.get('nonce') ?? '';
+    const add   = url.searchParams.get('add') === '1';
     if (!nonce) {
       return htmlPage('❌', 'Lien invalide', 'Paramètre nonce manquant. Retourne sur Telegram et réessaie.');
     }
+    // add=1  → l'utilisateur veut connecter un AUTRE compte Facebook (différent utilisateur)
+    //          auth_type=reauthenticate force Facebook à montrer un formulaire de connexion frais
+    //          (l'utilisateur peut entrer les identifiants d'un autre compte)
+    // add=0  → première connexion → dialog standard "Continuer en tant que [nom]"
     const fbUrl = `https://www.facebook.com/v22.0/dialog/oauth`
       + `?client_id=${encodeURIComponent(FACEBOOK_APP_ID)}`
       + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
       + `&state=${encodeURIComponent(nonce)}`
       + `&scope=pages_manage_posts,pages_read_engagement,pages_show_list`
-      + ``;
-    console.log('[facebook-oauth] init redirect → Facebook:', fbUrl.substring(0, 80) + '…');
+      + (add ? '&auth_type=reauthenticate' : '');
+    console.log('[facebook-oauth] init redirect → Facebook (add=' + add + '):', fbUrl.substring(0, 80) + '…');
     return new Response(null, { status: 302, headers: { Location: fbUrl } });
   }
 
