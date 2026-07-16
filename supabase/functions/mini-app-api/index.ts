@@ -124,7 +124,7 @@ async function handleProfile(chatId: number): Promise<Response> {
       .maybeSingle(),
     supabase
       .from('facebook_connections')
-      .select('id, fb_page_name, last_post_at, connected_at')
+      .select('id, fb_page_id, fb_page_name, last_post_at, connected_at')
       .eq('telegram_user_id', chatId)
       .eq('is_active', true),
     supabase
@@ -207,7 +207,7 @@ async function handleMatches(chatId: number, url: URL): Promise<Response> {
 }
 
 async function handleBroadcast(req: Request, chatId: number): Promise<Response> {
-  const { matchId, active, competition, homeTeam, awayTeam } = await req.json().catch(() => ({}));
+  const { matchId, active, competition, homeTeam, awayTeam, pageIds } = await req.json().catch(() => ({}));
   if (!matchId) return json({ error: 'matchId requis' }, 400);
 
   if (active) {
@@ -218,6 +218,7 @@ async function handleBroadcast(req: Request, chatId: number): Promise<Response> 
       home_team:        homeTeam    ?? null,
       away_team:        awayTeam    ?? null,
       is_active:        true,
+      fb_page_ids:      pageIds ?? [],
       created_at:       new Date().toISOString(),
     }, { onConflict: 'telegram_user_id,match_id' });
 
@@ -230,14 +231,19 @@ async function handleBroadcast(req: Request, chatId: number): Promise<Response> 
           .select('fb_page_id, fb_page_name, fb_page_access_token')
           .eq('telegram_user_id', chatId).eq('is_active', true),
       ]);
-      if (matchRow && fbPages && (fbPages as any[]).length > 0) {
+      // Filtrer par pageIds si spécifié
+      const pagesToPost = pageIds && pageIds.length > 0
+        ? (fbPages as any[]).filter((p: any) => pageIds.includes(p.fb_page_id))
+        : (fbPages as any[]);
+      if (matchRow && pagesToPost.length > 0) {
+        (fbPages as any[]) /* shadowed */ ; // keep type happy
         const m   = matchRow as any;
         const mst = m.status ?? 'scheduled';
         const fbMsg = (mst !== 'inprogress' && mst !== 'finished')
           ? formatAnnonceFacebook({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, matchDate: m.match_date })
           : formatScoreFacebook({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null, minute: m.match_minute ?? null });
         Promise.allSettled(
-          (fbPages as Array<{ fb_page_id: string; fb_page_name: string; fb_page_access_token: string }>).map(page =>
+          (pagesToPost as Array<{ fb_page_id: string; fb_page_name: string; fb_page_access_token: string }>).map(page =>
             posterSurPage(page.fb_page_id, page.fb_page_access_token, fbMsg)
               .then(r => console.log(r.success ? `[broadcast] ✓ ${page.fb_page_name}` : `[broadcast] ✗ ${page.fb_page_name}: ${r.error}`))
           )
