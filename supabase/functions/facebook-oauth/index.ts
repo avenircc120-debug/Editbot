@@ -56,12 +56,13 @@ async function sendTelegram(chatId: number, text: string, replyMarkup?: unknown)
 // (mojibake) et le navigateur affiche le code source au lieu de la page.
 // On redirige donc vers une page statique hébergée sur Vercel (Content-Type
 // correct, garanti par Vercel) qui affiche le message à partir de l'URL.
-function htmlPage(icon: string, titre: string, corps: string): Response {
+function htmlPage(icon: string, titre: string, corps: string, close = false): Response {
   if (WEB_APP_URL) {
     const dest = `${WEB_APP_URL}/fb-status.html`
       + `?icon=${encodeURIComponent(icon)}`
       + `&titre=${encodeURIComponent(titre)}`
-      + `&corps=${encodeURIComponent(corps)}`;
+      + `&corps=${encodeURIComponent(corps)}`
+      + (close ? '&action=close' : '');
     return new Response(null, { status: 302, headers: { Location: dest } });
   }
   // Filet de sécurité si WEB_APP_URL n'est pas configuré (ne devrait pas arriver en prod).
@@ -112,7 +113,7 @@ Deno.serve(async (req: Request) => {
       + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
       + `&state=${encodeURIComponent(nonce)}`
       + `&scope=pages_manage_posts,pages_read_engagement,pages_show_list`
-      + `&display=touch`;
+      + `&auth_type=rerequest`;
     console.log('[facebook-oauth] init redirect → Facebook:', fbUrl.substring(0, 80) + '…');
     return new Response(null, { status: 302, headers: { Location: fbUrl } });
   }
@@ -225,7 +226,7 @@ Deno.serve(async (req: Request) => {
 
     console.log('[facebook-oauth] ✅ Connexion réussie pour', telegramUserId);
     return htmlPage('✅', 'Facebook connecté !',
-      'Ta Page est connectée. Tu peux fermer cette page et retourner sur Telegram.');
+      'Ta Page est connectée. Tu peux fermer cette page et retourner sur Telegram.', true);
 
   } catch (e) {
     console.error('[facebook-oauth] ❌ Exception non gérée:', e);
