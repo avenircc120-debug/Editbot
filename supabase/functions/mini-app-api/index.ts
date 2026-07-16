@@ -358,7 +358,7 @@ async function handleFacebookAccountDelete(chatId: number, fbUserId: string): Pr
 }
 
 /** Génère un lien OAuth Facebook à usage unique (nonce anti-CSRF, valable 10 min).
- *  Si add=true, le lien force reauthenticate pour permettre un autre compte Facebook. */
+ *  Si add=true, le paramètre est transmis pour identifier une demande d'ajout de compte. */
 async function handleFacebookConnectUrl(chatId: number, add: boolean): Promise<Response> {
   const nonce = crypto.randomUUID();
   const { error } = await supabase
