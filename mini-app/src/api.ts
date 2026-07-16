@@ -15,8 +15,10 @@ export interface League {
 
 export interface FBPage {
   id: number;
-  fb_page_id: string;       // identifiant Facebook de la page (pour filtrer les posts)
+  fb_page_id: string;
   fb_page_name: string;
+  fb_user_id: string;
+  fb_user_name: string;
   last_post_at: string | null;
   created_at: string;
 }
@@ -142,39 +144,16 @@ export async function toggleBroadcast(
   token: string,
   matchId: string,
   active: boolean,
-  metadata?: {
-    competition?: string;
-    homeTeam?: string;
-    awayTeam?: string;
-    pageIds?: string[];   // fb_page_id des pages choisies (vide = toutes)
-  }
+  pageIds?: string[],
+  competition?: string,
+  homeTeam?: string,
+  awayTeam?: string
 ): Promise<void> {
   const res = await apiFetch('/broadcast', token, {
     method: 'POST',
-    body: JSON.stringify({ matchId, active, ...metadata }),
+    body: JSON.stringify({ matchId, active, pageIds, competition, homeTeam, awayTeam }),
   });
-  if (!res.ok) throw new Error('Erreur toggle diffusion');
-}
-
-// ─── Facebook ─────────────────────────────────────────────────────────────────
-
-export async function getFacebookPages(token: string): Promise<FBPage[]> {
-  const res = await apiFetch('/facebook', token);
-  if (!res.ok) throw new Error('Erreur pages Facebook');
-  const data = await res.json();
-  return (data as { pages: FBPage[] }).pages;
-}
-
-export async function disconnectFacebookPage(token: string, pageId: number): Promise<void> {
-  const res = await apiFetch(`/facebook/${pageId}`, token, { method: 'DELETE' });
-  if (!res.ok) throw new Error('Erreur déconnexion Facebook');
-}
-
-export async function getFacebookConnectUrl(token: string): Promise<string> {
-  const res = await apiFetch('/facebook/connect-url', token);
-  if (!res.ok) throw new Error('Erreur génération du lien Facebook');
-  const data = await res.json();
-  return (data as { url: string }).url;
+  if (!res.ok) throw new Error('Erreur diffusion');
 }
 
 // ─── Wallet ───────────────────────────────────────────────────────────────────
@@ -187,19 +166,19 @@ export async function getWallet(token: string): Promise<WalletData> {
 
 export async function requestWalletOperation(
   token: string,
-  action: 'depot' | 'retrait',
+  type: 'depot' | 'retrait',
   amount: number,
-  methode?: string,
+  methode: string,
   note?: string
 ): Promise<void> {
   const res = await apiFetch('/wallet', token, {
     method: 'POST',
-    body: JSON.stringify({ action, amount, methode, note }),
+    body: JSON.stringify({ type, amount, methode, note }),
   });
   if (!res.ok) throw new Error('Erreur opération wallet');
 }
 
-// ─── Coupons ──────────────────────────────────────────────────────────────────
+// ─── Coupons ─────────────────────────────────────────────────────────────────
 
 export async function getCoupons(token: string): Promise<Coupon[]> {
   const res = await apiFetch('/coupons', token);
@@ -224,6 +203,34 @@ export async function addCoupon(
 export async function deleteCoupon(token: string, couponId: number): Promise<void> {
   const res = await apiFetch(`/coupons/${couponId}`, token, { method: 'DELETE' });
   if (!res.ok) throw new Error('Erreur suppression coupon');
+}
+
+// ─── Facebook ─────────────────────────────────────────────────────────────────
+
+export async function getFacebookPages(token: string): Promise<FBPage[]> {
+  const res = await apiFetch('/facebook', token);
+  if (!res.ok) throw new Error('Erreur pages Facebook');
+  const data = await res.json();
+  return (data as { pages: FBPage[] }).pages;
+}
+
+export async function getFacebookConnectUrl(token: string): Promise<string> {
+  const res = await apiFetch('/facebook/connect-url', token);
+  if (!res.ok) throw new Error('Erreur génération lien Facebook');
+  const data = await res.json();
+  return (data as { url: string }).url;
+}
+
+/** Déconnecte une page individuelle (soft delete par id). */
+export async function disconnectFacebookPage(token: string, pageId: number): Promise<void> {
+  const res = await apiFetch(`/facebook/${pageId}`, token, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Erreur déconnexion page');
+}
+
+/** Déconnecte toutes les pages d'un compte Facebook (par fb_user_id). */
+export async function disconnectFacebookAccount(token: string, fbUserId: string): Promise<void> {
+  const res = await apiFetch(`/facebook/account/${encodeURIComponent(fbUserId)}`, token, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Erreur déconnexion compte Facebook');
 }
 
 // ─── Live counts par compétition ─────────────────────────────────────────────

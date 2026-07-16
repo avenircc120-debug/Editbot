@@ -124,7 +124,7 @@ async function handleProfile(chatId: number): Promise<Response> {
       .maybeSingle(),
     supabase
       .from('facebook_connections')
-      .select('id, fb_page_id, fb_page_name, last_post_at, connected_at')
+      .select('id, fb_page_id, fb_page_name, fb_user_id, fb_user_name, last_post_at, connected_at')
       .eq('telegram_user_id', chatId)
       .eq('is_active', true),
     supabase
@@ -328,9 +328,11 @@ async function handleCouponsDelete(chatId: number, couponId: string): Promise<Re
 async function handleFacebookGet(chatId: number): Promise<Response> {
   const { data } = await supabase
     .from('facebook_connections')
-    .select('id, fb_page_name, last_post_at, connected_at')
+    .select('id, fb_page_id, fb_page_name, fb_user_id, fb_user_name, last_post_at, connected_at')
     .eq('telegram_user_id', chatId)
-    .eq('is_active', true);
+    .eq('is_active', true)
+    .order('fb_user_id', { ascending: true })
+    .order('fb_page_name', { ascending: true });
   return json({ pages: data ?? [] });
 }
 
@@ -339,6 +341,18 @@ async function handleFacebookDelete(chatId: number, pageId: string): Promise<Res
     .from('facebook_connections')
     .update({ is_active: false, updated_at: new Date().toISOString() })
     .eq('id', pageId)
+    .eq('telegram_user_id', chatId);
+  return json({ ok: true });
+}
+
+
+/** Déconnecte toutes les pages d'un compte Facebook (par fb_user_id). */
+async function handleFacebookAccountDelete(chatId: number, fbUserId: string): Promise<Response> {
+  if (!fbUserId) return json({ error: 'fb_user_id requis' }, 400);
+  await supabase
+    .from('facebook_connections')
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq('fb_user_id', fbUserId)
     .eq('telegram_user_id', chatId);
   return json({ ok: true });
 }
@@ -420,7 +434,8 @@ Deno.serve(async (req: Request) => {
     if (parentRoute === 'coupons'  && req.method === 'DELETE') return handleCouponsDelete(chatId, route);
     if (route === 'facebook'       && req.method === 'GET')    return handleFacebookGet(chatId);
     if (route === 'connect-url' && parentRoute === 'facebook' && req.method === 'GET') return handleFacebookConnectUrl(chatId);
-    if (parentRoute === 'facebook' && req.method === 'DELETE') return handleFacebookDelete(chatId, route);
+    if (parentRoute === 'account' && parts[parts.length - 3] === 'facebook' && req.method === 'DELETE') return handleFacebookAccountDelete(chatId, route);
+    if (parentRoute === 'facebook' && route !== 'account' && req.method === 'DELETE') return handleFacebookDelete(chatId, route);
 
     return json({ error: 'Route inconnue' }, 404);
   } catch (err) {

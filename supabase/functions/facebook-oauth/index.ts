@@ -18,6 +18,7 @@ import {
   prolongerToken,
   recupererPages,
   recupererFbUserId,
+  recupererNomUtilisateur,
 } from '../_shared/facebook.ts';
 
 const SUPABASE_URL    = Deno.env.get('SUPABASE_URL')              ?? '';
@@ -194,6 +195,7 @@ Deno.serve(async (req: Request) => {
       const { error: upsertErr } = await supabase.from('facebook_connections').upsert({
         telegram_user_id:     telegramUserId,
         fb_user_id:           fbUserId,
+        fb_user_name:         fbUserName || null,
         fb_page_id:           page.id,
         fb_page_name:         page.name,
         fb_page_access_token: page.access_token,

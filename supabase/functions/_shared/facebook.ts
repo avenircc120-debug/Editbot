@@ -176,3 +176,19 @@ export async function posterSurPage(
     return { success: false, error: String(e) };
   }
 }
+
+/** Récupère le nom affiché du compte Facebook connecté (ex: "Jean Dupont"). */
+export async function recupererNomUtilisateur(token: string): Promise<string> {
+  try {
+    const res = await fetch(`${FB_API}/me?fields=id,name&access_token=${encodeURIComponent(token)}`);
+    const data = await safeJson(res);
+    if (!data || data.error) {
+      console.warn('[recupererNomUtilisateur] Erreur:', JSON.stringify(data?.error ?? data));
+      return '';
+    }
+    return data.name ?? '';
+  } catch (err) {
+    console.error('[recupererNomUtilisateur] Exception:', err);
+    return '';
+  }
+}

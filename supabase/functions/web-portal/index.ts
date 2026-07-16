@@ -91,8 +91,8 @@ async function handleGet(token, url) {
     supabase.from('wallets').select('balance').eq('telegram_user_id', chatId).maybeSingle(),
     supabase.from('wallet_transactions').select('id,type,amount,status,methode,note,created_at')
       .eq('telegram_user_id', chatId).order('created_at', { ascending: false }).limit(20),
-    supabase.from('facebook_connections').select('id,fb_page_name,connected_at,is_active')
-      .eq('telegram_user_id', chatId).eq('is_active', true).order('connected_at', { ascending: false }),
+    supabase.from('facebook_connections').select('id,fb_page_id,fb_page_name,fb_user_id,fb_user_name,connected_at,is_active')
+      .eq('telegram_user_id', chatId).eq('is_active', true).order('fb_user_id', { ascending: true }).order('fb_page_name', { ascending: true }),
     supabase.from('coupons').select('id,bookmaker,code,description,price,created_at')
       .eq('telegram_user_id', chatId).eq('active', true).order('created_at', { ascending: false }),
   ]);
@@ -121,8 +121,18 @@ async function handlePost(token, req) {
   }
 
   if (body.disconnectFbPageId) {
+    const pid = Number(body.disconnectFbPageId);
+    if (!Number.isInteger(pid) || pid <= 0) return json({ error: 'id invalide' }, 400);
     await supabase.from('facebook_connections').update({ is_active: false })
-      .eq('id', Number(body.disconnectFbPageId)).eq('telegram_user_id', chatId);
+      .eq('id', pid).eq('telegram_user_id', chatId);
+    return json({ ok: true });
+  }
+
+  if (body.disconnectFbAccountId) {
+    const fbUserId = String(body.disconnectFbAccountId).trim();
+    if (!fbUserId) return json({ error: 'fb_user_id requis' }, 400);
+    await supabase.from('facebook_connections').update({ is_active: false })
+      .eq('fb_user_id', fbUserId).eq('telegram_user_id', chatId);
     return json({ ok: true });
   }
 
