@@ -55,21 +55,6 @@ function clavierAvecMonEspace(tab: 'matchs' | 'facebook' | 'wallet' | 'coupons',
   return row.length ? { inline_keyboard: [row] } : undefined;
 }
 
-const BOUTONS_SCORES = () => {
-  const btn = miniAppBtn();
-  return {
-    inline_keyboard: [
-      [
-        { text: '🔴 En direct',    callback_data: 'voir_direct'    },
-        { text: '📅 Aujourd\'hui', callback_data: 'matchs_jour'    },
-      ],
-      [
-        { text: '📆 Programme 7j', callback_data: 'voir_programme' },
-        ...(btn ? [btn] : []),
-      ],
-    ],
-  };
-};
 
 // ─── Utilitaires ───────────────────────────────────────────────────────────────
 
@@ -178,10 +163,10 @@ async function envoyerMatchsEnDirect(chatId: number, competition: string, compet
       const lignes = aVenir.map(m => `⚽ *${m.home_team} vs ${m.away_team}* — ${formatHeure(m.match_date)} UTC`);
       return sendTelegram(chatId,
         `⏸ Aucun match *${competition}* en direct.\n\n📅 *À venir aujourd'hui :*\n${lignes.join('\n')}`,
-        BOUTONS_SCORES(),
+        clavierAvecMonEspace('matchs', '📊 Voir les matchs'),
       );
     }
-    return sendTelegram(chatId, `⏸ Aucun match *${competition}* en direct pour l'instant.`, BOUTONS_SCORES());
+    return sendTelegram(chatId, `⏸ Aucun match *${competition}* en direct pour l'instant.`, clavierAvecMonEspace('matchs', '📊 Voir les matchs'));
   }
 
   await sendTelegram(chatId,
@@ -204,9 +189,9 @@ async function envoyerMatchsDuJour(chatId: number, competition: string, competit
     .order('match_date', { ascending: true });
 
   if (!matchs?.length) {
-    return sendTelegram(chatId, `📭 Pas de match *${competition}* aujourd'hui.`, BOUTONS_SCORES());
+    return sendTelegram(chatId, `📭 Pas de match *${competition}* aujourd'hui.`, clavierAvecMonEspace('matchs', '📊 Voir les matchs'));
   }
-  await sendTelegram(chatId, `📅 *${competition}* — Aujourd'hui\n\n${matchs.map(ligneMatch).join('\n')}`, BOUTONS_SCORES());
+  await sendTelegram(chatId, `📅 *${competition}* — Aujourd'hui\n\n${matchs.map(ligneMatch).join('\n')}`, clavierAvecMonEspace('matchs', '📊 Voir les matchs'));
 }
 
 async function envoyerProgramme(chatId: number, competition: string, competitionId: string): Promise<void> {
@@ -224,7 +209,7 @@ async function envoyerProgramme(chatId: number, competition: string, competition
     .limit(20);
 
   if (!matchs?.length) {
-    return sendTelegram(chatId, `📭 Aucun match *${competition}* dans les 7 prochains jours.`, BOUTONS_SCORES());
+    return sendTelegram(chatId, `📭 Aucun match *${competition}* dans les 7 prochains jours.`, clavierAvecMonEspace('matchs', '📊 Voir les matchs'));
   }
 
   const lignes = matchs.map(m =>
@@ -236,7 +221,7 @@ async function envoyerProgramme(chatId: number, competition: string, competition
 
   await sendTelegram(chatId, `📆 *${competition}* — Programme 7 jours\n\n${chunks[0].join('\n')}`);
   for (let i = 1; i < chunks.length; i++) await sendTelegram(chatId, chunks[i].join('\n'));
-  await sendTelegram(chatId, '_Mis à jour en temps réel._', BOUTONS_SCORES());
+  await sendTelegram(chatId, '_Mis à jour en temps réel._', clavierAvecMonEspace('matchs', '📊 Voir les matchs'));
 }
 
 // ─── Conversation GROQ ─────────────────────────────────────────────────────────
