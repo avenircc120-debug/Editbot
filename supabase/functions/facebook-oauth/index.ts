@@ -109,21 +109,36 @@ Deno.serve(async (req: Request) => {
     if (!nonce) {
       return htmlPage('❌', 'Lien invalide', 'Paramètre nonce manquant. Retourne sur Telegram et réessaie.');
     }
-    // add=1  → l'utilisateur veut connecter un AUTRE compte Facebook (différent utilisateur)
-    //          auth_type=reauthenticate force Facebook à montrer un formulaire de connexion frais
-    //          (l'utilisateur peut entrer les identifiants d'un autre compte)
-    // add=0  → première connexion → dialog standard "Continuer en tant que [nom]"
-    // web.facebook.com est le domaine "no-app-redirect" de Facebook — il n'est pas
-    // enregistré comme App Link Android, donc le téléphone ne redirige pas vers
-    // l'app Facebook et le dialog OAuth s'ouvre dans le vrai navigateur.
-    const fbUrl = `https://web.facebook.com/v22.0/dialog/oauth`
+    const fbUrl = `https://www.facebook.com/v22.0/dialog/oauth`
       + `?client_id=${encodeURIComponent(FACEBOOK_APP_ID)}`
       + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
       + `&state=${encodeURIComponent(nonce)}`
       + `&scope=pages_manage_posts,pages_read_engagement,pages_show_list`
       + (add ? '&auth_type=reauthenticate' : '');
-    console.log('[facebook-oauth] init redirect → Facebook (add=' + add + '):', fbUrl.substring(0, 80) + '…');
-    return new Response(null, { status: 302, headers: { Location: fbUrl } });
+    console.log('[facebook-oauth] init JS-redirect → Facebook (add=' + add + '):', fbUrl.substring(0, 80) + '…');
+    // On utilise une page HTML avec redirect JavaScript au lieu d'un 302 HTTP.
+    // Raison : Android intercepte les redirections HTTP 302 vers *.facebook.com via
+    // App Links (Verified Links) et ouvre l'app Facebook au lieu du navigateur.
+    // Les redirections JavaScript restent dans le contexte du navigateur et ne
+    // déclenchent pas les App Links — le dialog OAuth s'ouvre dans le vrai navigateur.
+    return new Response(
+      `<!DOCTYPE html><html><head><meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      <title>Connexion Facebook…</title>
+      <style>
+        body{margin:0;display:flex;align-items:center;justify-content:center;
+          min-height:100vh;background:#0f1117;font-family:system-ui,sans-serif;color:#e2e8f0}
+        p{text-align:center;font-size:16px;padding:24px}
+        a{color:#1877f2;text-decoration:none;font-weight:600}
+      </style></head>
+      <body>
+        <p>Connexion à Facebook…<br><br>
+          <a href="${fbUrl}">Cliquer ici si la page ne s'ouvre pas automatiquement</a>
+        </p>
+        <script>window.location.replace(${JSON.stringify(fbUrl)});</script>
+      </body></html>`,
+      { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+    );
   }
 
   // ── Cas d'erreur retournée par Facebook (app inactive, accès refusé, etc.) ──
