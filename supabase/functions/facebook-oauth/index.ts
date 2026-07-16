@@ -113,7 +113,10 @@ Deno.serve(async (req: Request) => {
     //          auth_type=reauthenticate force Facebook à montrer un formulaire de connexion frais
     //          (l'utilisateur peut entrer les identifiants d'un autre compte)
     // add=0  → première connexion → dialog standard "Continuer en tant que [nom]"
-    const fbUrl = `https://www.facebook.com/v22.0/dialog/oauth`
+    // web.facebook.com est le domaine "no-app-redirect" de Facebook — il n'est pas
+    // enregistré comme App Link Android, donc le téléphone ne redirige pas vers
+    // l'app Facebook et le dialog OAuth s'ouvre dans le vrai navigateur.
+    const fbUrl = `https://web.facebook.com/v22.0/dialog/oauth`
       + `?client_id=${encodeURIComponent(FACEBOOK_APP_ID)}`
       + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
       + `&state=${encodeURIComponent(nonce)}`
