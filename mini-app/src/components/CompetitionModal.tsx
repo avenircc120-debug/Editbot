@@ -13,7 +13,8 @@ interface Props {
 export default function CompetitionModal({ token, leagues, currentId, onClose, onSelected }: Props) {
   const [updating, setUpdating] = useState<string | null>(null);
   const [counts, setCounts] = useState<MatchCounts>({ liveCounts: {}, scheduledCounts: {} });
-  const [liveOnly, setLiveOnly] = useState(false);
+  const [liveOnly,   setLiveOnly]   = useState(false);
+  const [selError,   setSelError]   = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,7 +61,12 @@ export default function CompetitionModal({ token, leagues, currentId, onClose, o
           <button className="btn-close" onClick={onClose}>×</button>
         </div>
       </div>
-      <div className="modal-list">
+      {selError && (
+          <div style={{ padding: '8px 16px', background: 'var(--error, #f44)', color: '#fff', fontSize: 13, textAlign: 'center' }}>
+            {selError}
+          </div>
+        )}
+        <div className="modal-list">
         {visibleLeagues.map(l => {
           const liveCount      = counts.liveCounts[l.tsdb_id]      ?? 0;
           const scheduledCount = counts.scheduledCounts[l.tsdb_id] ?? 0;
@@ -68,7 +74,7 @@ export default function CompetitionModal({ token, leagues, currentId, onClose, o
             <div
               key={l.tsdb_id}
               className="league-row"
-              onClick={() => !updating && select(l.tsdb_id)}
+              onClick={() => { if (!updating) { setSelError(null); select(l.tsdb_id); } }}
               style={{ opacity: updating && updating !== l.tsdb_id ? 0.5 : 1 }}
             >
               <span className="league-flag">{l.flag}</span>
