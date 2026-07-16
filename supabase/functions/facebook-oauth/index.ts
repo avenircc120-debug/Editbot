@@ -115,30 +115,14 @@ Deno.serve(async (req: Request) => {
       + `&state=${encodeURIComponent(nonce)}`
       + `&scope=pages_manage_posts,pages_read_engagement,pages_show_list`
       + (add ? '&auth_type=reauthenticate' : '');
-    console.log('[facebook-oauth] init JS-redirect → Facebook (add=' + add + '):', fbUrl.substring(0, 80) + '…');
-    // On utilise une page HTML avec redirect JavaScript au lieu d'un 302 HTTP.
-    // Raison : Android intercepte les redirections HTTP 302 vers *.facebook.com via
-    // App Links (Verified Links) et ouvre l'app Facebook au lieu du navigateur.
-    // Les redirections JavaScript restent dans le contexte du navigateur et ne
-    // déclenchent pas les App Links — le dialog OAuth s'ouvre dans le vrai navigateur.
-    return new Response(
-      `<!DOCTYPE html><html><head><meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width,initial-scale=1">
-      <title>Connexion Facebook…</title>
-      <style>
-        body{margin:0;display:flex;align-items:center;justify-content:center;
-          min-height:100vh;background:#0f1117;font-family:system-ui,sans-serif;color:#e2e8f0}
-        p{text-align:center;font-size:16px;padding:24px}
-        a{color:#1877f2;text-decoration:none;font-weight:600}
-      </style></head>
-      <body>
-        <p>Connexion à Facebook…<br><br>
-          <a href="${fbUrl}">Cliquer ici si la page ne s'ouvre pas automatiquement</a>
-        </p>
-        <script>window.location.replace(${JSON.stringify(fbUrl)});</script>
-      </body></html>`,
-      { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
-    );
+    console.log('[facebook-oauth] init → fb-connect.html (add=' + add + '):', fbUrl.substring(0, 80) + '…');
+    // Supabase force Content-Type: text/plain sur son domaine partagé — impossible
+    // de servir du HTML directement. On redirige vers la page Vercel fb-connect.html
+    // qui fait elle-même un window.location.replace() vers Facebook.
+    // Avantage : le redirect JS depuis Vercel ne déclenche pas les App Links Android
+    // (contrairement à un 302 HTTP vers facebook.com qui ouvre l'app Facebook).
+    const connectPage = `${WEB_APP_URL}/fb-connect.html?to=${encodeURIComponent(fbUrl)}`;
+    return new Response(null, { status: 302, headers: { Location: connectPage } });
   }
 
   // ── Cas d'erreur retournée par Facebook (app inactive, accès refusé, etc.) ──

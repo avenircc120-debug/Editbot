@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connexion Facebook…</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:system-ui,sans-serif;background:#0f1117;color:#e2e8f0;
+    display:flex;justify-content:center;align-items:center;min-height:100vh;padding:24px}
+  .c{background:#1a1f2e;border:1px solid #2d3748;border-radius:16px;
+    padding:40px;max-width:420px;width:100%;text-align:center}
+  .i{font-size:48px;margin-bottom:16px}
+  h2{color:#fff;font-size:20px;margin-bottom:12px}
+  p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
+  .btn{
+    display:inline-flex;align-items:center;gap:8px;
+    margin-top:24px;padding:14px 28px;
+    background:#1877f2;color:#fff;
+    border:none;border-radius:12px;
+    font-size:16px;font-weight:600;
+    cursor:pointer;text-decoration:none;
+    transition:opacity .15s;
+  }
+  .btn:hover{opacity:.85}
+</style>
+</head>
+<body>
+  <div class="c">
+    <div class="i">🔵</div>
+    <h2>Connexion Facebook…</h2>
+    <p>Redirection en cours…</p>
+    <a id="fallback" class="btn" style="display:none">
+      Ouvrir Facebook
+    </a>
+  </div>
+  <script>
+    var url = new URLSearchParams(window.location.search).get('to');
+    if (url) {
+      // Redirect JS — reste dans le navigateur, ne déclenche pas les App Links Android
+      window.location.replace(url);
+      // Afficher le bouton de secours après 1.5s si la redirection ne fonctionne pas
+      setTimeout(function() {
+        var btn = document.getElementById('fallback');
+        btn.href = url;
+        btn.style.display = 'inline-flex';
+        document.querySelector('p').textContent = 'Si la page ne s\'ouvre pas automatiquement, appuie sur le bouton.';
+      }, 1500);
+    }
+  </script>
+</body>
+</html>
