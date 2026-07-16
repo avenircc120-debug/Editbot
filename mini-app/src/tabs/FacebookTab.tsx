@@ -16,6 +16,81 @@ function openExternal(url: string) {
   }
 }
 
+// ── Sélecteur de pages ────────────────────────────────────────────────────────
+
+interface PagePickerProps {
+  pages: FBPage[];
+  onConfirm: (pageIds: string[]) => void;
+  onCancel: () => void;
+}
+
+function PagePicker({ pages, onConfirm, onCancel }: PagePickerProps) {
+  const [selected, setSelected] = useState<Set<string>>(new Set(pages.map(p => p.fb_page_id)));
+
+  function toggle(id: string) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 100,
+      display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.55)',
+    }} onClick={onCancel}>
+      <div style={{
+        background: 'var(--card, #1c1c1e)', borderRadius: '16px 16px 0 0',
+        width: '100%', maxWidth: 480, padding: '20px 16px 28px',
+        boxShadow: '0 -4px 24px rgba(0,0,0,0.4)',
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14, color: 'var(--text, #fff)' }}>
+          📘 Sur quelle(s) page(s) diffuser ?
+        </div>
+        {pages.map(page => (
+          <label key={page.fb_page_id} style={{
+            display: 'flex', alignItems: 'center', gap: 10,
+            padding: '10px 4px', cursor: 'pointer',
+            borderBottom: '1px solid rgba(255,255,255,0.07)',
+            color: 'var(--text, #fff)',
+          }}>
+            <input
+              type="checkbox"
+              checked={selected.has(page.fb_page_id)}
+              onChange={() => toggle(page.fb_page_id)}
+              style={{ width: 18, height: 18, accentColor: 'var(--green, #30d158)', cursor: 'pointer' }}
+            />
+            <span style={{ fontSize: 14 }}>{page.fb_page_name}</span>
+          </label>
+        ))}
+        <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+          <button onClick={onCancel} style={{
+            flex: 1, padding: '11px 0', borderRadius: 10, border: 'none',
+            background: 'rgba(255,255,255,0.1)', color: 'var(--text, #fff)',
+            fontSize: 14, cursor: 'pointer',
+          }}>Annuler</button>
+          <button
+            disabled={selected.size === 0}
+            onClick={() => onConfirm([...selected])}
+            style={{
+              flex: 2, padding: '11px 0', borderRadius: 10, border: 'none',
+              background: selected.size === 0 ? 'rgba(255,255,255,0.1)' : 'var(--green, #30d158)',
+              color: selected.size === 0 ? 'rgba(255,255,255,0.4)' : '#000',
+              fontSize: 14, fontWeight: 600, cursor: selected.size === 0 ? 'not-allowed' : 'pointer',
+            }}
+          >
+            Diffuser {selected.size > 0 ? `(${selected.size})` : ''}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── PageRow ───────────────────────────────────────────────────────────────────
+
 interface PageRowProps {
   page: FBPage;
   onDisconnect: (page: FBPage) => void;
@@ -40,66 +115,92 @@ function PageRow({ page, onDisconnect }: PageRowProps) {
   );
 }
 
+// ── BroadcastRow ──────────────────────────────────────────────────────────────
+
 interface BroadcastRowProps {
   match: Match;
   token: string;
+  pages: FBPage[];
   onToggle: (matchId: string, active: boolean) => void;
 }
 
-function BroadcastRow({ match, token, onToggle }: BroadcastRowProps) {
-  const [busy, setBusy] = useState(false);
+function BroadcastRow({ match, token, pages, onToggle }: BroadcastRowProps) {
+  const [busy, setBusy]             = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
 
-  async function handleToggle() {
-    if (busy) return;
+  async function doToggle(pageIds?: string[]) {
     const next = !match.isBroadcasting;
-    onToggle(match.match_id, next); // optimistic
+    onToggle(match.match_id, next);
     setBusy(true);
     try {
       await toggleBroadcast(token, match.match_id, next, {
         competition: match.competition,
-        homeTeam: match.home_team,
-        awayTeam: match.away_team,
+        homeTeam:    match.home_team,
+        awayTeam:    match.away_team,
+        pageIds:     next ? (pageIds ?? []) : undefined,
       });
     } catch {
-      onToggle(match.match_id, !next); // rollback
+      onToggle(match.match_id, !next);
     } finally {
       setBusy(false);
     }
   }
 
+  function handleToggle() {
+    if (busy) return;
+    const next = !match.isBroadcasting;
+    if (next && pages.length > 1) {
+      setShowPicker(true);
+      return;
+    }
+    doToggle(pages.length === 1 ? [pages[0].fb_page_id] : []);
+  }
+
   return (
-    <div className="match-card">
-      <div className="dot-live" />
-      <div className="match-info">
-        {match.isBroadcasting && (
-          <span style={{ fontSize: 11, color: 'var(--green)', marginBottom: 2, display: 'block' }}>
-            📡 Diffusé sur Facebook
-          </span>
-        )}
-        <div className="match-score">
-          {match.home_team} &nbsp;{match.home_score ?? '–'} — {match.away_score ?? '–'}&nbsp; {match.away_team}
+    <>
+      <div className="match-card">
+        <div className="dot-live" />
+        <div className="match-info">
+          {match.isBroadcasting && (
+            <span style={{ fontSize: 11, color: 'var(--green)', marginBottom: 2, display: 'block' }}>
+              📡 Diffusé sur Facebook
+            </span>
+          )}
+          <div className="match-score">
+            {match.home_team}&nbsp;{match.home_score ?? '–'} — {match.away_score ?? '–'}&nbsp;{match.away_team}
+          </div>
+          <div className="match-time">{match.competition}</div>
         </div>
-        <div className="match-time">{match.competition}</div>
+        <div className="match-right">
+          <span className="broadcast-label">Diffuser</span>
+          <button
+            className={`toggle${match.isBroadcasting ? ' on' : ''}`}
+            onClick={handleToggle}
+            disabled={busy}
+            aria-label="Activer/désactiver la diffusion Facebook"
+          />
+        </div>
       </div>
-      <div className="match-right">
-        <span className="broadcast-label">Diffuser</span>
-        <button
-          className={`toggle${match.isBroadcasting ? ' on' : ''}`}
-          onClick={handleToggle}
-          disabled={busy}
-          aria-label="Activer/désactiver la diffusion Facebook"
+
+      {showPicker && (
+        <PagePicker
+          pages={pages}
+          onConfirm={(pageIds) => { setShowPicker(false); doToggle(pageIds); }}
+          onCancel={() => setShowPicker(false)}
         />
-      </div>
-    </div>
+      )}
+    </>
   );
 }
 
+// ── Tab principal ─────────────────────────────────────────────────────────────
+
 export default function FacebookTab({ token }: { token: string }) {
-  const [pages, setPages] = useState<FBPage[]>([]);
+  const [pages,       setPages]       = useState<FBPage[]>([]);
   const [liveMatches, setLiveMatches] = useState<Match[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [connecting, setConnecting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loading,     setLoading]     = useState(true);
+  const [connecting,  setConnecting]  = useState(false);
+  const [error,       setError]       = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -190,7 +291,7 @@ export default function FacebookTab({ token }: { token: string }) {
       )}
 
       {!loading && liveMatches.map(m => (
-        <BroadcastRow key={m.match_id} match={m} token={token} onToggle={optimisticToggle} />
+        <BroadcastRow key={m.match_id} match={m} token={token} pages={pages} onToggle={optimisticToggle} />
       ))}
     </>
   );
