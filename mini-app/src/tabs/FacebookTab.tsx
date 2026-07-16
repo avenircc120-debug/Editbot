@@ -10,17 +10,8 @@ import {
 } from '@/api';
 
 function openExternal(url: string) {
-  // On ouvre dans le navigateur système (Chrome/Safari) via Telegram.WebApp.openLink().
-  // L'URL passée est celle de Supabase (pas facebook.com), donc les App Links Android
-  // ne se déclenchent pas. Dans Chrome/Safari l'utilisateur est déjà connecté à Facebook
-  // → Facebook ne demande pas de vérification 2FA supplémentaire.
-  // Fallback window.location.href pour les environnements hors Telegram (dev).
-  const tg = (window as unknown as { Telegram?: { WebApp?: { openLink?: (url: string) => void } } }).Telegram;
-  if (tg?.WebApp?.openLink) {
-    tg.WebApp.openLink(url);
-  } else {
-    window.location.href = url;
-  }
+  // Ouverture dans le WebView interne de Telegram (comportement voulu).
+  window.location.href = url;
 }
 
 // ── Groupement des pages par compte Facebook ──────────────────────────────────
