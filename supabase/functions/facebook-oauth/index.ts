@@ -113,8 +113,7 @@ Deno.serve(async (req: Request) => {
       + `?client_id=${encodeURIComponent(FACEBOOK_APP_ID)}`
       + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
       + `&state=${encodeURIComponent(nonce)}`
-      + `&scope=pages_manage_posts,pages_read_engagement,pages_show_list`
-      + (add ? '&auth_type=reauthenticate' : '');
+      + `&scope=pages_manage_posts,pages_read_engagement,pages_show_list`;
     console.log('[facebook-oauth] init → fb-connect.html (add=' + add + '):', fbUrl.substring(0, 80) + '…');
     // Supabase force Content-Type: text/plain sur son domaine partagé — impossible
     // de servir du HTML directement. On redirige vers la page Vercel fb-connect.html
