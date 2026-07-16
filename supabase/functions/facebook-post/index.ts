@@ -1,16 +1,18 @@
 /**
  * facebook-post — Diffusion automatique des scores en direct sur les Pages Facebook
  *
- * Body attendu : { matches: [{ matchId, competition, homeTeam, awayTeay, homeScore, awayScore, status }] }
+ * Body attendu : { matches: [{ matchId, competition, homeTeam, awayTeam, homeScore, awayScore, status }] }
  *
  * Flux : fetch-matches détecte un changement de score → appelle cette fonction →
- *        on cherche les utilisateurs qui ont activé explicitement CE match dans
- *        broadcast_selections → on poste sur leurs Pages Facebook actives.
+ *        on cherche les utilisateurs qui ont activé CE match dans broadcast_selections
+ *        → on poste uniquement sur les pages choisies (fb_page_ids) ou toutes si vide.
  *
  * Garanties :
  *   - Idempotence : UNIQUE (connection_id, match_id, post_date) sur facebook_posts_log
  *   - Isolation par item : une erreur ne bloque pas les autres
  *   - Tokens révoqués → désactivation auto + notification Telegram
+ *   - Respect de fb_page_ids : si l'utilisateur a sélectionné des pages spécifiques,
+ *     on ne poste que sur celles-là (et non sur toutes ses pages actives).
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
@@ -71,22 +73,31 @@ Deno.serve(async (req: Request) => {
   const rapport = { postsPublies: 0, erreurs: 0, tokensRevoques: 0, details: [] as string[] };
 
   for (const match of matches) {
-    // ── Étape 1 : utilisateurs ayant activé CE match spécifiquement ────────────
-    // On ne diffuse que pour les utilisateurs qui ont toggle ON ce match
+    // ── Étape 1 : utilisateurs ayant activé CE match + leurs pages choisies ──
     const { data: selections } = await supabase
       .from('broadcast_selections')
-      .select('telegram_user_id')
+      .select('telegram_user_id, fb_page_ids')
       .eq('match_id', match.matchId)
       .eq('is_active', true);
 
-    const userIds = (selections ?? []).map((r: { telegram_user_id: number }) => r.telegram_user_id);
-
-    if (!userIds.length) {
+    if (!selections?.length) {
       rapport.details.push(`Aucun broadcast actif pour ${match.matchId}`);
       continue;
     }
 
-    // ── Étape 2 : Pages Facebook actives de ces utilisateurs ───────────────────
+    // Map : telegram_user_id → Set de fb_page_id autorisés (null = toutes les pages)
+    const pageFilter = new Map<number, Set<string> | null>();
+    const userIds: number[] = [];
+    for (const sel of selections) {
+      const uid = Number(sel.telegram_user_id);
+      userIds.push(uid);
+      const ids = Array.isArray(sel.fb_page_ids) && sel.fb_page_ids.length > 0
+        ? new Set<string>(sel.fb_page_ids as string[])
+        : null; // null = pas de restriction → toutes les pages actives
+      pageFilter.set(uid, ids);
+    }
+
+    // ── Étape 2 : Pages Facebook actives de ces utilisateurs ─────────────────
     const { data: connexions } = await supabase
       .from('facebook_connections')
       .select('id, telegram_user_id, fb_page_id, fb_page_name, fb_page_access_token')
@@ -101,6 +112,14 @@ Deno.serve(async (req: Request) => {
       fb_page_access_token: string;
     }>) ?? []) {
       const telegramId = Number(connexion.telegram_user_id);
+
+      // ── Filtre par pages sélectionnées ────────────────────────────────────
+      const pagesAutorisees = pageFilter.get(telegramId);
+      if (pagesAutorisees !== null && !pagesAutorisees?.has(connexion.fb_page_id)) {
+        // Cette page n'a pas été sélectionnée par l'utilisateur → on passe
+        continue;
+      }
+
       try {
         const message = formatScoreFacebook({
           competition:     match.competition,
@@ -113,7 +132,7 @@ Deno.serve(async (req: Request) => {
           awayGoalDetails: match.awayGoalDetails ?? null,
           minute:          match.minute ?? null,
         });
-        const result  = await posterSurPage(connexion.fb_page_id, connexion.fb_page_access_token, message);
+        const result = await posterSurPage(connexion.fb_page_id, connexion.fb_page_access_token, message);
 
         await supabase.from('facebook_posts_log').upsert({
           connection_id: connexion.id,
