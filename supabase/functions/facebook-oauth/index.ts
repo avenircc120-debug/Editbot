@@ -179,9 +179,10 @@ Deno.serve(async (req: Request) => {
 
     // 2. Token long (60 j) + FB User ID en parallèle
     console.log('[facebook-oauth] Prolongation du token…');
-    const [longToken, fbUserId] = await Promise.all([
+    const [longToken, fbUserId, fbUserName] = await Promise.all([
       prolongerToken(shortToken),
       recupererFbUserId(shortToken),
+      recupererNomUtilisateur(shortToken),
     ]);
     console.log('[facebook-oauth] Long token OK — fbUserId:', fbUserId);
 
