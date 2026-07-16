@@ -15,6 +15,7 @@ export interface League {
 
 export interface FBPage {
   id: number;
+  fb_page_id: string;       // identifiant Facebook de la page (pour filtrer les posts)
   fb_page_name: string;
   last_post_at: string | null;
   created_at: string;
@@ -141,7 +142,12 @@ export async function toggleBroadcast(
   token: string,
   matchId: string,
   active: boolean,
-  metadata?: { competition?: string; homeTeam?: string; awayTeam?: string }
+  metadata?: {
+    competition?: string;
+    homeTeam?: string;
+    awayTeam?: string;
+    pageIds?: string[];   // fb_page_id des pages choisies (vide = toutes)
+  }
 ): Promise<void> {
   const res = await apiFetch('/broadcast', token, {
     method: 'POST',
