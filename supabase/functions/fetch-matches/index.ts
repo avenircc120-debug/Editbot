@@ -1,27 +1,16 @@
 /**
- * fetch-matches — Ingestion des scores en direct (TheSportsDB)
+ * fetch-matches — Ingestion des scores en direct
  *
- * Récupère TOUS les matchs de football de la journée (toutes compétitions
- * confondues, via eventsday.php) et les indexe dans matchs_index (source de
- * vérité des scores en direct, conservée intégralement).
+ * Source primaire   : TheSportsDB (500 appels/jour)
+ *   → eventsday.php : 1 appel = tous les matchs du monde pour une date.
  *
- * Pourquoi "par jour" et non "par ligue" : eventsday.php renvoie en 1 seul
- * appel API tous les matchs du monde entier pour une date donnée, peu importe
- * la compétition. Ça permet de couvrir absolument toutes les ligues sans
- * multiplier les appels (contrairement à l'ancienne version qui faisait
- * 2 appels par ligue suivie et finissait par épuiser le quota journalier
- * en ~1h, laissant le bot "silencieux" le reste de la journée).
+ * Source secondaire : The Odds API (55 appels/jour) — fallback automatique
+ *   → Activé quand le quota TheSportsDB est épuisé.
+ *   → Limité à 2 fenêtres/heure (:00 et :30) pour économiser le quota.
+ *   → Couvre scores en direct + résultats récents + calendrier à venir.
  *
- * Fréquence : ce job tourne toutes les 4 minutes et ré-indexe "aujourd'hui"
- * à chaque passage (1 appel = les scores en direct + le programme du jour
- * à jour en quasi temps réel). Une fois par heure, il élargit aussi la
- * fenêtre à hier + les 3 prochains jours (4 appels de plus) pour garder le
- * programme à jour, sans jamais dépasser le quota gratuit de 500 appels/jour.
- *
- * Dès qu'un score/statut change sur un match, déclenche immédiatement
- * facebook-post pour diffuser ce match aux Pages Facebook concernées.
- *
- * Sécurité : header Authorization: Bearer {CRON_SECRET}
+ * Fréquence cron : toutes les 4 minutes.
+ * Sécurité       : header Authorization: Bearer {CRON_SECRET}
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
@@ -32,15 +21,16 @@ import {
   tsdbTimestampToDate,
   type TsdbMatch,
 } from '../_shared/thesportsdb.ts';
+import { getAllMatchsFallback, type OddsMatchRow } from '../_shared/odds.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const CRON_SECRET  = Deno.env.get('CRON_SECRET') ?? '';
 const supabase     = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Garde-fou : nombre max de matchs traités par appel eventsday (sécurité, pas
-// une limite fonctionnelle — une journée de foot mondiale reste bien en dessous).
 const MAX_EVENEMENTS_PAR_JOUR = 1500;
+
+// ─── Utilitaires ──────────────────────────────────────────────────────────────
 
 function normaliserStatus(strStatus: string | undefined): string {
   switch ((strStatus ?? '').toUpperCase()) {
@@ -55,12 +45,14 @@ function dateISO(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
+// ─── Indexation TheSportsDB ───────────────────────────────────────────────────
+
 async function indexerMatch(ev: TsdbMatch, competition: string): Promise<{ matchId: string; changed: boolean; row: any } | null> {
   if (!ev.strHomeTeam || !ev.strAwayTeam) return null;
   const matchDate = tsdbTimestampToDate(ev.strTimestamp).toISOString();
   const status    = normaliserStatus(ev.strStatus);
-  const homeScore = ev.intHomeScore !== null && ev.intHomeScore !== undefined ? Number(ev.intHomeScore) : null;
-  const awayScore = ev.intAwayScore !== null && ev.intAwayScore !== undefined ? Number(ev.intAwayScore) : null;
+  const homeScore = ev.intHomeScore != null ? Number(ev.intHomeScore) : null;
+  const awayScore = ev.intAwayScore != null ? Number(ev.intAwayScore) : null;
 
   const { data: avant } = await supabase
     .from('matchs_index')
@@ -110,34 +102,16 @@ async function indexerMatch(ev: TsdbMatch, competition: string): Promise<{ match
     return null;
   }
 
-  const changed = !avant
-    || avant.status    !== status
-    || avant.home_score !== homeScore
-    || avant.away_score !== awayScore;
-
+  const changed = !avant || avant.status !== status || avant.home_score !== homeScore || avant.away_score !== awayScore;
   const enDirectOuTermine = status === 'inprogress' || status === 'finished';
 
   return {
     matchId: ev.idEvent,
-    changed:  changed && enDirectOuTermine && homeScore !== null && awayScore !== null,
+    changed: changed && enDirectOuTermine && homeScore !== null && awayScore !== null,
     row: { matchId: ev.idEvent, competition, homeTeam: ev.strHomeTeam, awayTeam: ev.strAwayTeam, homeScore, awayScore, status, homeGoalDetails, awayGoalDetails, minute: matchMinute },
   };
 }
 
-async function diffuserSurFacebook(matches: any[]) {
-  if (!matches.length) return;
-  try {
-    await fetch(`${SUPABASE_URL}/functions/v1/facebook-post`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${CRON_SECRET}` },
-      body:    JSON.stringify({ matches }),
-    });
-  } catch (e) {
-    console.error('[fetch-matches] Erreur appel facebook-post:', e);
-  }
-}
-
-/** Ingère toutes les compétitions pour une journée donnée (1 appel API). */
 async function ingererJournee(dateStr: string, stats: { indexes: number; erreurs: number }, matchsAModifier: any[]): Promise<boolean> {
   const ok = await consommerQuota(supabase, 'thesportsdb');
   if (!ok) {
@@ -161,28 +135,109 @@ async function ingererJournee(dateStr: string, stats: { indexes: number; erreurs
   return true;
 }
 
+// ─── Indexation Odds API (fallback) ──────────────────────────────────────────
+
+async function indexerMatchOdds(ev: OddsMatchRow): Promise<{ changed: boolean; row: any } | null> {
+  if (!ev.home_team || !ev.away_team) return null;
+
+  const { data: avant } = await supabase
+    .from('matchs_index')
+    .select('status, home_score, away_score')
+    .eq('match_id', ev.match_id)
+    .maybeSingle();
+
+  const { error } = await supabase.from('matchs_index').upsert({
+    match_id:      ev.match_id,
+    home_team:     ev.home_team,
+    away_team:     ev.away_team,
+    competition:   ev.competition,
+    tournament_id: ev.tournament_id,
+    match_date:    ev.match_date,
+    status:        ev.status,
+    home_score:    ev.home_score,
+    away_score:    ev.away_score,
+    updated_at:    new Date().toISOString(),
+  }, { onConflict: 'match_id' });
+
+  if (error) {
+    console.warn('[odds-index]', ev.match_id, error.message);
+    return null;
+  }
+
+  const changed = !avant || avant.status !== ev.status || avant.home_score !== ev.home_score || avant.away_score !== ev.away_score;
+  const enDirectOuTermine = ev.status === 'inprogress' || ev.status === 'finished';
+
+  return {
+    changed: changed && enDirectOuTermine && ev.home_score !== null && ev.away_score !== null,
+    row: { matchId: ev.match_id, competition: ev.competition, homeTeam: ev.home_team, awayTeam: ev.away_team, homeScore: ev.home_score, awayScore: ev.away_score, status: ev.status, homeGoalDetails: null, awayGoalDetails: null, minute: null },
+  };
+}
+
+async function ingererFallbackOdds(stats: { indexes: number; erreurs: number; fallback: boolean }, matchsAModifier: any[]): Promise<void> {
+  console.log('[fetch-matches] TheSportsDB épuisé → activation fallback Odds API');
+  stats.fallback = true;
+
+  const consommer = (api: string) => consommerQuota(supabase, api as any);
+  const matchs = await getAllMatchsFallback(consommer);
+
+  for (const ev of matchs) {
+    const res = await indexerMatchOdds(ev);
+    if (!res) { stats.erreurs++; continue; }
+    stats.indexes++;
+    if (res.changed) matchsAModifier.push(res.row);
+  }
+}
+
+// ─── Diffusion Facebook ───────────────────────────────────────────────────────
+
+async function diffuserSurFacebook(matches: any[]) {
+  if (!matches.length) return;
+  try {
+    await fetch(`${SUPABASE_URL}/functions/v1/facebook-post`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${CRON_SECRET}` },
+      body:    JSON.stringify({ matches }),
+    });
+  } catch (e) {
+    console.error('[fetch-matches] Erreur appel facebook-post:', e);
+  }
+}
+
+// ─── Handler principal ────────────────────────────────────────────────────────
+
 Deno.serve(async (req) => {
   const auth = req.headers.get('Authorization') ?? '';
   if (CRON_SECRET && auth !== `Bearer ${CRON_SECRET}`) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
   }
 
-  const stats = { indexes: 0, erreurs: 0, diffuses: 0 };
+  const stats = { indexes: 0, erreurs: 0, diffuses: 0, fallback: false };
   const matchsAModifier: any[] = [];
   const now = new Date();
 
-  // Aujourd'hui : à chaque exécution (toutes les 4 min) → scores en direct
-  // et programme du jour quasi temps réel, pour TOUTES les compétitions.
+  // ── TheSportsDB (source primaire) ─────────────────────────────────────────
   const continuer = await ingererJournee(dateISO(now), stats, matchsAModifier);
 
-  // Une fois par heure : élargit à hier + les 3 prochains jours pour garder
-  // le programme à jour (résultats de fin de journée, matchs à venir).
+  // Une fois par heure : hier + 3 prochains jours (programme complet).
   if (continuer && now.getUTCMinutes() < 4) {
     for (const decalage of [-1, 1, 2, 3]) {
       const d = new Date(now);
       d.setUTCDate(d.getUTCDate() + decalage);
       const ok = await ingererJournee(dateISO(d), stats, matchsAModifier);
       if (!ok) break;
+    }
+  }
+
+  // ── Odds API (fallback automatique) ──────────────────────────────────────
+  // Activé quand TheSportsDB est épuisé, dans une fenêtre de 30 min
+  // (:00-:03 ou :30-:33) pour limiter à ~2 cycles/heure max.
+  if (!continuer) {
+    const min = now.getUTCMinutes();
+    const estFenetreOdds = min < 4 || (min >= 30 && min < 34);
+    if (estFenetreOdds) {
+      await ingererFallbackOdds(stats, matchsAModifier);
+    } else {
+      console.log('[fetch-matches] TheSportsDB épuisé — hors fenêtre Odds API, skip.');
     }
   }
 
