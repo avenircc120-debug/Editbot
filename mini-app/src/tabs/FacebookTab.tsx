@@ -10,11 +10,10 @@ import {
 } from '@/api';
 
 function openExternal(url: string) {
-  if (window.Telegram?.WebApp?.openLink) {
-    window.Telegram.WebApp.openLink(url, { try_instant_view: false });
-  } else {
-    window.open(url, '_blank', 'noopener');
-  }
+  // window.location.href navigue dans le WebView de Telegram.
+  // Le WebView Telegram ne déclenche PAS les App Links Android — contrairement à
+  // openLink() qui appelle startActivity() et ouvre l'app Facebook via App Links.
+  window.location.href = url;
 }
 
 // ── Groupement des pages par compte Facebook ──────────────────────────────────
