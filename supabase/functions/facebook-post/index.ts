@@ -36,6 +36,8 @@ interface LiveMatch {
   homeScore:        number;
   awayScore:        number;
   status:           string;
+  rawStatus?:       string | null;
+  eventType?:       string | null;
   homeGoalDetails?: string | null;
   awayGoalDetails?: string | null;
   minute?:          number | null;
@@ -128,6 +130,8 @@ Deno.serve(async (req: Request) => {
           homeScore:       match.homeScore,
           awayScore:       match.awayScore,
           status:          match.status,
+          rawStatus:       match.rawStatus ?? null,
+          eventType:       match.eventType ?? null,
           homeGoalDetails: match.homeGoalDetails ?? null,
           awayGoalDetails: match.awayGoalDetails ?? null,
           minute:          match.minute ?? null,
