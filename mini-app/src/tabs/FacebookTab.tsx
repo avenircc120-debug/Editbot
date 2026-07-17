@@ -10,8 +10,15 @@ import {
 } from '@/api';
 
 function openExternal(url: string) {
-  // Ouverture dans le WebView interne de Telegram (comportement voulu).
-  window.location.href = url;
+  // Facebook OAuth doit s'ouvrir dans le navigateur externe.
+  // Le WebView interne de Telegram déclenche la page «Contrôles de sécurité»
+  // de Facebook qui tourne en boucle sans jamais rediriger.
+  const tg = (window as any).Telegram?.WebApp;
+  if (tg?.openLink) {
+    tg.openLink(url, { try_instant_view: false });
+  } else {
+    window.open(url, '_blank');
+  }
 }
 
 // ── Groupement des pages par compte Facebook ──────────────────────────────────
