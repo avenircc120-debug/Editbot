@@ -11,20 +11,16 @@ body{font-family:system-ui,sans-serif;background:#0f1117;color:#e2e8f0;display:f
 .i{font-size:48px;margin-bottom:14px}
 h2{color:#fff;font-size:20px;margin-bottom:10px}
 p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
-.step{display:flex;align-items:flex-start;gap:12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:13px 14px;margin-top:12px;text-align:left}
-.step-num{background:#1877f2;color:#fff;font-size:12px;font-weight:700;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
-.step-text{font-size:13px;color:#cbd5e0;line-height:1.6}
-.step-text strong{color:#fff}
-.step.done{border-color:rgba(72,187,120,0.4);background:rgba(72,187,120,0.05)}
-.step.done .step-num{background:#38a169}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;margin-top:18px;padding:14px 28px;width:100%;box-sizing:border-box;background:#1877f2;color:#fff;border:none;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer;text-decoration:none;transition:opacity .15s}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;margin-top:16px;padding:14px 28px;width:100%;box-sizing:border-box;color:#fff;border:none;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer;text-decoration:none;transition:opacity .15s}
 .btn:hover{opacity:.85}
 .btn:disabled{opacity:.4;cursor:not-allowed}
-.btn-green{background:#38a169}
-.btn-green:hover{opacity:.85}
+.btn-fb{background:#1877f2}
+.btn-logout{background:#e53e3e}
+.btn-logout:hover{background:#c53030;opacity:1}
 .btn-add{display:inline-flex;align-items:center;justify-content:center;gap:8px;margin-top:10px;padding:13px 24px;width:100%;box-sizing:border-box;background:rgba(24,119,242,0.15);color:#a0c4ff;border:1px solid rgba(24,119,242,0.3);border-radius:12px;font-size:15px;cursor:pointer;transition:opacity .15s}
 .btn-add:hover{opacity:.85}
 .btn-sec{display:block;margin-top:12px;font-size:13px;color:#718096;cursor:pointer;background:none;border:none;text-decoration:underline}
+.hint{margin-top:14px;font-size:12px;color:#4a5568;line-height:1.6}
 .loader{width:18px;height:18px;border:3px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
 @keyframes spin{to{transform:rotate(360deg)}}
 </style>
@@ -43,21 +39,21 @@ p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
   var apiUrl = (params.get('api') || '').replace(/\/+$/, '');
   var isAdd  = params.get('add') === '1';
   var sdkReady = false;
-  var logoutDone = false;
 
   var FB_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="white" style="flex-shrink:0"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>';
 
-  function setIcon(v)  { document.getElementById('icon').textContent  = v; }
-  function setTitre(v) { document.getElementById('titre').textContent = v; }
-  function setCorps(v) { document.getElementById('corps').textContent = v; }
-  function clearAct()  { document.getElementById('actions').innerHTML = ''; }
+  function q(id) { return document.getElementById(id); }
+  function setIcon(v)  { q('icon').textContent  = v; }
+  function setTitre(v) { q('titre').textContent = v; }
+  function setCorps(v) { q('corps').textContent = v; }
+  function clearAct()  { q('actions').innerHTML = ''; }
 
-  function addBtn(html, cls, fn, disabled) {
+  function mkBtn(html, cls, fn, disabled) {
     var b = document.createElement('button');
-    b.className = cls; b.innerHTML = html;
+    b.className = 'btn ' + cls; b.innerHTML = html;
     if (disabled) b.disabled = true;
-    b.onclick = fn;
-    document.getElementById('actions').appendChild(b);
+    if (fn) b.onclick = fn;
+    q('actions').appendChild(b);
     return b;
   }
 
@@ -70,32 +66,36 @@ p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
     setIcon('✅'); setTitre('Facebook connecté !');
     setCorps('Pages connectées : ' + (names || []).join(', ') + '.');
     clearAct();
-    if (addUrl) addBtn('➕ Connecter un autre compte Facebook', 'btn-add', function() { window.location.href = addUrl; });
-    addBtn(FB_ICON + ' Retourner sur Telegram', 'btn', goTelegram);
+    if (addUrl) {
+      var ab = document.createElement('button');
+      ab.className = 'btn-add'; ab.textContent = '➕ Connecter un autre compte Facebook';
+      ab.onclick = function() { window.location.href = addUrl; };
+      q('actions').appendChild(ab);
+    }
+    mkBtn(FB_ICON + ' Retourner sur Telegram', 'btn-fb', goTelegram);
     var h = document.createElement('p'); h.className = 'btn-sec';
     h.textContent = 'Si le bouton ne fonctionne pas, ferme ce navigateur manuellement.';
-    document.getElementById('actions').appendChild(h);
+    q('actions').appendChild(h);
   }
 
   function showError(msg) {
     setIcon('❌'); setTitre('Erreur de connexion');
     setCorps(msg || 'Une erreur est survenue. Retourne sur Telegram et réessaie.');
     clearAct();
-    addBtn('↩ Retourner sur Telegram', 'btn', goTelegram);
+    mkBtn('↩ Retourner sur Telegram', 'btn-fb', goTelegram);
   }
 
   function showCancelled() {
     setIcon('🚫'); setTitre('Connexion annulée');
     setCorps("Tu as refusé l'accès. Retourne sur Telegram et recommence.");
     clearAct();
-    addBtn('↩ Retourner sur Telegram', 'btn', goTelegram);
+    mkBtn('↩ Retourner sur Telegram', 'btn-fb', goTelegram);
   }
 
-  /* Envoie le token au backend */
   function sendToken(token) {
     setIcon('⏳'); setTitre('Finalisation…'); setCorps('Enregistrement de vos Pages…'); clearAct();
     fetch(apiUrl + '/functions/v1/facebook-oauth', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ token: token, nonce: nonce })
     })
     .then(function(r) { return r.json(); })
@@ -103,15 +103,58 @@ p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
     .catch(function() { showError('Impossible de contacter le serveur. Vérifie ta connexion.'); });
   }
 
-  /* Lance FB.login() — DOIT être déclenché par un clic utilisateur */
+  /* Doit être appelé depuis un vrai clic */
   function doLogin() {
-    FB.login(function(response) {
-      if (response.authResponse) sendToken(response.authResponse.accessToken);
+    FB.login(function(resp) {
+      if (resp.authResponse) sendToken(resp.authResponse.accessToken);
       else showCancelled();
     }, { scope: 'pages_manage_posts,pages_read_engagement,pages_show_list' });
   }
 
-  /* ── Fallback : ancien flux redirect (?to=…) ─────────────────────────────── */
+  /* Force la déconnexion Facebook (SDK + cookies via iframe logout) */
+  function forceLogout(btn, connectBtn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loader"></span> Déconnexion en cours…';
+
+    function afterLogout() {
+      /* Iframe invisible vers facebook.com/logout.php pour vider les cookies */
+      var frame = document.createElement('iframe');
+      frame.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none';
+      frame.src = 'https://www.facebook.com/logout.php';
+      document.body.appendChild(frame);
+
+      setTimeout(function() {
+        try { document.body.removeChild(frame); } catch(e) {}
+        /* Afficher le bouton de connexion */
+        btn.style.display = 'none';
+        setCorps('Déconnexion effectuée. Connecte-toi maintenant avec ton nouveau compte Facebook.');
+        connectBtn.disabled = false;
+        connectBtn.innerHTML = FB_ICON + ' Se connecter avec un autre compte';
+        /* Hint */
+        var existing = q('hint-msg');
+        if (!existing) {
+          var h = document.createElement('p'); h.id = 'hint-msg'; h.className = 'hint';
+          h.textContent = 'Si Facebook te montre encore "Réassocier", clique sur "Modifier les paramètres" pour choisir un autre compte.';
+          q('actions').appendChild(h);
+        }
+      }, 2500);
+    }
+
+    /* Déconnexion SDK si session active */
+    if (sdkReady) {
+      FB.getLoginStatus(function(resp) {
+        if (resp.status === 'connected') {
+          FB.logout(function() { afterLogout(); });
+        } else {
+          afterLogout();
+        }
+      });
+    } else {
+      afterLogout();
+    }
+  }
+
+  /* ── Fallback redirect (?to=…) ───────────────────────────────────────────── */
   if (!appId && params.get('to')) {
     var oauthUrl = params.get('to');
     if (!oauthUrl) { setIcon('❌'); setCorps('Lien invalide.'); }
@@ -120,91 +163,52 @@ p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
   /* ── Flux SDK JS Facebook (?appId=…&nonce=…&api=…) ──────────────────────── */
   } else if (appId && nonce && apiUrl) {
 
-    /* ── Mode "ajouter un autre compte" ──────────────────────────────────── */
     if (isAdd) {
-      document.getElementById('main').innerHTML =
-        '<div class="i">👤</div>' +
-        '<h2>Ajouter un autre compte Facebook</h2>' +
-        '<p style="color:#a0aec0;font-size:14px;line-height:1.7">Pour connecter un <strong style="color:#fff">compte différent</strong>, suis ces deux étapes :</p>' +
-        '<div class="step" id="step1">' +
-          '<div class="step-num">1</div>' +
-          '<div class="step-text"><strong>Déconnecte-toi de Facebook</strong><br>Ouvre Facebook dans un onglet, clique sur ton profil → <em>Se déconnecter</em>. Ensuite connecte-toi avec le nouveau compte.</div>' +
-        '</div>' +
-        '<button id="btn-fb" class="btn" style="margin-top:14px" onclick="openFbLogout()">🔒 Ouvrir Facebook pour changer de compte</button>' +
-        '<div class="step" id="step2" style="opacity:.4">' +
-          '<div class="step-num">2</div>' +
-          '<div class="step-text"><strong>Connecte le nouveau compte</strong><br>Une fois connecté avec le nouveau compte Facebook, clique le bouton ci-dessous.</div>' +
-        '</div>' +
-        '<button id="btn-connect" class="btn btn-green" disabled style="margin-top:14px"><span class="loader"></span> Attente étape 1…</button>';
+      /* Mode "ajouter un autre compte" */
+      setIcon('👤');
+      setTitre('Ajouter un autre compte');
+      setCorps('Pour connecter un compte Facebook différent, commence par te déconnecter, puis connecte-toi avec le nouveau compte.');
+      clearAct();
 
-      window.openFbLogout = function() {
-        window.open('https://www.facebook.com/logout.php', '_blank');
-        /* Après 4s, on suppose que l'utilisateur a eu le temps de changer de compte */
-        setTimeout(function() {
-          document.getElementById('step1').classList.add('done');
-          document.getElementById('step2').style.opacity = '1';
-          var btn = document.getElementById('btn-connect');
-          if (btn) {
-            /* Activer seulement si le SDK est prêt */
-            if (sdkReady) {
-              logoutDone = true;
-              btn.disabled = false;
-              btn.innerHTML = FB_ICON + ' Se connecter avec le nouveau compte';
-              btn.onclick = function() { doLogin(); };
-            } else {
-              logoutDone = true; /* Le SDK activera le bouton quand il sera prêt */
-            }
-          }
-        }, 4000);
-      };
+      /* Bouton de connexion (caché au départ) */
+      var connectBtn = mkBtn('<span class="loader"></span> Chargement…', 'btn-fb', null, true);
+      connectBtn.style.display = 'none';
+
+      /* Bouton de déconnexion forcée */
+      var logoutBtn = mkBtn('🔒 Se déconnecter de Facebook', 'btn-logout', null, true);
+
+      logoutBtn.onclick = function() { forceLogout(logoutBtn, connectBtn); };
+      connectBtn.onclick = function() { if (sdkReady) doLogin(); };
 
       window.fbAsyncInit = function() {
         FB.init({ appId: appId, cookie: true, xfbml: false, version: 'v22.0' });
-        /* Déconnecte proprement le SDK pour éviter la session cached */
-        FB.getLoginStatus(function(resp) {
-          function ready() {
-            sdkReady = true;
-            if (logoutDone) {
-              var btn = document.getElementById('btn-connect');
-              if (btn) {
-                btn.disabled = false;
-                btn.innerHTML = FB_ICON + ' Se connecter avec le nouveau compte';
-                btn.onclick = function() { doLogin(); };
-              }
-            }
-          }
-          if (resp.status === 'connected') {
-            FB.logout(function() { ready(); });
-          } else {
-            ready();
-          }
-        });
+        sdkReady = true;
+        logoutBtn.disabled = false;
+        /* Afficher aussi le bouton connect (caché mais prêt) */
+        connectBtn.style.display = 'inline-flex';
+        connectBtn.disabled = true; /* reste désactivé jusqu'après logout */
       };
 
-    /* ── Mode connexion normale ───────────────────────────────────────────── */
     } else {
+      /* Mode connexion normale */
       setIcon('👤');
       setTitre('Connecter votre compte Facebook');
       setCorps("Appuie sur le bouton pour autoriser l'accès à tes Pages Facebook.");
       clearAct();
 
-      var connectBtn = addBtn(
-        '<span class="loader"></span> Chargement…',
-        'btn',
-        function() { if (sdkReady) doLogin(); },
-        true
-      );
+      var connectBtn2 = mkBtn('<span class="loader"></span> Chargement…', 'btn-fb', null, true);
+      connectBtn2.onclick = function() { if (sdkReady) doLogin(); };
 
       window.fbAsyncInit = function() {
         FB.init({ appId: appId, cookie: true, xfbml: false, version: 'v22.0' });
         FB.AppEvents.logPageView();
         sdkReady = true;
-        connectBtn.disabled = false;
-        connectBtn.innerHTML = FB_ICON + ' Se connecter avec Facebook';
+        connectBtn2.disabled = false;
+        connectBtn2.innerHTML = FB_ICON + ' Se connecter avec Facebook';
       };
     }
 
-    /* Chargement du SDK dans les deux cas */
+    /* Chargement du SDK */
     (function(d, s, id) {
       var js, fjs = d.getElementsByTagName(s)[0];
       if (d.getElementById(id)) return;
