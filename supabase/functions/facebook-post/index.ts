@@ -16,7 +16,7 @@
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { posterSurPage } from '../_shared/facebook.ts';
+import { posterSurPage, editerPost } from '../_shared/facebook.ts';
 import { formatScoreFacebook } from '../_shared/templates.ts';
 
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL')              ?? '';
@@ -123,6 +123,15 @@ Deno.serve(async (req: Request) => {
       }
 
       try {
+        // ── Vérifier si un post existe déjà pour ce match aujourd'hui ─────
+        const { data: existingLog } = await supabase
+          .from('facebook_posts_log')
+          .select('fb_post_id')
+          .eq('connection_id', connexion.id)
+          .eq('match_id', match.matchId)
+          .eq('post_date', today)
+          .maybeSingle();
+
         const message = formatScoreFacebook({
           competition:     match.competition,
           homeTeam:        match.homeTeam,
@@ -136,7 +145,16 @@ Deno.serve(async (req: Request) => {
           awayGoalDetails: match.awayGoalDetails ?? null,
           minute:          match.minute ?? null,
         });
-        const result = await posterSurPage(connexion.fb_page_id, connexion.fb_page_access_token, message);
+        // ── Éditer le post existant ou en créer un nouveau ────────────────
+        let result: { success: boolean; postId?: string; error?: string };
+        if (existingLog?.fb_post_id) {
+          // Post déjà publié → on édite avec le nouveau score
+          const edit = await editerPost(existingLog.fb_post_id, connexion.fb_page_access_token, message);
+          result = { success: edit.success, postId: existingLog.fb_post_id, error: edit.error };
+        } else {
+          // Premier événement du match → on crée un nouveau post
+          result = await posterSurPage(connexion.fb_page_id, connexion.fb_page_access_token, message);
+        }
 
         await supabase.from('facebook_posts_log').upsert({
           connection_id: connexion.id,
