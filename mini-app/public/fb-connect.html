@@ -104,11 +104,26 @@ p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
   }
 
   /* Doit être appelé depuis un vrai clic */
+  /* Fix : vide la session FB existante avant de relancer le login
+     pour éviter l'écran "Réassocier" de Facebook */
   function doLogin() {
+    FB.getLoginStatus(function(response) {
+      if (response.status === 'connected') {
+        FB.logout(function() { launchFBLogin(); });
+      } else {
+        launchFBLogin();
+      }
+    });
+  }
+
+  function launchFBLogin() {
     FB.login(function(resp) {
       if (resp.authResponse) sendToken(resp.authResponse.accessToken);
       else showCancelled();
-    }, { scope: 'pages_manage_posts,pages_read_engagement,pages_show_list' });
+    }, {
+      scope: 'pages_manage_posts,pages_read_engagement,pages_show_list',
+      auth_type: 'rerequest'
+    });
   }
 
   /* Force la déconnexion Facebook (SDK + cookies via iframe logout) */
