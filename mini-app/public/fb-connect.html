@@ -3,27 +3,30 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Connexion Facebook…</title>
+<title>Connexion Facebook</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:system-ui,sans-serif;background:#0f1117;color:#e2e8f0;display:flex;justify-content:center;align-items:center;min-height:100vh;padding:24px}
 .c{background:#1a1f2e;border:1px solid #2d3748;border-radius:16px;padding:40px;max-width:420px;width:100%;text-align:center}
 .i{font-size:48px;margin-bottom:16px}
-h2{color:#fff;font-size:20px;margin-bottom:12px}
+h2{color:#fff;font-size:20px;margin-bottom:10px}
 p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
-.note{background:rgba(24,119,242,0.12);border:1px solid rgba(24,119,242,0.3);border-radius:10px;padding:14px 16px;margin:18px 0 0;font-size:13px;color:#a0c4ff;line-height:1.6;text-align:left}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;margin-top:20px;padding:14px 28px;width:100%;box-sizing:border-box;background:#1877f2;color:#fff;border:none;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer;text-decoration:none;transition:opacity .15s}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;margin-top:22px;padding:14px 28px;width:100%;box-sizing:border-box;background:#1877f2;color:#fff;border:none;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer;text-decoration:none;transition:opacity .15s}
 .btn:hover{opacity:.85}
+.btn:disabled{opacity:.5;cursor:not-allowed}
 .btn-add{display:inline-flex;align-items:center;justify-content:center;gap:8px;margin-top:10px;padding:13px 24px;width:100%;box-sizing:border-box;background:rgba(24,119,242,0.15);color:#a0c4ff;border:1px solid rgba(24,119,242,0.3);border-radius:12px;font-size:15px;cursor:pointer;transition:opacity .15s}
 .btn-add:hover{opacity:.85}
 .btn-sec{display:block;margin-top:12px;font-size:13px;color:#718096;cursor:pointer;background:none;border:none;text-decoration:underline}
+.note{background:rgba(24,119,242,0.10);border:1px solid rgba(24,119,242,0.25);border-radius:10px;padding:12px 14px;margin:18px 0 0;font-size:13px;color:#a0c4ff;line-height:1.6;text-align:left}
+.loader{width:20px;height:20px;border:3px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
 <div class="c" id="main">
   <div class="i" id="icon">🔵</div>
-  <h2 id="titre">Connexion Facebook…</h2>
-  <p id="corps">Initialisation du SDK…</p>
+  <h2 id="titre">Connexion Facebook</h2>
+  <p id="corps">Chargement…</p>
   <div id="actions"></div>
 </div>
 <script>
@@ -32,15 +35,19 @@ p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
   var nonce  = params.get('nonce');
   var apiUrl = (params.get('api') || '').replace(/\/+$/, '');
   var isAdd  = params.get('add') === '1';
+  var sdkReady = false;
 
   function setIcon(v)  { document.getElementById('icon').textContent  = v; }
   function setTitre(v) { document.getElementById('titre').textContent = v; }
   function setCorps(v) { document.getElementById('corps').textContent = v; }
   function clearAct()  { document.getElementById('actions').innerHTML = ''; }
 
-  function addBtn(html, cls, fn) {
+  function addBtn(html, cls, fn, disabled) {
     var b = document.createElement('button');
-    b.className = cls; b.innerHTML = html; b.onclick = fn;
+    b.className = cls;
+    b.innerHTML = html;
+    if (disabled) b.disabled = true;
+    b.onclick = fn;
     document.getElementById('actions').appendChild(b);
     return b;
   }
@@ -51,8 +58,9 @@ p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
   }
 
   function showSuccess(names, addUrl) {
-    setIcon('✅'); setTitre('Facebook connecté !');
-    setCorps('Tes pages (' + (names || []).join(', ') + ') sont connectées. Tu peux fermer cette page et retourner sur Telegram.');
+    setIcon('✅');
+    setTitre('Facebook connecté !');
+    setCorps('Tes pages (' + (names || []).join(', ') + ') sont connectées. Tu peux fermer cette page.');
     clearAct();
     if (addUrl) {
       addBtn('➕ Ajouter un autre compte Facebook', 'btn-add', function() { window.location.href = addUrl; });
@@ -65,17 +73,52 @@ p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
   }
 
   function showError(msg) {
-    setIcon('❌'); setTitre('Erreur de connexion');
+    setIcon('❌');
+    setTitre('Erreur de connexion');
     setCorps(msg || 'Une erreur est survenue. Retourne sur Telegram et réessaie.');
     clearAct();
     addBtn('↩ Retourner sur Telegram', 'btn', goTelegram);
   }
 
   function showCancelled() {
-    setIcon('🚫'); setTitre('Connexion annulée');
-    setCorps("Tu as refusé l'accès. Retourne sur Telegram et clique à nouveau sur «Connecter Facebook» si tu veux recommencer.");
+    setIcon('🚫');
+    setTitre('Connexion annulée');
+    setCorps("Tu as refusé l'accès. Retourne sur Telegram et clique à nouveau sur «Connecter Facebook».");
     clearAct();
     addBtn('↩ Retourner sur Telegram', 'btn', goTelegram);
+  }
+
+  /* Appelé directement depuis le clic bouton → popup autorisé par Chrome */
+  function doLogin() {
+    if (!sdkReady) {
+      setCorps('SDK en cours de chargement, réessaie dans 2 secondes…');
+      return;
+    }
+    FB.login(function(response) {
+      if (response.authResponse) {
+        var token = response.authResponse.accessToken;
+        setIcon('⏳');
+        setTitre('Finalisation…');
+        setCorps('Enregistrement de vos Pages Facebook…');
+        clearAct();
+
+        fetch(apiUrl + '/functions/v1/facebook-oauth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: token, nonce: nonce })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (d.ok) { showSuccess(d.pages, d.addUrl); }
+          else      { showError(d.error); }
+        })
+        .catch(function() {
+          showError('Impossible de contacter le serveur. Vérifie ta connexion et réessaie.');
+        });
+      } else {
+        showCancelled();
+      }
+    }, { scope: 'pages_manage_posts,pages_read_engagement,pages_show_list' });
   }
 
   /* ── Fallback : ancien flux redirect (?to=…) ─────────────────────────────── */
@@ -113,36 +156,27 @@ p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
 
   /* ── Nouveau flux SDK JS Facebook (?appId=…&nonce=…&api=…) ──────────────── */
   } else if (appId && nonce && apiUrl) {
-    setCorps('Connexion à Facebook en cours…');
+    /* Afficher le bouton immédiatement — le clic déclenche FB.login() */
+    setIcon('👤');
+    setTitre('Connecter votre compte Facebook');
+    setCorps('Appuie sur le bouton pour ouvrir Facebook et autoriser l\'accès à tes Pages.');
+    clearAct();
 
-    function doLogin() {
-      FB.login(function(response) {
-        if (response.authResponse) {
-          var token = response.authResponse.accessToken;
-          setIcon('⏳'); setTitre('Finalisation…'); setCorps('Enregistrement de vos Pages Facebook…'); clearAct();
-          fetch(apiUrl + '/functions/v1/facebook-oauth', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token: token, nonce: nonce })
-          })
-          .then(function(r) { return r.json(); })
-          .then(function(d) {
-            if (d.ok) { showSuccess(d.pages, d.addUrl); }
-            else      { showError(d.error); }
-          })
-          .catch(function() {
-            showError('Impossible de contacter le serveur. Vérifie ta connexion et réessaie.');
-          });
-        } else {
-          showCancelled();
-        }
-      }, { scope: 'pages_manage_posts,pages_read_engagement,pages_show_list' });
-    }
+    /* Bouton principal — désactivé jusqu'à ce que le SDK soit prêt */
+    var connectBtn = addBtn(
+      '<span class="loader"></span> Chargement…',
+      'btn',
+      function() { doLogin(); },
+      true /* disabled */
+    );
 
     window.fbAsyncInit = function() {
       FB.init({ appId: appId, cookie: true, xfbml: false, version: 'v22.0' });
       FB.AppEvents.logPageView();
-      doLogin();
+      sdkReady = true;
+      /* Activer le bouton une fois le SDK prêt */
+      connectBtn.disabled = false;
+      connectBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg> Se connecter avec Facebook';
     };
 
     (function(d, s, id) {
