@@ -326,16 +326,40 @@ export default function FacebookTab({ token }: { token: string }) {
   useEffect(() => { load(); }, [load]);
 
   async function handleConnect() {
-    setConnecting(true);
-    try {
-      const url = await getFacebookConnectUrl(token, accounts.length > 0);
-      openExternal(url);
-    } catch (e: unknown) {
-      setError((e as Error).message);
-    } finally {
-      setConnecting(false);
+      setConnecting(true);
+      try {
+        const url = await getFacebookConnectUrl(token, accounts.length > 0);
+        openExternal(url);
+
+        // Recharger les données quand l'utilisateur revient du navigateur OAuth.
+        // Sans ce listener, l'onglet reste figé même si la connexion a réussi
+        // (la notification Telegram arrive, mais l'affichage ne se met pas à jour).
+        let cleaned = false;
+        const cleanup = () => {
+          if (cleaned) return;
+          cleaned = true;
+          document.removeEventListener('visibilitychange', onVisible);
+          window.removeEventListener('focus', onFocus);
+        };
+        const onReturn = () => {
+          cleanup();
+          // Délai court pour laisser le navigateur se stabiliser avant le fetch
+          setTimeout(() => { load(); setConnecting(false); }, 600);
+        };
+        const onVisible = () => { if (!document.hidden) onReturn(); };
+        const onFocus   = () => onReturn();
+        document.addEventListener('visibilitychange', onVisible);
+        window.addEventListener('focus', onFocus);
+        // Sécurité : réinitialiser après 5 min si l'utilisateur ne revient pas
+        setTimeout(() => { cleanup(); setConnecting(false); }, 5 * 60 * 1000);
+
+      } catch (e: unknown) {
+        setError((e as Error).message);
+        setConnecting(false);
+      }
+      // Note : setConnecting(false) n'est PAS dans finally — intentionnel.
+      // Les listeners visibilitychange/focus s'en chargent au retour.
     }
-  }
 
   async function handleDisconnectPage(page: FBPage) {
     if (!window.confirm(`Retirer la page "${page.fb_page_name}" ?`)) return;
