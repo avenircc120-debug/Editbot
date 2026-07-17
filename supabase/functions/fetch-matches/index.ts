@@ -49,16 +49,19 @@ function dateISO(d: Date): string {
 
 async function indexerMatch(ev: TsdbMatch, competition: string): Promise<{ matchId: string; changed: boolean; row: any } | null> {
   if (!ev.strHomeTeam || !ev.strAwayTeam) return null;
-  const matchDate = tsdbTimestampToDate(ev.strTimestamp).toISOString();
-  const status    = normaliserStatus(ev.strStatus);
-  const homeScore = ev.intHomeScore != null ? Number(ev.intHomeScore) : null;
-  const awayScore = ev.intAwayScore != null ? Number(ev.intAwayScore) : null;
+  const matchDate  = tsdbTimestampToDate(ev.strTimestamp).toISOString();
+  const status     = normaliserStatus(ev.strStatus);
+  const rawStatus  = (ev.strStatus ?? 'NS').toUpperCase();
+  const homeScore  = ev.intHomeScore != null ? Number(ev.intHomeScore) : null;
+  const awayScore  = ev.intAwayScore != null ? Number(ev.intAwayScore) : null;
 
   const { data: avant } = await supabase
     .from('matchs_index')
-    .select('status, home_score, away_score')
+    .select('status, home_score, away_score, raw_status')
     .eq('match_id', ev.idEvent)
     .maybeSingle();
+
+  const prevRaw = (avant?.raw_status ?? '').toUpperCase();
 
   const { error } = await supabase.from('matchs_index').upsert({
     match_id:        ev.idEvent,
@@ -71,6 +74,7 @@ async function indexerMatch(ev: TsdbMatch, competition: string): Promise<{ match
     season_id:       ev.strSeason ?? null,
     match_date:      matchDate,
     status,
+    raw_status:      rawStatus,
     home_score:      homeScore,
     away_score:      awayScore,
     id_thesportsdb:  ev.idEvent,
@@ -79,11 +83,29 @@ async function indexerMatch(ev: TsdbMatch, competition: string): Promise<{ match
     updated_at:      new Date().toISOString(),
   }, { onConflict: 'match_id' });
 
-  // Dès qu'un but est marqué → 1 appel API pour récupérer les buteurs
+  if (error) {
+    console.warn('[index]', ev.idEvent, error.message);
+    return null;
+  }
+
+  // ── Détection du type d'événement ────────────────────────────────────────
+  const butMarque  = avant && status === 'inprogress'
+    && (avant.home_score !== homeScore || avant.away_score !== awayScore);
+  const coupEnvoi  = avant && avant.status === 'scheduled' && status === 'inprogress';
+  const miTemps    = rawStatus === 'HT' && prevRaw !== 'HT';
+  const finMatch   = status === 'finished' && avant?.status !== 'finished';
+
+  let eventType = 'update';
+  if (butMarque)  eventType = 'goal';
+  else if (coupEnvoi) eventType = 'kickoff';
+  else if (miTemps)   eventType = 'halftime';
+  else if (finMatch)  eventType = 'fulltime';
+
+  // ── Récupération buteurs si but marqué ───────────────────────────────────
   let homeGoalDetails: string | null = null;
   let awayGoalDetails: string | null = null;
   let matchMinute: number | null = null;
-  const butMarque = avant && status === 'inprogress' && (avant.home_score !== homeScore || avant.away_score !== awayScore);
+
   if (butMarque) {
     const quotaOk = await consommerQuota(supabase, 'thesportsdb');
     if (quotaOk) {
@@ -92,23 +114,47 @@ async function indexerMatch(ev: TsdbMatch, competition: string): Promise<{ match
         homeGoalDetails = det.homeGoalDetails;
         awayGoalDetails = det.awayGoalDetails;
         matchMinute     = det.minute;
-        await supabase.from('matchs_index').update({ home_goal_details: homeGoalDetails, away_goal_details: awayGoalDetails, match_minute: matchMinute }).eq('match_id', ev.idEvent);
+        await supabase.from('matchs_index')
+          .update({ home_goal_details: homeGoalDetails, away_goal_details: awayGoalDetails, match_minute: matchMinute })
+          .eq('match_id', ev.idEvent);
       }
     }
   }
 
-  if (error) {
-    console.warn('[index]', ev.idEvent, error.message);
-    return null;
+  // Si mi-temps ou fin : récupérer les buteurs depuis la DB pour le résumé
+  if ((miTemps || finMatch) && !homeGoalDetails) {
+    const { data: idx } = await supabase
+      .from('matchs_index')
+      .select('home_goal_details, away_goal_details, match_minute')
+      .eq('match_id', ev.idEvent)
+      .maybeSingle();
+    homeGoalDetails = idx?.home_goal_details ?? null;
+    awayGoalDetails = idx?.away_goal_details ?? null;
+    matchMinute     = idx?.match_minute ?? null;
   }
 
-  const changed = !avant || avant.status !== status || avant.home_score !== homeScore || avant.away_score !== awayScore;
+  // ── Décision de diffusion ─────────────────────────────────────────────────
+  const evenementSignificatif = ['goal', 'kickoff', 'halftime', 'fulltime'].includes(eventType);
+  const scoresDispo = homeScore !== null && awayScore !== null;
   const enDirectOuTermine = status === 'inprogress' || status === 'finished';
 
   return {
     matchId: ev.idEvent,
-    changed: changed && enDirectOuTermine && homeScore !== null && awayScore !== null,
-    row: { matchId: ev.idEvent, competition, homeTeam: ev.strHomeTeam, awayTeam: ev.strAwayTeam, homeScore, awayScore, status, homeGoalDetails, awayGoalDetails, minute: matchMinute },
+    changed: evenementSignificatif && enDirectOuTermine && scoresDispo,
+    row: {
+      matchId:         ev.idEvent,
+      competition,
+      homeTeam:        ev.strHomeTeam,
+      awayTeam:        ev.strAwayTeam,
+      homeScore,
+      awayScore,
+      status,
+      rawStatus,
+      eventType,
+      homeGoalDetails,
+      awayGoalDetails,
+      minute:          matchMinute,
+    },
   };
 }
 
@@ -142,7 +188,7 @@ async function indexerMatchOdds(ev: OddsMatchRow): Promise<{ changed: boolean; r
 
   const { data: avant } = await supabase
     .from('matchs_index')
-    .select('status, home_score, away_score')
+    .select('status, home_score, away_score, raw_status')
     .eq('match_id', ev.match_id)
     .maybeSingle();
 
@@ -164,12 +210,35 @@ async function indexerMatchOdds(ev: OddsMatchRow): Promise<{ changed: boolean; r
     return null;
   }
 
-  const changed = !avant || avant.status !== ev.status || avant.home_score !== ev.home_score || avant.away_score !== ev.away_score;
+  const butMarque = avant && ev.status === 'inprogress'
+    && (avant.home_score !== ev.home_score || avant.away_score !== ev.away_score);
+  const coupEnvoi = avant && avant.status === 'scheduled' && ev.status === 'inprogress';
+  const finMatch  = ev.status === 'finished' && avant?.status !== 'finished';
+
+  let eventType = 'update';
+  if (butMarque)      eventType = 'goal';
+  else if (coupEnvoi) eventType = 'kickoff';
+  else if (finMatch)  eventType = 'fulltime';
+
+  const evenementSignificatif = ['goal', 'kickoff', 'fulltime'].includes(eventType);
   const enDirectOuTermine = ev.status === 'inprogress' || ev.status === 'finished';
 
   return {
-    changed: changed && enDirectOuTermine && ev.home_score !== null && ev.away_score !== null,
-    row: { matchId: ev.match_id, competition: ev.competition, homeTeam: ev.home_team, awayTeam: ev.away_team, homeScore: ev.home_score, awayScore: ev.away_score, status: ev.status, homeGoalDetails: null, awayGoalDetails: null, minute: null },
+    changed: evenementSignificatif && enDirectOuTermine && ev.home_score !== null && ev.away_score !== null,
+    row: {
+      matchId:         ev.match_id,
+      competition:     ev.competition,
+      homeTeam:        ev.home_team,
+      awayTeam:        ev.away_team,
+      homeScore:       ev.home_score,
+      awayScore:       ev.away_score,
+      status:          ev.status,
+      rawStatus:       null,
+      eventType,
+      homeGoalDetails: null,
+      awayGoalDetails: null,
+      minute:          null,
+    },
   };
 }
 
