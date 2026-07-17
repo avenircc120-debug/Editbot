@@ -52,14 +52,24 @@
       if (!oauthUrl) {
         document.querySelector('p').textContent = 'Lien invalide. Retourne sur Telegram et r\u00e9essaie.';
       } else if (isAdd) {
-          // auth_type=reauthenticate est dans oauthUrl (injecté par facebook-oauth/index.ts).
-          // Facebook force un écran de connexion même si l'utilisateur est déjà connecté.
+          // auth_type=reauthenticate est dans oauthUrl (injecté côté serveur).
+          // CRITIQUE : on utilise window.location.replace() et NON un <a href>.
+          // Un <a href> vers facebook.com déclenche les Android App Links → ouvre l'app Facebook.
+          // window.location.replace() depuis Vercel (domaine tiers) reste dans le navigateur.
           document.getElementById('main').innerHTML =
             '<div class="i">&#128100;</div>' +
-            '<h2>Ajouter un autre compte</h2>' +
-            '<p>Clique sur le bouton pour te connecter avec un <strong>autre compte Facebook</strong>.</p>' +
-            '<div class="note">&#128161; Facebook va te demander tes identifiants m&ecirc;me si tu es d&eacute;j&agrave; connect&eacute;.</div>' +
-            '<a href="' + oauthUrl + '" class="btn">Se connecter avec un autre compte</a>';
+            '<h2>Connexion en cours…</h2>' +
+            '<p>Redirection vers Facebook pour ajouter un autre compte…</p>' +
+            '<button id="fallback-add" class="btn" style="display:none">Ouvrir Facebook</button>';
+          window.location.replace(oauthUrl);
+          setTimeout(function() {
+            var btn = document.getElementById('fallback-add');
+            if (btn) {
+              btn.style.display = 'inline-flex';
+              btn.onclick = function() { window.location.replace(oauthUrl); };
+              document.querySelector('p').textContent = "Si la page ne s'ouvre pas automatiquement, appuie sur le bouton.";
+            }
+          }, 1500);
         } else {
         // Connexion initiale : redirection automatique vers Facebook OAuth
         window.location.replace(oauthUrl);
