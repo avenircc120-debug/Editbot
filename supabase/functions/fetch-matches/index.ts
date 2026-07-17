@@ -133,6 +133,14 @@ async function indexerMatch(ev: TsdbMatch, competition: string): Promise<{ match
     matchMinute     = idx?.match_minute ?? null;
   }
 
+  // ── Désactivation automatique du broadcast à la fin du match ─────────────
+  if (finMatch) {
+    await supabase
+      .from('broadcast_selections')
+      .update({ is_active: false })
+      .eq('match_id', ev.idEvent);
+  }
+
   // ── Décision de diffusion ─────────────────────────────────────────────────
   const evenementSignificatif = ['goal', 'kickoff', 'halftime', 'fulltime'].includes(eventType);
   const scoresDispo = homeScore !== null && awayScore !== null;
@@ -219,6 +227,14 @@ async function indexerMatchOdds(ev: OddsMatchRow): Promise<{ changed: boolean; r
   if (butMarque)      eventType = 'goal';
   else if (coupEnvoi) eventType = 'kickoff';
   else if (finMatch)  eventType = 'fulltime';
+
+  // ── Désactivation automatique du broadcast à la fin du match ─────────────
+  if (finMatch) {
+    await supabase
+      .from('broadcast_selections')
+      .update({ is_active: false })
+      .eq('match_id', ev.match_id);
+  }
 
   const evenementSignificatif = ['goal', 'kickoff', 'fulltime'].includes(eventType);
   const enDirectOuTermine = ev.status === 'inprogress' || ev.status === 'finished';
