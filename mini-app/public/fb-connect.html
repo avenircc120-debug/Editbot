@@ -55,7 +55,11 @@
         // Pour ajouter un AUTRE compte Facebook, on passe par login.php.
         // Cela affiche la page de connexion Facebook classique (avec champ email/mdp)
         // au lieu du dialog "Rassocier" qui r\u00e9utilise le compte d\u00e9j\u00e0 connect\u00e9.
-        var loginUrl = 'https://www.facebook.com/logout.php?next=' + encodeURIComponent(oauthUrl);
+        // Chaîne : logout → page de login → oauth dialog
+          // 1. login/?next=<oauthUrl>  →  montre la page de connexion, puis va sur oauthUrl
+          // 2. logout.php?next=<loginUrl>  →  déconnecte, puis redirige vers la page de login
+          var loginNext = 'https://www.facebook.com/login/?next=' + encodeURIComponent(oauthUrl);
+          var loginUrl  = 'https://www.facebook.com/logout.php?next=' + encodeURIComponent(loginNext);
         document.getElementById('main').innerHTML =
           '<div class="i">\u{1F464}</div>' +
           '<h2>Ajouter un autre compte</h2>' +
