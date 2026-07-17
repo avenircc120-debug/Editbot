@@ -52,22 +52,15 @@
       if (!oauthUrl) {
         document.querySelector('p').textContent = 'Lien invalide. Retourne sur Telegram et r\u00e9essaie.';
       } else if (isAdd) {
-        // Pour ajouter un AUTRE compte Facebook, on passe par login.php.
-        // Cela affiche la page de connexion Facebook classique (avec champ email/mdp)
-        // au lieu du dialog "Rassocier" qui r\u00e9utilise le compte d\u00e9j\u00e0 connect\u00e9.
-        // Chaîne : logout → page de login → oauth dialog
-          // 1. login/?next=<oauthUrl>  →  montre la page de connexion, puis va sur oauthUrl
-          // 2. logout.php?next=<loginUrl>  →  déconnecte, puis redirige vers la page de login
-          var loginNext = 'https://www.facebook.com/login/?next=' + encodeURIComponent(oauthUrl);
-          var loginUrl  = 'https://www.facebook.com/logout.php?next=' + encodeURIComponent(loginNext);
-        document.getElementById('main').innerHTML =
-          '<div class="i">\u{1F464}</div>' +
-          '<h2>Ajouter un autre compte</h2>' +
-          '<p>Pour connecter un <strong>compte Facebook diff\u00e9rent</strong>, clique sur le bouton ci-dessous.</p>' +
-          '<div class="note">\uD83D\uDCA1 <strong>Facebook va te déconnecter, puis afficher la page de connexion.</strong><br>Saisis les identifiants du compte que tu veux ajouter.</div>' +
-          '<a href="' + loginUrl + '" class="btn">Me déconnecter et changer de compte</a>' +
-          '<a href="' + oauthUrl + '" class="btn-sec">Utiliser le m\u00eame compte \u2192</a>';
-      } else {
+          // auth_type=reauthenticate est dans oauthUrl (injecté par facebook-oauth/index.ts).
+          // Facebook force un écran de connexion même si l'utilisateur est déjà connecté.
+          document.getElementById('main').innerHTML =
+            '<div class="i">&#128100;</div>' +
+            '<h2>Ajouter un autre compte</h2>' +
+            '<p>Clique sur le bouton pour te connecter avec un <strong>autre compte Facebook</strong>.</p>' +
+            '<div class="note">&#128161; Facebook va te demander tes identifiants m&ecirc;me si tu es d&eacute;j&agrave; connect&eacute;.</div>' +
+            '<a href="' + oauthUrl + '" class="btn">Se connecter avec un autre compte</a>';
+        } else {
         // Connexion initiale : redirection automatique vers Facebook OAuth
         window.location.replace(oauthUrl);
         setTimeout(function() {
