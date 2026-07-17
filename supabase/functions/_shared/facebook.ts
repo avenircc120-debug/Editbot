@@ -177,6 +177,31 @@ export async function posterSurPage(
   }
 }
 
+/** Modifie le texte d'un post existant sur une Page Facebook. */
+export async function editerPost(
+  postId: string,
+  pageAccessToken: string,
+  message: string,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${FB_API}/${postId}`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ message, access_token: pageAccessToken }),
+    });
+    const data = await safeJson(res);
+    if (!res.ok || !data) {
+      return { success: false, error: data?.error?.message ?? `HTTP ${res.status}` };
+    }
+    if (data.error) {
+      return { success: false, error: `#${data.error.code} ${data.error.message}` };
+    }
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: String(e) };
+  }
+}
+
 /** Récupère le nom affiché du compte Facebook connecté (ex: "Jean Dupont"). */
 export async function recupererNomUtilisateur(token: string): Promise<string> {
   try {
