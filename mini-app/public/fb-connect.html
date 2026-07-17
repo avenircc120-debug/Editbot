@@ -55,13 +55,13 @@
         // Pour ajouter un AUTRE compte Facebook, on passe par login.php.
         // Cela affiche la page de connexion Facebook classique (avec champ email/mdp)
         // au lieu du dialog "Rassocier" qui r\u00e9utilise le compte d\u00e9j\u00e0 connect\u00e9.
-        var loginUrl = 'https://www.facebook.com/login.php?next=' + encodeURIComponent(oauthUrl);
+        var loginUrl = 'https://www.facebook.com/logout.php?next=' + encodeURIComponent(oauthUrl);
         document.getElementById('main').innerHTML =
           '<div class="i">\u{1F464}</div>' +
           '<h2>Ajouter un autre compte</h2>' +
           '<p>Pour connecter un <strong>compte Facebook diff\u00e9rent</strong>, clique sur le bouton ci-dessous.</p>' +
-          '<div class="note">\uD83D\uDCA1 <strong>Tu verras la page de connexion Facebook.</strong><br>Saisis les identifiants du compte que tu veux ajouter.</div>' +
-          '<a href="' + loginUrl + '" class="btn">Se connecter avec un autre compte</a>' +
+          '<div class="note">\uD83D\uDCA1 <strong>Facebook va te déconnecter, puis afficher la page de connexion.</strong><br>Saisis les identifiants du compte que tu veux ajouter.</div>' +
+          '<a href="' + loginUrl + '" class="btn">Me déconnecter et changer de compte</a>' +
           '<a href="' + oauthUrl + '" class="btn-sec">Utiliser le m\u00eame compte \u2192</a>';
       } else {
         // Connexion initiale : redirection automatique vers Facebook OAuth
