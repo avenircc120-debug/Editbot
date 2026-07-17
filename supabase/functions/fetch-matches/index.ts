@@ -297,16 +297,29 @@ Deno.serve(async (req) => {
     }
   }
 
-  // ── Odds API (fallback automatique) ──────────────────────────────────────
-  // Activé quand TheSportsDB est épuisé, dans une fenêtre de 30 min
-  // (:00-:03 ou :30-:33) pour limiter à ~2 cycles/heure max.
+  // ── Odds API ─────────────────────────────────────────────────────────────
+  // 1) TheSportsDB épuisé → fallback automatique (fenêtre :00-:03 / :30-:33)
+  // 2) TheSportsDB OK mais broadcasts avec ID odds_... actifs → check complémentaire
+  //    (même fenêtre, pour rester dans les 55 appels/jour)
+  const min = now.getUTCMinutes();
+  const estFenetreOdds = min < 4 || (min >= 30 && min < 34);
+
   if (!continuer) {
-    const min = now.getUTCMinutes();
-    const estFenetreOdds = min < 4 || (min >= 30 && min < 34);
     if (estFenetreOdds) {
       await ingererFallbackOdds(stats, matchsAModifier);
     } else {
       console.log('[fetch-matches] TheSportsDB épuisé — hors fenêtre Odds API, skip.');
+    }
+  } else if (estFenetreOdds) {
+    // TheSportsDB OK : vérifier si des broadcasts odds_... actifs (ex: MLS)
+    const { count } = await supabase
+      .from('broadcast_selections')
+      .select('*', { count: 'exact', head: true })
+      .eq('is_active', true)
+      .like('match_id', 'odds_%');
+    if ((count ?? 0) > 0) {
+      console.log(`[fetch-matches] ${count} broadcast(s) odds_... actif(s) → Odds API complémentaire`);
+      await ingererFallbackOdds(stats, matchsAModifier);
     }
   }
 
