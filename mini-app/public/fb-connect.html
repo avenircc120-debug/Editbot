@@ -1,52 +1,80 @@
 <!DOCTYPE html>
-<html lang="fr">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Connexion Facebook…</title>
-<style>
-  *{margin:0;padding:0;box-sizing:border-box}
-  body{font-family:system-ui,sans-serif;background:#0f1117;color:#e2e8f0;
-    display:flex;justify-content:center;align-items:center;min-height:100vh;padding:24px}
-  .c{background:#1a1f2e;border:1px solid #2d3748;border-radius:16px;
-    padding:40px;max-width:420px;width:100%;text-align:center}
-  .i{font-size:48px;margin-bottom:16px}
-  h2{color:#fff;font-size:20px;margin-bottom:12px}
-  p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
-  .btn{
-    display:inline-flex;align-items:center;gap:8px;
-    margin-top:24px;padding:14px 28px;
-    background:#1877f2;color:#fff;
-    border:none;border-radius:12px;
-    font-size:16px;font-weight:600;
-    cursor:pointer;text-decoration:none;
-    transition:opacity .15s;
-  }
-  .btn:hover{opacity:.85}
-</style>
-</head>
-<body>
-  <div class="c">
-    <div class="i">🔵</div>
-    <h2>Connexion Facebook…</h2>
-    <p>Redirection en cours…</p>
-    <a id="fallback" class="btn" style="display:none">
-      Ouvrir Facebook
-    </a>
-  </div>
-  <script>
-    var url = new URLSearchParams(window.location.search).get('to');
-    if (url) {
-      // Redirect JS — reste dans le navigateur, ne déclenche pas les App Links Android
-      window.location.replace(url);
-      // Afficher le bouton de secours après 1.5s si la redirection ne fonctionne pas
-      setTimeout(function() {
-        var btn = document.getElementById('fallback');
-        btn.href = url;
-        btn.style.display = 'inline-flex';
-        document.querySelector('p').textContent = 'Si la page ne s\'ouvre pas automatiquement, appuie sur le bouton.';
-      }, 1500);
+    <html lang="fr">
+    <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Connexion Facebook…</title>
+    <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:system-ui,sans-serif;background:#0f1117;color:#e2e8f0;
+      display:flex;justify-content:center;align-items:center;min-height:100vh;padding:24px}
+    .c{background:#1a1f2e;border:1px solid #2d3748;border-radius:16px;
+      padding:40px;max-width:420px;width:100%;text-align:center}
+    .i{font-size:48px;margin-bottom:16px}
+    h2{color:#fff;font-size:20px;margin-bottom:12px}
+    p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
+    .note{
+      background:rgba(24,119,242,0.12);border:1px solid rgba(24,119,242,0.3);
+      border-radius:10px;padding:14px 16px;margin:18px 0 0;
+      font-size:13px;color:#a0c4ff;line-height:1.6;text-align:left;
     }
-  </script>
-</body>
-</html>
+    .btn{
+      display:inline-flex;align-items:center;justify-content:center;gap:8px;
+      margin-top:20px;padding:14px 28px;width:100%;box-sizing:border-box;
+      background:#1877f2;color:#fff;
+      border:none;border-radius:12px;
+      font-size:16px;font-weight:600;
+      cursor:pointer;text-decoration:none;
+      transition:opacity .15s;
+    }
+    .btn:hover{opacity:.85}
+    .btn-sec{
+      display:inline-flex;align-items:center;justify-content:center;gap:8px;
+      margin-top:10px;padding:12px 28px;width:100%;box-sizing:border-box;
+      background:rgba(255,255,255,0.07);color:#a0aec0;
+      border:1px solid rgba(255,255,255,0.1);border-radius:12px;
+      font-size:14px;cursor:pointer;text-decoration:none;
+    }
+    </style>
+    </head>
+    <body>
+    <div class="c" id="main">
+      <div class="i">🔵</div>
+      <h2>Connexion Facebook…</h2>
+      <p>Redirection en cours…</p>
+      <a id="fallback" class="btn" style="display:none">Ouvrir Facebook</a>
+    </div>
+    <script>
+      var params   = new URLSearchParams(window.location.search);
+      var oauthUrl = params.get('to');
+      var isAdd    = params.get('add') === '1';
+
+      if (!oauthUrl) {
+        document.querySelector('p').textContent = 'Lien invalide. Retourne sur Telegram et r\u00e9essaie.';
+      } else if (isAdd) {
+        // Pour ajouter un AUTRE compte Facebook, on passe par login.php.
+        // Cela affiche la page de connexion Facebook classique (avec champ email/mdp)
+        // au lieu du dialog "Rassocier" qui r\u00e9utilise le compte d\u00e9j\u00e0 connect\u00e9.
+        var loginUrl = 'https://www.facebook.com/login.php?next=' + encodeURIComponent(oauthUrl);
+        document.getElementById('main').innerHTML =
+          '<div class="i">\u{1F464}</div>' +
+          '<h2>Ajouter un autre compte</h2>' +
+          '<p>Pour connecter un <strong>compte Facebook diff\u00e9rent</strong>, clique sur le bouton ci-dessous.</p>' +
+          '<div class="note">\uD83D\uDCA1 <strong>Tu verras la page de connexion Facebook.</strong><br>Saisis les identifiants du compte que tu veux ajouter.</div>' +
+          '<a href="' + loginUrl + '" class="btn">Se connecter avec un autre compte</a>' +
+          '<a href="' + oauthUrl + '" class="btn-sec">Utiliser le m\u00eame compte \u2192</a>';
+      } else {
+        // Connexion initiale : redirection automatique vers Facebook OAuth
+        window.location.replace(oauthUrl);
+        setTimeout(function() {
+          var btn = document.getElementById('fallback');
+          if (btn) {
+            btn.href = oauthUrl;
+            btn.style.display = 'inline-flex';
+            document.querySelector('p').textContent = "Si la page ne s'ouvre pas automatiquement, appuie sur le bouton.";
+          }
+        }, 1500);
+      }
+    </script>
+    </body>
+    </html>
