@@ -56,13 +56,14 @@ async function sendTelegram(chatId: number, text: string, replyMarkup?: unknown)
 // (mojibake) et le navigateur affiche le code source au lieu de la page.
 // On redirige donc vers une page statique hébergée sur Vercel (Content-Type
 // correct, garanti par Vercel) qui affiche le message à partir de l'URL.
-function htmlPage(icon: string, titre: string, corps: string, close = false): Response {
+function htmlPage(icon: string, titre: string, corps: string, close = false, extra = ''): Response {
   if (WEB_APP_URL) {
     const dest = `${WEB_APP_URL}/fb-status.html`
       + `?icon=${encodeURIComponent(icon)}`
       + `&titre=${encodeURIComponent(titre)}`
       + `&corps=${encodeURIComponent(corps)}`
-      + (close ? '&action=close' : '');
+      + (close ? '&action=close' : '')
+      + extra;
     return new Response(null, { status: 302, headers: { Location: dest } });
   }
   // Filet de sécurité si WEB_APP_URL n'est pas configuré (ne devrait pas arriver en prod).
@@ -231,9 +232,30 @@ Deno.serve(async (req: Request) => {
       boutonMiniApp,
     );
 
+    // 6b. Nonce pré-généré pour le bouton "Ajouter un autre compte Facebook"
+    let addParam = '';
+    try {
+      const newNonce = crypto.randomUUID();
+      const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      const { error: nonceErr } = await supabase.from('facebook_oauth_states').insert({
+        nonce:            newNonce,
+        telegram_user_id: telegramUserId,
+        expires_at:       expiresAt,
+      });
+      if (!nonceErr) {
+        const addUrl = `${SUPABASE_URL}/functions/v1/facebook-oauth?init=1&nonce=${encodeURIComponent(newNonce)}&add=1`;
+        addParam = `&addUrl=${encodeURIComponent(addUrl)}`;
+        console.log('[facebook-oauth] Nonce ajout généré OK');
+      } else {
+        console.warn('[facebook-oauth] Erreur nonce ajout:', nonceErr.message);
+      }
+    } catch (e) {
+      console.warn('[facebook-oauth] Exception nonce ajout:', e);
+    }
+
     console.log('[facebook-oauth] ✅ Connexion réussie pour', telegramUserId);
     return htmlPage('✅', 'Facebook connecté !',
-      'Ta Page est connectée. Tu peux fermer cette page et retourner sur Telegram.', true);
+      'Ta Page est connectée. Tu peux fermer cette page et retourner sur Telegram.', true, addParam);
 
   } catch (e) {
     console.error('[facebook-oauth] ❌ Exception non gérée:', e);
