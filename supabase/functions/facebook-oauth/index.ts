@@ -121,7 +121,7 @@ Deno.serve(async (req: Request) => {
     // qui fait elle-même un window.location.replace() vers Facebook.
     // Avantage : le redirect JS depuis Vercel ne déclenche pas les App Links Android
     // (contrairement à un 302 HTTP vers facebook.com qui ouvre l'app Facebook).
-    const connectPage = `${WEB_APP_URL}/fb-connect.html?to=${encodeURIComponent(fbUrl)}`;
+    const connectPage = `${WEB_APP_URL}/fb-connect.html?to=${encodeURIComponent(fbUrl)}${add ? '&add=1' : ''}`;
     return new Response(null, { status: 302, headers: { Location: connectPage } });
   }
 
