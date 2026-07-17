@@ -87,8 +87,14 @@ async function oddsGet(path: string): Promise<unknown | null> {
 // ─── Normalisation ────────────────────────────────────────────────────────────
 
 function normaliserStatut(ev: OddsEvent): string {
-  if (ev.completed)       return 'finished';
-  if (ev.scores !== null) return 'inprogress';
+  if (ev.completed) return 'finished';
+  if (ev.scores !== null) {
+    // L'Odds API peut renvoyer completed=false même après la fin du match.
+    // Si le coup d'envoi date de plus de 3h et qu'il y a des scores, c'est terminé.
+    const elapsed = Date.now() - new Date(ev.commence_time).getTime();
+    if (elapsed > 3 * 60 * 60 * 1000) return 'finished';
+    return 'inprogress';
+  }
   return 'scheduled';
 }
 
