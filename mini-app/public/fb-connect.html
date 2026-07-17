@@ -52,25 +52,38 @@
       if (!oauthUrl) {
         document.querySelector('p').textContent = 'Lien invalide. Retourne sur Telegram et r\u00e9essaie.';
       } else if (isAdd) {
-          // auth_type=reauthenticate est dans oauthUrl (injecté côté serveur).
-          // CRITIQUE : on utilise window.location.replace() et NON un <a href>.
-          // Un <a href> vers facebook.com déclenche les Android App Links → ouvre l'app Facebook.
-          // window.location.replace() depuis Vercel (domaine tiers) reste dans le navigateur.
-          document.getElementById('main').innerHTML =
-            '<div class="i">&#128100;</div>' +
-            '<h2>Connexion en cours…</h2>' +
-            '<p>Redirection vers Facebook pour ajouter un autre compte…</p>' +
-            '<button id="fallback-add" class="btn" style="display:none">Ouvrir Facebook</button>';
-          window.location.replace(oauthUrl);
-          setTimeout(function() {
-            var btn = document.getElementById('fallback-add');
-            if (btn) {
-              btn.style.display = 'inline-flex';
-              btn.onclick = function() { window.location.replace(oauthUrl); };
-              document.querySelector('p').textContent = "Si la page ne s'ouvre pas automatiquement, appuie sur le bouton.";
-            }
-          }, 1500);
-        } else {
+            // Flux "ajouter un autre compte" :
+            // auth_type=reauthenticate → ouvre l'app Facebook sur Android : retiré.
+            // Solution : UI deux étapes.
+            //   Étape 1 — l'utilisateur se déconnecte via un nouvel onglet (window.open).
+            //   Étape 2 — il revient et clique "Continuer" → window.location.replace(oauthUrl)
+            //             depuis Vercel (domaine tiers) → reste dans le navigateur.
+            function goOAuth() { window.location.replace(oauthUrl); }
+            document.getElementById('main').innerHTML =
+              '<div class="i">&#128100;</div>' +
+              '<h2>Ajouter un autre compte</h2>' +
+              '<p>Pour connecter un <strong>compte diff&eacute;rent</strong>, suivez ces 2 &eacute;tapes&nbsp;:</p>' +
+              '<div class="note">' +
+                '<strong>&Eacute;tape 1</strong> &mdash; D&eacute;connectez-vous de Facebook&nbsp;:<br>' +
+                '<small>Un nouvel onglet va s&apos;ouvrir. D&eacute;connectez-vous, puis revenez ici.</small>' +
+              '</div>' +
+              '<button id="btn-logout" class="btn" style="margin-top:16px">&#128274;&nbsp; Me d&eacute;connecter de Facebook</button>' +
+              '<div class="note" id="step2" style="display:none;margin-top:12px">' +
+                '<strong>&Eacute;tape 2</strong> &mdash; Connectez-vous avec le nouveau compte&nbsp;:' +
+              '</div>' +
+              '<button id="btn-oauth" class="btn" style="display:none;margin-top:10px;background:#42b72a">&#10003;&nbsp; J&apos;ai chang&eacute; de compte &mdash; Continuer</button>';
+
+            document.getElementById('btn-logout').onclick = function() {
+              window.open('https://www.facebook.com/logout', '_blank');
+              setTimeout(function() {
+                var s2  = document.getElementById('step2');
+                var btn = document.getElementById('btn-oauth');
+                if (s2)  s2.style.display  = 'block';
+                if (btn) btn.style.display = 'inline-flex';
+              }, 2000);
+            };
+            document.getElementById('btn-oauth').onclick = goOAuth;
+          } else {
         // Connexion initiale : redirection automatique vers Facebook OAuth
         window.location.replace(oauthUrl);
         setTimeout(function() {
