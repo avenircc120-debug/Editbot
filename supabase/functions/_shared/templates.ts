@@ -22,81 +22,158 @@ export function formatAnnonceFacebook(data: { competition: string; homeTeam: str
 
 Restez connectés — scores et actions en direct sur cette page dès le coup d'envoi !
 
-#Football #${tag} #LiveScore`;
+#Football #${tag}`;
+}
+
+// ─── Post cumulatif avec timeline des événements ────────────────────────────
+
+/**
+ * Convertit le journal structuré (marqueurs internes séparés par \n) en lignes
+ * lisibles pour l'affichage Facebook.
+ *
+ * Marqueurs reconnus :
+ *   KICKOFF
+ *   GOAL_HOME   → utilise homeGoalDetails dans l'ordre
+ *   GOAL_AWAY   → utilise awayGoalDetails dans l'ordre
+ *   HALFTIME:hs:as
+ *   FULLTIME
+ */
+function renderEventsLog(
+  eventsLog: string,
+  homeTeam: string,
+  awayTeam: string,
+  homeGoalDetails: string | null,
+  awayGoalDetails: string | null,
+): string {
+  const homeGoals = (homeGoalDetails ?? '').split(';').map(s => s.trim()).filter(Boolean);
+  const awayGoals = (awayGoalDetails ?? '').split(';').map(s => s.trim()).filter(Boolean);
+  let homeIdx = 0;
+  let awayIdx = 0;
+  const lines: string[] = [];
+
+  for (const marker of eventsLog.split('\n').map(s => s.trim()).filter(Boolean)) {
+    if (marker === 'KICKOFF') {
+      lines.push('🟢 Coup d\'envoi');
+    } else if (marker.startsWith('HALFTIME:')) {
+      const parts = marker.split(':');
+      lines.push(`⏸ Mi-temps : ${parts[1]}-${parts[2]}`);
+    } else if (marker === 'FULLTIME') {
+      lines.push('🏁 Résultat final');
+    } else if (marker === 'GOAL_HOME') {
+      const scorer = homeGoals[homeIdx++] ?? null;
+      lines.push(scorer ? `⚽ ${scorer} (${homeTeam})` : `⚽ But ! (${homeTeam})`);
+    } else if (marker === 'GOAL_AWAY') {
+      const scorer = awayGoals[awayIdx++] ?? null;
+      lines.push(scorer ? `⚽ ${scorer} (${awayTeam})` : `⚽ But ! (${awayTeam})`);
+    }
+  }
+
+  return lines.join('\n');
 }
 
 /**
- * Post Facebook pour un événement live : but, coup d'envoi, mi-temps ou fin de match.
+ * Calcule les nouveaux marqueurs à ajouter au journal selon l'événement reçu.
  *
- * eventType :
- *   'goal'      → ⚽ BUT ! avec buteur(s)
- *   'kickoff'   → 🟢 Coup d'envoi !
- *   'halftime'  → ⏸ Mi-temps
- *   'fulltime'  → 🏁 Résultat final
- *   'update'    → 🔴 En direct (fallback)
+ * Pour les buts : on compare le score actuel avec le nombre de buts déjà
+ * enregistrés dans eventsLog afin de détecter combien de nouveaux buts
+ * ont été marqués (et par quelle équipe).
  */
-export function formatScoreFacebook(data: {
+export function buildEventMarkers(data: {
+  eventType: string | null | undefined;
+  homeScore: number;
+  awayScore: number;
+  eventsLog: string;
+}): string[] {
+  const { eventType, homeScore, awayScore, eventsLog } = data;
+  const markers: string[] = [];
+
+  if (eventType === 'kickoff') {
+    markers.push('KICKOFF');
+  } else if (eventType === 'halftime') {
+    markers.push(`HALFTIME:${homeScore}:${awayScore}`);
+  } else if (eventType === 'fulltime') {
+    markers.push('FULLTIME');
+  } else if (eventType === 'goal') {
+    const prevHome = (eventsLog.match(/^GOAL_HOME$/gm) ?? []).length;
+    const prevAway = (eventsLog.match(/^GOAL_AWAY$/gm) ?? []).length;
+    const newHome  = Math.max(0, homeScore - prevHome);
+    const newAway  = Math.max(0, awayScore - prevAway);
+    for (let i = 0; i < newHome; i++) markers.push('GOAL_HOME');
+    for (let i = 0; i < newAway; i++) markers.push('GOAL_AWAY');
+  }
+
+  return markers;
+}
+
+/**
+ * Construit le texte complet du post Facebook à partir du journal accumulé.
+ *
+ * Format final :
+ *   🔴 En direct — Compétition           (ou ⏸ / 🏁)
+ *
+ *   Équipe A  2 - 1  Équipe B
+ *
+ *   ―――――――――――――――
+ *   🟢 Coup d'envoi
+ *   ⚽ Éverton Ribeiro 23' (Bahia)
+ *   ⏸ Mi-temps : 1-0
+ *   ⚽ Gabriel Barbosa 67' (Bahia)
+ *   🏁 Résultat final
+ *
+ *   🏆 Victoire Bahia !
+ *
+ *   #Football #BrazilianSerieA
+ */
+export function buildFacebookPost(data: {
   competition:      string;
   homeTeam:         string;
   awayTeam:         string;
   homeScore:        number;
   awayScore:        number;
   status:           string;
-  rawStatus?:       string | null;
   eventType?:       string | null;
+  eventsLog:        string;
   homeGoalDetails?: string | null;
   awayGoalDetails?: string | null;
-  minute?:          number | null;
 }): string {
-  const tag      = data.competition.replace(/[\s\-()']/g, '');
-  const hs       = data.homeScore ?? 0;
-  const as_      = data.awayScore ?? 0;
-  const minStr   = data.minute ? ` ${data.minute}'` : '';
-  const rawSt    = (data.rawStatus ?? '').toUpperCase();
-  const evType   = data.eventType ?? 'update';
+  const { competition, homeTeam, awayTeam, status, eventType, eventsLog } = data;
+  const hs  = data.homeScore ?? 0;
+  const as_ = data.awayScore ?? 0;
+  const tag = competition.replace(/[\s\-()']/g, '');
 
-  // ── En-tête selon le type d'événement ──────────────────────────────────────
+  // ── En-tête ────────────────────────────────────────────────────────────────
   let header: string;
-  if (evType === 'goal') {
-    header = `⚽ BUT !${minStr}`;
-  } else if (evType === 'kickoff') {
-    header = '🟢 Coup d\'envoi !';
-  } else if (evType === 'halftime') {
+  if (eventType === 'halftime') {
     header = '⏸ Mi-temps';
-  } else if (evType === 'fulltime') {
+  } else if (eventType === 'fulltime' || status === 'finished') {
     header = '🏁 Résultat final';
-  } else if (rawSt === 'HT') {
-    header = '⏸ Mi-temps';
-  } else if (data.status === 'finished') {
-    header = '🏁 Résultat final';
+  } else if (eventType === 'goal') {
+    header = '🔴 En direct ⚽';
   } else {
-    header = `🔴 En direct${minStr}`;
+    header = '🔴 En direct';
   }
 
-  // ── Score ───────────────────────────────────────────────────────────────────
-  let msg = `${header} — ${data.competition}\n\n`;
-  msg    += `${data.homeTeam}  ${hs} - ${as_}  ${data.awayTeam}\n`;
+  // ── Corps principal ────────────────────────────────────────────────────────
+  let msg = `${header} — ${competition}\n\n`;
+  msg    += `${homeTeam}  ${hs} - ${as_}  ${awayTeam}`;
 
-  // ── Buteurs ─────────────────────────────────────────────────────────────────
-  const parseButs = (details: string | null | undefined, team: string): string[] =>
-    (details ?? '').split(';').map(s => s.trim()).filter(Boolean)
-      .map(b => `⚽ ${b} (${team})`);
-
-  const butsLocaux   = parseButs(data.homeGoalDetails, data.homeTeam);
-  const butsVisiteur = parseButs(data.awayGoalDetails, data.awayTeam);
-
-  if (butsLocaux.length || butsVisiteur.length) {
-    msg += '\n';
-    for (const b of [...butsLocaux, ...butsVisiteur].sort()) msg += b + '\n';
+  // ── Timeline des événements ────────────────────────────────────────────────
+  if (eventsLog) {
+    const rendered = renderEventsLog(
+      eventsLog, homeTeam, awayTeam,
+      data.homeGoalDetails ?? null,
+      data.awayGoalDetails ?? null,
+    );
+    if (rendered) {
+      msg += '\n\n―――――――――――――――\n' + rendered;
+    }
   }
 
-  // ── Mi-temps / Fin : résumé ─────────────────────────────────────────────────
-  if (evType === 'halftime') {
-    msg += '\n⏱ Score à la mi-temps.';
-  } else if (evType === 'fulltime') {
-    if (hs > as_)       msg += `\n🏆 Victoire ${data.homeTeam} !`;
-    else if (as_ > hs)  msg += `\n🏆 Victoire ${data.awayTeam} !`;
-    else                msg += '\n🤝 Match nul !';
+  // ── Conclusion fin de match ────────────────────────────────────────────────
+  if (eventType === 'fulltime' || status === 'finished') {
+    if (hs > as_)      msg += `\n\n🏆 Victoire ${homeTeam} !`;
+    else if (as_ > hs) msg += `\n\n🏆 Victoire ${awayTeam} !`;
+    else               msg += '\n\n🤝 Match nul !';
   }
 
   msg += `\n\n#Football #${tag}`;

@@ -3,21 +3,20 @@
  *
  * Body attendu : { matches: [{ matchId, competition, homeTeam, awayTeam, homeScore, awayScore, status }] }
  *
- * Flux : fetch-matches détecte un changement de score → appelle cette fonction →
+ * Flux : fetch-matches détecte un changement → appelle cette fonction →
  *        on cherche les utilisateurs qui ont activé CE match dans broadcast_selections
- *        → on poste uniquement sur les pages choisies (fb_page_ids) ou toutes si vide.
+ *        → on poste / édite sur les pages choisies avec une timeline cumulative.
  *
  * Garanties :
  *   - Idempotence : UNIQUE (connection_id, match_id, post_date) sur facebook_posts_log
+ *   - Timeline cumulative : chaque événement est ajouté au journal events_log
  *   - Isolation par item : une erreur ne bloque pas les autres
  *   - Tokens révoqués → désactivation auto + notification Telegram
- *   - Respect de fb_page_ids : si l'utilisateur a sélectionné des pages spécifiques,
- *     on ne poste que sur celles-là (et non sur toutes ses pages actives).
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { posterSurPage, editerPost } from '../_shared/facebook.ts';
-import { formatScoreFacebook } from '../_shared/templates.ts';
+import { buildFacebookPost, buildEventMarkers } from '../_shared/templates.ts';
 
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL')              ?? '';
 const SUPABASE_KEY   = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -95,7 +94,7 @@ Deno.serve(async (req: Request) => {
       userIds.push(uid);
       const ids = Array.isArray(sel.fb_page_ids) && sel.fb_page_ids.length > 0
         ? new Set<string>(sel.fb_page_ids as string[])
-        : null; // null = pas de restriction → toutes les pages actives
+        : null;
       pageFilter.set(uid, ids);
     }
 
@@ -118,51 +117,63 @@ Deno.serve(async (req: Request) => {
       // ── Filtre par pages sélectionnées ────────────────────────────────────
       const pagesAutorisees = pageFilter.get(telegramId);
       if (pagesAutorisees !== null && !pagesAutorisees?.has(connexion.fb_page_id)) {
-        // Cette page n'a pas été sélectionnée par l'utilisateur → on passe
         continue;
       }
 
       try {
-        // ── Vérifier si un post existe déjà pour ce match aujourd'hui ─────
+        // ── Récupérer le post existant (fb_post_id + events_log) ─────────
         const { data: existingLog } = await supabase
           .from('facebook_posts_log')
-          .select('fb_post_id')
+          .select('fb_post_id, events_log')
           .eq('connection_id', connexion.id)
           .eq('match_id', match.matchId)
           .eq('post_date', today)
           .maybeSingle();
 
-        const message = formatScoreFacebook({
+        // ── Construire le nouveau journal d'événements ────────────────────
+        const prevLog  = existingLog?.events_log ?? '';
+        const nouveauxMarqueurs = buildEventMarkers({
+          eventType: match.eventType ?? null,
+          homeScore: match.homeScore,
+          awayScore: match.awayScore,
+          eventsLog: prevLog,
+        });
+        const newLog = prevLog
+          ? (nouveauxMarqueurs.length ? prevLog + '\n' + nouveauxMarqueurs.join('\n') : prevLog)
+          : nouveauxMarqueurs.join('\n');
+
+        // ── Construire le message complet avec timeline ───────────────────
+        const message = buildFacebookPost({
           competition:     match.competition,
           homeTeam:        match.homeTeam,
           awayTeam:        match.awayTeam,
           homeScore:       match.homeScore,
           awayScore:       match.awayScore,
           status:          match.status,
-          rawStatus:       match.rawStatus ?? null,
           eventType:       match.eventType ?? null,
+          eventsLog:       newLog,
           homeGoalDetails: match.homeGoalDetails ?? null,
           awayGoalDetails: match.awayGoalDetails ?? null,
-          minute:          match.minute ?? null,
         });
+
         // ── Éditer le post existant ou en créer un nouveau ────────────────
         let result: { success: boolean; postId?: string; error?: string };
         if (existingLog?.fb_post_id) {
-          // Post déjà publié → on édite avec le nouveau score
           const edit = await editerPost(existingLog.fb_post_id, connexion.fb_page_access_token, message);
           result = { success: edit.success, postId: existingLog.fb_post_id, error: edit.error };
         } else {
-          // Premier événement du match → on crée un nouveau post
           result = await posterSurPage(connexion.fb_page_id, connexion.fb_page_access_token, message);
         }
 
+        // ── Sauvegarder (upsert) avec le journal mis à jour ───────────────
         await supabase.from('facebook_posts_log').upsert({
           connection_id: connexion.id,
           match_id:      match.matchId,
           post_date:     today,
-          fb_post_id:    result.postId ?? null,
+          fb_post_id:    result.postId ?? existingLog?.fb_post_id ?? null,
           status:        result.success ? 'success' : 'error',
           error_message: result.error ?? null,
+          events_log:    newLog,
         }, { onConflict: 'connection_id,match_id,post_date' });
 
         if (result.success) {
