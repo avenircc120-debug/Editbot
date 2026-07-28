@@ -41,10 +41,9 @@ export default function App() {
 
     const initData = window.Telegram?.WebApp?.initData ?? '';
 
-    // Hors contexte Telegram : afficher un message d'instruction
+    // Hors contexte Telegram : rediriger vers la page externe (connexion Facebook autonome)
     if (!initData) {
-      setLoading(false);
-      window.Telegram?.WebApp?.ready();
+      window.location.href = '/portal.html';
       return;
     }
 
@@ -99,21 +98,6 @@ export default function App() {
           <p style={{ color: 'var(--text)', marginBottom: 8, fontWeight: 600 }}>Erreur d'authentification</p>
           <p style={{ color: 'var(--muted)', marginBottom: 20, fontSize: 13 }}>{authError}</p>
           <button className="btn-primary" style={{ marginTop: 0 }} onClick={retry}>Réessayer</button>
-        </div>
-      </div>
-    );
-  }
-
-  // Hors Telegram : message d'instruction
-  if (!token && !authError) {
-    return (
-      <div className="spinner-screen">
-        <div style={{ textAlign: 'center', padding: '0 28px' }}>
-          <div style={{ fontSize: 48, marginBottom: 14 }}>⚽</div>
-          <p style={{ color: 'var(--text)', fontWeight: 700, fontSize: 18, marginBottom: 8 }}>Editbot</p>
-          <p style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.6 }}>
-            Ouvre cette application depuis Telegram pour diffuser les scores en direct sur tes Pages Facebook.
-          </p>
         </div>
       </div>
     );
