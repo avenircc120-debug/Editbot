@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connexion Facebook</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,sans-serif;background:#0f1117;color:#e2e8f0;display:flex;justify-content:center;align-items:center;min-height:100vh;padding:24px}
+.c{background:#1a1f2e;border:1px solid #2d3748;border-radius:16px;padding:36px 32px;max-width:420px;width:100%;text-align:center}
+.i{font-size:48px;margin-bottom:14px}
+h2{color:#fff;font-size:20px;margin-bottom:10px}
+p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;margin-top:16px;padding:14px 28px;width:100%;box-sizing:border-box;color:#fff;border:none;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer;text-decoration:none;transition:opacity .15s}
+.btn:hover{opacity:.85}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-fb{background:#1877f2}
+.loader{width:18px;height:18px;border:3px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="c" id="main">
+  <div class="i" id="icon">🔵</div>
+  <h2 id="titre">Connexion Facebook</h2>
+  <p id="corps">Chargement…</p>
+  <div id="actions"></div>
+</div>
+<script>
+  var params = new URLSearchParams(window.location.search);
+  var appId  = params.get('appId');
+  var nonce  = params.get('nonce');
+  var apiUrl = (params.get('api') || '').replace(/\/+$/, '');
+  var sdkReady = false;
+
+  var FB_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="white" style="flex-shrink:0"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>';
+
+  function q(id) { return document.getElementById(id); }
+  function setIcon(v)  { q('icon').textContent  = v; }
+  function setTitre(v) { q('titre').textContent = v; }
+  function setCorps(v) { q('corps').textContent = v; }
+  function clearAct()  { q('actions').innerHTML = ''; }
+
+  function mkBtn(html, cls, fn, disabled) {
+    var b = document.createElement('button');
+    b.className = 'btn ' + cls; b.innerHTML = html;
+    if (disabled) b.disabled = true;
+    if (fn) b.onclick = fn;
+    q('actions').appendChild(b);
+    return b;
+  }
+
+  function showSuccess(names, token) {
+    setIcon('✅'); setTitre('Facebook connecté !');
+    setCorps('Pages connectées : ' + (names || []).join(', ') + '. Redirection…');
+    clearAct();
+    var dest = 'portal.html?token=' + encodeURIComponent(token);
+    setTimeout(function() { window.location.href = dest; }, 1200);
+  }
+
+  function showError(msg) {
+    setIcon('❌'); setTitre('Erreur de connexion');
+    setCorps(msg || 'Une erreur est survenue. Recharge la page et réessaie.');
+    clearAct();
+    mkBtn('↻ Réessayer', 'btn-fb', function() { window.location.reload(); });
+  }
+
+  function showCancelled() {
+    setIcon('🚫'); setTitre('Connexion annulée');
+    setCorps("Tu as refusé l'accès. Recharge la page pour recommencer.");
+    clearAct();
+    mkBtn('↻ Réessayer', 'btn-fb', function() { window.location.reload(); });
+  }
+
+  function sendToken(token) {
+    setIcon('⏳'); setTitre('Finalisation…'); setCorps('Enregistrement de vos Pages…'); clearAct();
+    fetch(apiUrl + '/functions/v1/facebook-web-login', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ token: token, nonce: nonce })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) { if (d.ok) showSuccess(d.pages, d.token); else showError(d.error); })
+    .catch(function() { showError('Impossible de contacter le serveur. Vérifie ta connexion.'); });
+  }
+
+  function doLogin() {
+    FB.getLoginStatus(function(response) {
+      if (response.status === 'connected') {
+        FB.logout(function() { launchFBLogin(); });
+      } else {
+        launchFBLogin();
+      }
+    });
+  }
+
+  function launchFBLogin() {
+    FB.login(function(resp) {
+      if (resp.authResponse) sendToken(resp.authResponse.accessToken);
+      else showCancelled();
+    }, {
+      scope: 'pages_manage_posts,pages_read_engagement,pages_show_list',
+      auth_type: 'rerequest'
+    });
+  }
+
+  if (appId && nonce && apiUrl) {
+    setIcon('👤');
+    setTitre('Connecter votre compte Facebook');
+    setCorps("Appuie sur le bouton pour autoriser l'accès à tes Pages Facebook.");
+    clearAct();
+
+    var connectBtn = mkBtn('<span class="loader"></span> Chargement…', 'btn-fb', null, true);
+    connectBtn.onclick = function() { if (sdkReady) doLogin(); };
+
+    window.fbAsyncInit = function() {
+      FB.init({ appId: appId, cookie: true, xfbml: false, version: 'v22.0' });
+      FB.AppEvents.logPageView();
+      sdkReady = true;
+      connectBtn.disabled = false;
+      connectBtn.innerHTML = FB_ICON + ' Se connecter avec Facebook';
+    };
+
+    (function(d, s, id) {
+      var js, fjs = d.getElementsByTagName(s)[0];
+      if (d.getElementById(id)) return;
+      js = d.createElement(s); js.id = id;
+      js.src = 'https://connect.facebook.net/fr_FR/sdk.js';
+      fjs.parentNode.insertBefore(js, fjs);
+    }(document, 'script', 'facebook-jssdk'));
+
+  } else {
+    setIcon('❌'); setCorps('Paramètres manquants.');
+  }
+</script>
+</body>
+</html>
