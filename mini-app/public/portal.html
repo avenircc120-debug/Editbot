@@ -122,17 +122,14 @@
   var API_BASE = SUPABASE_URL + '/functions/v1/web-portal';
 
   var LEAGUES = [
-    { id: '4334', name: 'Ligue 1', flag: '🇫🇷' },
-    { id: '4328', name: 'Premier League', flag: '🏴' },
-    { id: '4335', name: 'La Liga', flag: '🇪🇸' },
-    { id: '4331', name: 'Bundesliga', flag: '🇩🇪' },
-    { id: '4332', name: 'Serie A', flag: '🇮🇹' },
+    { id: '4334', name: 'Ligue 1',         flag: '🇫🇷' },
+    { id: '4328', name: 'Premier League',  flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+    { id: '4335', name: 'La Liga',          flag: '🇪🇸' },
+    { id: '4331', name: 'Bundesliga',       flag: '🇩🇪' },
+    { id: '4332', name: 'Serie A',          flag: '🇮🇹' },
     { id: '4480', name: 'Champions League', flag: '🏆' },
-    { id: '4481', name: 'Europa League', flag: '🟠' },
-    { id: '4344', name: 'Primeira Liga', flag: '🇵🇹' },
-    { id: '4346', name: 'MLS', flag: '🇺🇸' },
-    { id: '4351', name: 'Brasileirao', flag: '🇧🇷' },
-    { id: '4429', name: 'Coupe du Monde', flag: '🌍' },
+    { id: '4481', name: 'Europa League',    flag: '🟠' },
+    { id: '4329', name: 'Championship',     flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
   ];
 
   var state = { token: null, league: LEAGUES[0].id, filter: 'all' };
