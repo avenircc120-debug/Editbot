@@ -1,6 +1,5 @@
 /**
- * web-portal — Mon espace Editbot v3
- * Wallet | Facebook | Coupons | Competitions
+ * web-portal — Mon espace Editbot v3 (matchs 30j)
  */
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
@@ -38,22 +37,20 @@ async function handleGet(token, url) {
   const chatId = profil.telegram_user_id;
   const action = url.searchParams.get('action') ?? '';
 
-  // URL OAuth Facebook
   if (action === 'fb_connect_url') {
     const nonce = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     await supabase.from('facebook_oauth_states').insert({ nonce, telegram_user_id: chatId, expires_at: expiresAt });
-    const fbUrl = `${SUPABASE_URL}/functions/v1/facebook-oauth?init=1&nonce=${nonce}`;
+    const fbUrl = SUPABASE_URL + '/functions/v1/facebook-oauth?init=1&nonce=' + nonce;
     return json({ url: fbUrl });
   }
 
-  // Matchs d'une compétition
   if (action === 'matches') {
     const competitionId = url.searchParams.get('competitionId') ?? '';
     const filter        = url.searchParams.get('filter') ?? 'all';
     const now     = new Date();
     const moins2h = new Date(now.getTime() - 2  * 60 * 60 * 1000).toISOString();
-    const j7      = new Date(now.getTime() + 7  * 24 * 60 * 60 * 1000).toISOString();
+    const j30     = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
     const debJour = now.toISOString().slice(0, 10) + 'T00:00:00.000Z';
     const finJour = now.toISOString().slice(0, 10) + 'T23:59:59.999Z';
 
@@ -61,12 +58,12 @@ async function handleGet(token, url) {
       .from('matchs_index')
       .select('match_id,home_team,away_team,match_date,status,home_score,away_score,competition,tournament_id')
       .order('match_date', { ascending: true })
-      .limit(60);
+      .limit(200);
 
     if (competitionId) q = q.eq('tournament_id', competitionId);
     if (filter === 'live')       q = q.eq('status', 'inprogress');
     else if (filter === 'today') q = q.gte('match_date', debJour).lte('match_date', finJour);
-    else                         q = q.gte('match_date', moins2h).lte('match_date', j7);
+    else                         q = q.gte('match_date', moins2h).lte('match_date', j30);
 
     const [{ data: matchs }, { data: selections }] = await Promise.all([
       q,
@@ -82,7 +79,6 @@ async function handleGet(token, url) {
     });
   }
 
-  // Données principales
   const [walletRes, txRes, fbRes, couponsRes] = await Promise.all([
     supabase.from('wallets').select('balance').eq('telegram_user_id', chatId).maybeSingle(),
     supabase.from('wallet_transactions').select('id,type,amount,status,methode,note,created_at')
