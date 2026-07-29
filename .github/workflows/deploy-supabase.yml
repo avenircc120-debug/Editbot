@@ -44,7 +44,3 @@ jobs:
           done
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-Cliquez "Commit changes" — ça va déclencher un nouveau test automatiquement. Dites-moi quand c'est fait.
-
-Connection lost. Reload to reconnect.
-Agent has questions 
