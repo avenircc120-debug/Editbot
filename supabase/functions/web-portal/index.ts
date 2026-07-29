@@ -1,5 +1,5 @@
 /**
- * web-portal — Mon espace Editbot v3 (matchs 30j)
+ * web-portal — Mon espace Editbot v3 (matchs 30j) // ci-test
  */
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
