@@ -6,7 +6,7 @@
 <title>Editbot — Mon espace</title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
-  body{font-family:system-ui,sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh;overflow-x:hidden}
+  body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh;overflow-x:hidden}
 
   header{padding:16px;border-bottom:1px solid #232838;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:#0f1117;z-index:10}
   .hamburger{display:flex;flex-direction:column;gap:4px;cursor:pointer;padding:6px}
@@ -14,17 +14,102 @@
   header h1{font-size:17px;font-weight:700}
   .avatar-btn{width:34px;height:34px;border-radius:50%;background:#1877f2;display:flex;align-items:center;justify-content:center;font-size:16px;cursor:pointer;border:none;color:#fff}
 
-  /* Login screen */
-  .login-wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:24px;text-align:center}
-  .login-card{background:#1a1f2e;border:1px solid #2d3748;border-radius:16px;padding:40px 32px;max-width:420px;width:100%}
-  .login-card .i{font-size:48px;margin-bottom:14px}
-  .login-card h2{font-size:20px;margin-bottom:10px}
-  .login-card p{color:#a0aec0;font-size:14px;line-height:1.7;margin-bottom:20px}
-  .btn-fb{display:inline-flex;align-items:center;justify-content:center;gap:10px;padding:14px 28px;width:100%;background:#1877f2;color:#fff;border:none;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer}
-  .btn-fb:hover{opacity:.9}
-  .btn-outline{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 20px;width:100%;background:transparent;color:#e2e8f0;border:1px solid #2d3748;border-radius:12px;font-size:14px;font-weight:600;cursor:pointer;margin-top:10px}
+  /* ── Login screen ───────────────────────────────────────── */
+  .login-wrap{
+    display:flex;flex-direction:column;align-items:center;
+    justify-content:flex-end;min-height:100vh;padding:0;
+    text-align:center;position:relative;overflow:hidden;
+  }
 
-  /* Overlay + side drawer (compétitions) */
+  /* Background "app preview" blur effect */
+  .login-bg{
+    position:absolute;inset:0;
+    background:
+      radial-gradient(ellipse 80% 60% at 50% -10%, rgba(24,119,242,0.18) 0%, transparent 70%),
+      radial-gradient(ellipse 60% 40% at 80% 80%, rgba(24,119,242,0.08) 0%, transparent 60%),
+      #0f1117;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
+    padding-bottom:340px;
+  }
+
+  /* Editbot branding in background */
+  .login-brand{
+    display:flex;flex-direction:column;align-items:center;gap:8px;
+    opacity:1;
+  }
+  .login-brand-icon{
+    width:56px;height:56px;border-radius:14px;
+    background:linear-gradient(135deg,#1877f2 0%,#0a5ecc 100%);
+    display:flex;align-items:center;justify-content:center;font-size:28px;
+    box-shadow:0 8px 24px rgba(24,119,242,0.35);
+  }
+  .login-brand-name{
+    font-size:22px;font-weight:700;color:#fff;
+    letter-spacing:-0.3px;
+  }
+  .login-brand-tag{font-size:13px;color:#718096;}
+
+  /* Fake "app" cards in background for depth */
+  .bg-cards{display:flex;gap:10px;padding:0 16px;max-width:380px;width:100%;}
+  .bg-card{
+    flex:1;background:rgba(26,31,46,0.7);border:1px solid rgba(45,55,72,0.5);
+    border-radius:12px;padding:12px;backdrop-filter:blur(4px);
+  }
+  .bg-card-label{font-size:10px;color:#4a5568;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;}
+  .bg-card-val{font-size:15px;font-weight:700;color:#e2e8f0;}
+  .bg-card-sub{font-size:10px;color:#718096;margin-top:2px;}
+
+  /* Bottom sheet */
+  .login-sheet{
+    position:relative;z-index:10;
+    width:100%;max-width:480px;
+    background:#161b27;
+    border-radius:20px 20px 0 0;
+    border-top:1px solid #2d3748;
+    padding:28px 24px 40px;
+    box-shadow:0 -8px 40px rgba(0,0,0,0.5);
+    animation:slideUp .25s ease-out;
+  }
+  @keyframes slideUp{from{transform:translateY(30px);opacity:0}to{transform:translateY(0);opacity:1}}
+
+  .sheet-handle{
+    width:36px;height:4px;border-radius:999px;
+    background:#2d3748;margin:0 auto 24px;
+  }
+
+  .sheet-title{font-size:17px;font-weight:700;color:#fff;margin-bottom:6px;}
+  .sheet-sub{font-size:13px;color:#718096;line-height:1.5;margin-bottom:22px;}
+
+  /* Facebook button — styled like Replit auth buttons */
+  .btn-fb-auth{
+    display:flex;align-items:center;gap:12px;
+    width:100%;padding:15px 18px;
+    background:#1a1f2e;
+    border:1px solid #2d3748;
+    border-radius:12px;
+    font-size:15px;font-weight:600;
+    color:#e2e8f0;cursor:pointer;
+    transition:background .15s, border-color .15s, transform .1s;
+    text-align:left;
+  }
+  .btn-fb-auth:hover{background:#1f2740;border-color:#1877f2;transform:translateY(-1px);}
+  .btn-fb-auth:active{transform:translateY(0);}
+  .btn-fb-auth .fb-logo{
+    width:36px;height:36px;border-radius:8px;
+    background:#1877f2;display:flex;align-items:center;justify-content:center;
+    flex-shrink:0;box-shadow:0 2px 8px rgba(24,119,242,0.4);
+  }
+  .btn-fb-auth .btn-text{flex:1;}
+  .btn-fb-auth .btn-text strong{display:block;font-size:15px;color:#fff;}
+  .btn-fb-auth .btn-text span{font-size:12px;color:#718096;font-weight:400;}
+  .btn-fb-auth .arrow{color:#4a5568;font-size:16px;}
+
+  .login-legal{
+    margin-top:20px;font-size:11px;color:#4a5568;line-height:1.6;
+  }
+  .login-legal a{color:#718096;text-decoration:underline;}
+
+  /* ── Overlay + side drawer (compétitions) ───────────────── */
   .overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:20;display:none}
   .overlay.open{display:block}
   .drawer{position:fixed;top:0;left:0;bottom:0;width:280px;background:#151823;z-index:30;transform:translateX(-100%);transition:transform .2s ease;overflow-y:auto;border-right:1px solid #232838}
@@ -33,7 +118,7 @@
   .league-item{padding:14px 16px;font-size:14px;cursor:pointer;border-bottom:1px solid #1c2130;display:flex;align-items:center;gap:10px}
   .league-item.active{background:#1a1f2e;color:#f97316;font-weight:700}
 
-  /* Profile panel (right drawer) */
+  /* ── Profile panel (right drawer) ──────────────────────── */
   .profile-drawer{position:fixed;top:0;right:0;bottom:0;width:300px;background:#151823;z-index:30;transform:translateX(100%);transition:transform .2s ease;border-left:1px solid #232838}
   .profile-drawer.open{transform:translateX(0)}
   .profile-header{padding:24px 20px;text-align:center;border-bottom:1px solid #232838}
@@ -44,14 +129,14 @@
   .page-item{padding:12px;background:#1a1f2e;border-radius:10px;margin-bottom:8px;font-size:13px}
   .btn-logout{width:100%;padding:13px;background:rgba(229,62,62,.15);color:#fc8181;border:1px solid rgba(229,62,62,.3);border-radius:12px;font-size:14px;font-weight:600;cursor:pointer;margin-top:20px}
 
-  /* Filters */
+  /* ── Filters ────────────────────────────────────────────── */
   .filters{display:flex;gap:8px;padding:14px 16px}
   .filter-chip{flex-shrink:0;padding:7px 16px;border-radius:999px;background:#1a1f2e;border:1px solid #2d3748;font-size:13px;cursor:pointer}
   .filter-chip.active{background:#fff;color:#0f1117;font-weight:600}
 
   .current-league{padding:0 16px 4px;font-size:13px;color:#718096}
 
-  /* Matches */
+  /* ── Matches ─────────────────────────────────────────────── */
   .matches{padding:8px 16px 40px;display:flex;flex-direction:column;gap:10px}
   .match-card{background:#1a1f2e;border:1px solid #2d3748;border-radius:14px;padding:14px 16px}
   .teams{font-size:14px;font-weight:600}
@@ -71,15 +156,64 @@
 </head>
 <body>
 
+<!-- ── Login screen ──────────────────────────────────────────────── -->
 <div id="login-screen" class="login-wrap" style="display:none">
-  <div class="login-card">
-    <div class="i">⚽</div>
-    <h2>Editbot — Mon espace</h2>
-    <p id="login-msg">Connecte-toi avec Facebook pour lier ta Page et diffuser automatiquement les scores en direct de tes compétitions favorites.</p>
-    <button class="btn-fb" id="login-btn">Se connecter avec Facebook</button>
+
+  <!-- Background branding -->
+  <div class="login-bg">
+    <div class="login-brand">
+      <div class="login-brand-icon">⚽</div>
+      <div class="login-brand-name">Editbot</div>
+      <div class="login-brand-tag">Diffusion automatique de scores</div>
+    </div>
+    <div class="bg-cards">
+      <div class="bg-card">
+        <div class="bg-card-label">En direct</div>
+        <div class="bg-card-val">3 matchs</div>
+        <div class="bg-card-sub">🔴 Maintenant</div>
+      </div>
+      <div class="bg-card">
+        <div class="bg-card-label">Pages liées</div>
+        <div class="bg-card-val">—</div>
+        <div class="bg-card-sub">Connecte-toi</div>
+      </div>
+      <div class="bg-card">
+        <div class="bg-card-label">Publications</div>
+        <div class="bg-card-val">Auto</div>
+        <div class="bg-card-sub">✅ Actif</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom sheet -->
+  <div class="login-sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">Connecte-toi pour continuer</div>
+    <div class="sheet-sub" id="login-msg">Accède à ton espace Editbot et diffuse les scores en direct sur tes Pages Facebook.</div>
+
+    <!-- Facebook only button -->
+    <button class="btn-fb-auth" id="login-btn">
+      <div class="fb-logo">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="white">
+          <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+        </svg>
+      </div>
+      <div class="btn-text">
+        <strong>Continuer avec Facebook</strong>
+        <span>Pages Facebook · Diffusion automatique</span>
+      </div>
+      <span class="arrow">›</span>
+    </button>
+
+    <div class="login-legal">
+      En continuant, tu acceptes nos
+      <a href="/privacy-policy.html">Politique de confidentialité</a>
+      et nos <a href="/data-deletion.html">conditions de suppression de données</a>.
+    </div>
   </div>
 </div>
 
+<!-- ── App screen ─────────────────────────────────────────────────── -->
 <div id="app-screen" style="display:none">
   <header>
     <div class="hamburger" id="menu-btn"><span></span><span></span><span></span></div>
