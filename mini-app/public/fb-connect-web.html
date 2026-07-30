@@ -104,20 +104,16 @@ p{color:#a0aec0;line-height:1.7;font-size:14px;margin-bottom:0}
   }
 
   if (appId && nonce && apiUrl) {
-    setIcon('👤');
-    setTitre('Connecter votre compte Facebook');
-    setCorps("Appuie sur le bouton pour autoriser l'accès à tes Pages Facebook.");
+    setIcon('⏳');
+    setTitre('Connexion en cours…');
+    setCorps('Connexion à Facebook, veuillez patienter.');
     clearAct();
-
-    var connectBtn = mkBtn('<span class="loader"></span> Chargement…', 'btn-fb', null, true);
-    connectBtn.onclick = function() { if (sdkReady) doLogin(); };
 
     window.fbAsyncInit = function() {
       FB.init({ appId: appId, cookie: true, xfbml: false, version: 'v22.0' });
       FB.AppEvents.logPageView();
       sdkReady = true;
-      connectBtn.disabled = false;
-      connectBtn.innerHTML = FB_ICON + ' Se connecter avec Facebook';
+      doLogin(); // Auto-déclenche le login — plus besoin de bouton supplémentaire
     };
 
     (function(d, s, id) {
