@@ -15,44 +15,93 @@
     background:#fff;overflow:hidden;
   }
 
-  /* Voronoi canvas */
+  /* Voronoi canvas — bright blue */
   #voronoi-canvas{
     position:absolute;inset:0;width:100%;height:100%;z-index:0;
   }
 
-  /* Floating score widgets */
-  .widgets-layer{
-    position:absolute;inset:0;z-index:1;pointer-events:none;overflow:hidden;
+  /* ── Facebook pages horizontal scroll strip ───────────── */
+  .fb-scroll-wrap{
+    position:absolute;z-index:2;width:100%;
+    /* Centered vertically in the upper 60% of screen */
+    top:50%;transform:translateY(-180px);
+    pointer-events:none;
   }
-  .score-widget{
-    position:absolute;
-    background:#fff;
-    border:1.5px solid #e5e7eb;
-    border-radius:12px;
-    padding:10px 14px;
-    box-shadow:0 2px 12px rgba(0,0,0,0.08);
-    display:flex;align-items:center;gap:10px;
-    white-space:nowrap;
-    font-size:12px;
-    animation:floatWidget linear infinite;
-    opacity:0;
-  }
-  .score-widget .badge{
-    font-size:10px;font-weight:700;letter-spacing:0.06em;
-    text-transform:uppercase;padding:2px 6px;border-radius:4px;
-  }
-  .badge-live{background:#fee2e2;color:#dc2626;}
-  .badge-ft{background:#f3f4f6;color:#6b7280;}
-  .score-widget .teams{font-weight:600;color:#111;font-size:13px;}
-  .score-widget .score{font-weight:800;color:#111;font-size:14px;min-width:32px;text-align:center;}
-  .score-widget .comp{font-size:10px;color:#9ca3af;}
 
-  @keyframes floatWidget{
-    0%  {opacity:0;transform:translateY(0)}
-    8%  {opacity:1}
-    88% {opacity:1}
-    100%{opacity:0;transform:translateY(-520px)}
+  /* Two rows that scroll in opposite directions */
+  .fb-track{
+    display:flex;gap:12px;
+    padding:0 20px 0 20px;
+    width:max-content;
+    margin-bottom:12px;
   }
+  .fb-track-row{overflow:hidden;width:100%;}
+  .fb-track-row.row1 .fb-track{ animation:scrollLeft  28s linear infinite; }
+  .fb-track-row.row2 .fb-track{ animation:scrollRight 22s linear infinite; }
+
+  @keyframes scrollLeft {
+    0%   { transform: translateX(0); }
+    100% { transform: translateX(-50%); }
+  }
+  @keyframes scrollRight {
+    0%   { transform: translateX(-50%); }
+    100% { transform: translateX(0); }
+  }
+
+  /* Facebook page card */
+  .fb-page-card{
+    flex-shrink:0;
+    width:200px;
+    background:#fff;
+    border:1.5px solid #e2e8f0;
+    border-radius:14px;
+    overflow:hidden;
+    box-shadow:0 2px 12px rgba(24,119,242,0.10);
+  }
+
+  /* Top cover — Facebook blue gradient with team flags */
+  .fb-card-cover{
+    height:72px;
+    display:flex;align-items:center;justify-content:center;gap:8px;
+    font-size:22px;position:relative;overflow:hidden;
+  }
+  .fb-card-cover::after{
+    content:'';position:absolute;inset:0;
+    background:linear-gradient(135deg,rgba(255,255,255,0.08) 0%,transparent 60%);
+  }
+
+  /* Page avatar row */
+  .fb-card-body{padding:8px 10px 10px;}
+  .fb-card-avatar-row{display:flex;align-items:center;gap:7px;margin-bottom:6px;}
+  .fb-card-avatar{
+    width:28px;height:28px;border-radius:50%;
+    background:#1877f2;color:#fff;
+    display:flex;align-items:center;justify-content:center;
+    font-size:13px;font-weight:700;flex-shrink:0;
+    border:2px solid #fff;box-shadow:0 0 0 1px #e2e8f0;
+  }
+  .fb-card-name{font-size:12px;font-weight:700;color:#111;line-height:1.2;}
+  .fb-card-fans{font-size:10px;color:#9ca3af;margin-bottom:6px;}
+
+  /* Live score row */
+  .fb-card-score{
+    display:flex;align-items:center;justify-content:space-between;
+    background:#f8faff;border:1px solid #dbeafe;
+    border-radius:8px;padding:5px 8px;
+  }
+  .fb-card-score .team{font-size:10px;font-weight:600;color:#374151;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .fb-card-score .sc{font-size:13px;font-weight:800;color:#1877f2;}
+  .fb-card-live{
+    display:inline-flex;align-items:center;gap:4px;
+    font-size:9px;font-weight:700;color:#dc2626;
+    background:#fee2e2;border-radius:4px;padding:2px 5px;
+    margin-bottom:4px;
+  }
+  .fb-card-live .dot{
+    width:5px;height:5px;border-radius:50%;background:#dc2626;
+    animation:blink 1.2s ease-in-out infinite;
+  }
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
 
   /* Bottom card */
   .login-card{
@@ -61,17 +110,15 @@
     background:#fff;
     border-radius:28px 28px 0 0;
     border-top:1px solid #e5e7eb;
-    padding:24px 24px 48px;
-    box-shadow:0 -4px 32px rgba(0,0,0,0.08);
+    padding:22px 24px 44px;
+    box-shadow:0 -4px 40px rgba(24,119,242,0.10);
   }
-
   .card-handle{
     width:40px;height:4px;border-radius:999px;
-    background:#e5e7eb;margin:0 auto 20px;
+    background:#e5e7eb;margin:0 auto 18px;
   }
-
   .card-logo{
-    display:flex;align-items:center;gap:10px;margin-bottom:18px;
+    display:flex;align-items:center;gap:10px;margin-bottom:16px;
   }
   .card-logo-icon{
     width:40px;height:40px;border-radius:10px;
@@ -80,9 +127,8 @@
   }
   .card-logo-text{font-size:18px;font-weight:800;color:#111;letter-spacing:-0.4px;}
   .card-logo-sub{font-size:12px;color:#9ca3af;margin-top:1px;}
-
-  .card-headline{font-size:22px;font-weight:800;color:#111;margin-bottom:6px;letter-spacing:-0.5px;line-height:1.25;}
-  .card-desc{font-size:14px;color:#6b7280;line-height:1.6;margin-bottom:22px;}
+  .card-headline{font-size:21px;font-weight:800;color:#111;margin-bottom:6px;letter-spacing:-0.5px;line-height:1.25;}
+  .card-desc{font-size:14px;color:#6b7280;line-height:1.6;margin-bottom:20px;}
 
   /* Facebook button */
   .btn-fb{
@@ -92,21 +138,20 @@
     border:none;border-radius:14px;
     font-size:16px;font-weight:700;color:#fff;
     cursor:pointer;
-    box-shadow:0 4px 16px rgba(24,119,242,0.35);
-    transition:transform .15s,box-shadow .15s,background .15s;
+    box-shadow:0 4px 20px rgba(24,119,242,0.38);
+    transition:transform .15s,box-shadow .15s;
     position:relative;overflow:hidden;
   }
   .btn-fb::before{
     content:'';position:absolute;inset:0;
     background:linear-gradient(135deg,rgba(255,255,255,0.15) 0%,transparent 60%);
-    pointer-events:none;
   }
-  .btn-fb:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(24,119,242,0.4);}
-  .btn-fb:active{transform:translateY(0);box-shadow:0 2px 8px rgba(24,119,242,0.3);}
+  .btn-fb:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(24,119,242,0.44);}
+  .btn-fb:active{transform:translateY(0);}
   .btn-fb svg{flex-shrink:0;}
 
   .login-legal{
-    margin-top:16px;font-size:11px;color:#9ca3af;text-align:center;line-height:1.6;
+    margin-top:14px;font-size:11px;color:#9ca3af;text-align:center;line-height:1.6;
   }
   .login-legal a{color:#6b7280;text-decoration:underline;}
 
@@ -123,7 +168,7 @@
   .drawer.open{transform:translateX(0)}
   .drawer-header{padding:18px 16px;font-size:15px;font-weight:700;border-bottom:1px solid #e5e7eb;color:#111}
   .league-item{padding:14px 16px;font-size:14px;cursor:pointer;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:10px;color:#374151}
-  .league-item.active{background:#f0f9ff;color:#1877f2;font-weight:700}
+  .league-item.active{background:#eff6ff;color:#1877f2;font-weight:700}
 
   .profile-drawer{position:fixed;top:0;right:0;bottom:0;width:300px;background:#fff;z-index:30;transform:translateX(100%);transition:transform .2s ease;border-left:1px solid #e5e7eb}
   .profile-drawer.open{transform:translateX(0)}
@@ -138,7 +183,6 @@
   .filters{display:flex;gap:8px;padding:14px 16px;overflow-x:auto}
   .filter-chip{flex-shrink:0;padding:7px 16px;border-radius:999px;background:#f9fafb;border:1px solid #e5e7eb;font-size:13px;cursor:pointer;color:#374151}
   .filter-chip.active{background:#111;color:#fff;border-color:#111;font-weight:600}
-
   .current-league{padding:0 16px 4px;font-size:13px;color:#9ca3af}
 
   .matches{padding:8px 16px 40px;display:flex;flex-direction:column;gap:10px}
@@ -153,7 +197,6 @@
   .switch.on{background:#ea580c}
   .switch .knob{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;transition:left .15s;box-shadow:0 1px 3px rgba(0,0,0,0.2)}
   .switch.on .knob{left:20px}
-
   .empty{text-align:center;color:#9ca3af;padding:40px 16px;font-size:14px}
   .loading{text-align:center;color:#9ca3af;padding:40px 16px;font-size:14px}
 </style>
@@ -165,13 +208,25 @@
 ══════════════════════════════════════════════════ -->
 <div id="login-screen">
 
-  <!-- Animated Voronoi canvas -->
+  <!-- Bright-blue Voronoi canvas -->
   <canvas id="voronoi-canvas"></canvas>
 
-  <!-- Floating score widgets layer -->
-  <div class="widgets-layer" id="widgets-layer"></div>
+  <!-- Facebook pages horizontal scroll -->
+  <div class="fb-scroll-wrap">
 
-  <!-- Bottom card -->
+    <!-- Row 1 → left -->
+    <div class="fb-track-row row1">
+      <div class="fb-track" id="fb-track-1"></div>
+    </div>
+
+    <!-- Row 2 → right -->
+    <div class="fb-track-row row2">
+      <div class="fb-track" id="fb-track-2"></div>
+    </div>
+
+  </div>
+
+  <!-- Bottom login card -->
   <div class="login-card">
     <div class="card-handle"></div>
 
@@ -224,7 +279,6 @@
   <div class="drawer-header">Compétitions</div>
   <div id="leagues-list"></div>
 </div>
-
 <div class="overlay" id="overlay-right"></div>
 <div class="profile-drawer" id="drawer-right">
   <div class="profile-header">
@@ -240,196 +294,185 @@
 
 <script>
 /* ═══════════════════════════════════════════════════
-   VORONOI + NETWORK ANIMATED BACKGROUND
+   BRIGHT-BLUE VORONOI / NETWORK CANVAS
 ═══════════════════════════════════════════════════ */
 (function() {
   var canvas = document.getElementById('voronoi-canvas');
-  var ctx = canvas.getContext('2d');
-  var W, H, pts, edges;
-  var POINT_COUNT = 28;
-  var SPEED = 0.25;
+  var ctx    = canvas.getContext('2d');
+  var W, H, pts;
+  var N     = 32;
+  var SPEED = 0.3;
+  /* Bright blue palette */
+  var BLUE_EDGE = 'rgba(24,119,242,';  /* #1877f2 */
+  var BLUE_NODE = 'rgba(24,119,242,0.55)';
+  var BLUE_FILL = 'rgba(24,119,242,0.030)';
 
   function resize() {
     W = canvas.width  = window.innerWidth;
     H = canvas.height = window.innerHeight;
   }
 
-  function initPoints() {
+  function init() {
     pts = [];
-    for (var i = 0; i < POINT_COUNT; i++) {
+    for (var i = 0; i < N; i++) {
       pts.push({
         x: Math.random() * W,
         y: Math.random() * H,
-        vx: (Math.random() - 0.5) * SPEED,
-        vy: (Math.random() - 0.5) * SPEED,
+        vx:(Math.random()-0.5)*SPEED,
+        vy:(Math.random()-0.5)*SPEED,
       });
     }
   }
 
-  function dist2(a, b) {
-    var dx = a.x - b.x, dy = a.y - b.y;
-    return dx * dx + dy * dy;
-  }
+  function d2(a,b){var dx=a.x-b.x,dy=a.y-b.y;return dx*dx+dy*dy;}
 
-  function drawFrame() {
-    ctx.clearRect(0, 0, W, H);
+  function frame() {
+    ctx.clearRect(0,0,W,H);
 
-    /* Move points */
-    pts.forEach(function(p) {
-      p.x += p.vx; p.y += p.vy;
-      if (p.x < -40)  { p.x = -40;  p.vx = Math.abs(p.vx); }
-      if (p.x > W+40) { p.x = W+40; p.vx = -Math.abs(p.vx); }
-      if (p.y < -40)  { p.y = -40;  p.vy = Math.abs(p.vy); }
-      if (p.y > H+40) { p.y = H+40; p.vy = -Math.abs(p.vy); }
+    /* move */
+    pts.forEach(function(p){
+      p.x+=p.vx; p.y+=p.vy;
+      if(p.x<-50){p.x=-50;p.vx=Math.abs(p.vx);}
+      if(p.x>W+50){p.x=W+50;p.vx=-Math.abs(p.vx);}
+      if(p.y<-50){p.y=-50;p.vy=Math.abs(p.vy);}
+      if(p.y>H+50){p.y=H+50;p.vy=-Math.abs(p.vy);}
     });
 
-    /* Draw Delaunay-ish edges (nearest neighbours) */
-    var MAX_DIST2 = (W * 0.30) * (W * 0.30);
-    ctx.lineWidth = 1;
+    var MAX2 = (W*0.28)*(W*0.28);
 
-    for (var i = 0; i < pts.length; i++) {
-      for (var j = i + 1; j < pts.length; j++) {
-        var d2 = dist2(pts[i], pts[j]);
-        if (d2 < MAX_DIST2) {
-          var alpha = 1 - d2 / MAX_DIST2;
-          ctx.strokeStyle = 'rgba(17,17,17,' + (alpha * 0.18) + ')';
+    /* triangular fills */
+    for(var i=0;i<pts.length;i++){
+      var nb=[];
+      for(var j=0;j<pts.length;j++){
+        if(i===j) continue;
+        nb.push({j:j,d:d2(pts[i],pts[j])});
+      }
+      nb.sort(function(a,b){return a.d-b.d;});
+      if(nb.length>=2 && nb[0].d<MAX2 && nb[1].d<MAX2){
+        ctx.beginPath();
+        ctx.moveTo(pts[i].x,pts[i].y);
+        ctx.lineTo(pts[nb[0].j].x,pts[nb[0].j].y);
+        ctx.lineTo(pts[nb[1].j].x,pts[nb[1].j].y);
+        ctx.closePath();
+        ctx.fillStyle=BLUE_FILL;
+        ctx.fill();
+      }
+    }
+
+    /* edges */
+    ctx.lineWidth=1.2;
+    for(var i=0;i<pts.length;i++){
+      for(var j=i+1;j<pts.length;j++){
+        var dd=d2(pts[i],pts[j]);
+        if(dd<MAX2){
+          var a=1-dd/MAX2;
+          ctx.strokeStyle=BLUE_EDGE+(a*0.55)+')';
           ctx.beginPath();
-          ctx.moveTo(pts[i].x, pts[i].y);
-          ctx.lineTo(pts[j].x, pts[j].y);
+          ctx.moveTo(pts[i].x,pts[i].y);
+          ctx.lineTo(pts[j].x,pts[j].y);
           ctx.stroke();
         }
       }
     }
 
-    /* Draw nodes */
-    pts.forEach(function(p) {
+    /* nodes */
+    pts.forEach(function(p){
       ctx.beginPath();
-      ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(17,17,17,0.18)';
+      ctx.arc(p.x,p.y,3,0,Math.PI*2);
+      ctx.fillStyle=BLUE_NODE;
       ctx.fill();
     });
 
-    /* Draw Voronoi-like polygon fills (lightweight: convex hull of each point's region) */
-    /* Simple approximation: for each point find its 3 nearest neighbours and fill the triangle */
-    for (var i = 0; i < pts.length; i++) {
-      var neighbours = [];
-      for (var j = 0; j < pts.length; j++) {
-        if (i === j) continue;
-        neighbours.push({ idx: j, d2: dist2(pts[i], pts[j]) });
-      }
-      neighbours.sort(function(a, b) { return a.d2 - b.d2; });
-      var near = neighbours.slice(0, 2);
-      if (near.length < 2) continue;
-      var p0 = pts[i], p1 = pts[near[0].idx], p2 = pts[near[1].idx];
-      ctx.beginPath();
-      ctx.moveTo(p0.x, p0.y);
-      ctx.lineTo(p1.x, p1.y);
-      ctx.lineTo(p2.x, p2.y);
-      ctx.closePath();
-      ctx.fillStyle = 'rgba(24,119,242,0.012)';
-      ctx.fill();
-    }
-
-    requestAnimationFrame(drawFrame);
+    requestAnimationFrame(frame);
   }
 
-  window.addEventListener('resize', function() {
-    resize();
-    initPoints();
-  });
-
-  resize();
-  initPoints();
-  drawFrame();
+  window.addEventListener('resize',function(){resize();init();});
+  resize(); init(); frame();
 })();
 
 /* ═══════════════════════════════════════════════════
-   FLOATING SCORE WIDGETS
+   FACEBOOK PAGE CARDS — horizontal scroll rows
 ═══════════════════════════════════════════════════ */
-(function() {
-  var layer = document.getElementById('widgets-layer');
-
-  var MATCHES = [
-    { home:'PSG',        away:'OM',         score:'2 - 1', comp:'Ligue 1',        live:true  },
-    { home:'Man City',   away:'Arsenal',    score:'1 - 1', comp:'Premier League', live:true  },
-    { home:'Real Madrid',away:'Barcelone',  score:'3 - 0', comp:'La Liga',        live:false },
-    { home:'Bayern',     away:'Dortmund',   score:'2 - 2', comp:'Bundesliga',     live:true  },
-    { home:'Juventus',   away:'AC Milan',   score:'1 - 0', comp:'Serie A',        live:false },
-    { home:'Liverpool',  away:'Chelsea',    score:'0 - 0', comp:'Premier League', live:true  },
-    { home:'Atletico',   away:'Séville',    score:'1 - 2', comp:'La Liga',        live:false },
-    { home:'Inter',      away:'Napoli',     score:'2 - 1', comp:'Serie A',        live:true  },
-    { home:'Ajax',       away:'PSV',        score:'1 - 1', comp:'Eredivisie',     live:true  },
-    { home:'Benfica',    away:'Porto',      score:'0 - 1', comp:'Liga NOS',       live:false },
+(function(){
+  /* Data: fake Facebook pages with live scores */
+  var PAGES = [
+    { name:'Foot Actu 🇫🇷',   fans:'128K', cover:'#1877f2', emoji:'🏆', home:'PSG',      away:'OM',       score:'2 - 1', live:true  },
+    { name:'Liga Passion',    fans:'84K',  cover:'#e63946', emoji:'⚽', home:'Real',     away:'Barça',    score:'1 - 1', live:true  },
+    { name:'Premier Fan',     fans:'212K', cover:'#2563eb', emoji:'🦁', home:'Man City', away:'Arsenal',  score:'0 - 0', live:true  },
+    { name:'Bundesliga Live', fans:'67K',  cover:'#f97316', emoji:'🔥', home:'Bayern',   away:'Dortmund', score:'3 - 2', live:true  },
+    { name:'Serie A Fans',    fans:'95K',  cover:'#7c3aed', emoji:'🇮🇹', home:'Inter',    away:'Milan',    score:'1 - 0', live:false },
+    { name:'Champions Hub',   fans:'340K', cover:'#0ea5e9', emoji:'🏅', home:'City',     away:'PSG',      score:'2 - 0', live:true  },
+    { name:'Euro Football',   fans:'55K',  cover:'#16a34a', emoji:'🌍', home:'Juventus', away:'Roma',     score:'1 - 2', live:false },
+    { name:'Ligue 1 Daily',   fans:'103K', cover:'#1877f2', emoji:'📺', home:'Lyon',     away:'Monaco',   score:'0 - 1', live:true  },
+    { name:'Goal Hunters',    fans:'76K',  cover:'#dc2626', emoji:'🎯', home:'Séville',  away:'Atletico', score:'1 - 1', live:true  },
+    { name:'Match Direct',    fans:'189K', cover:'#0891b2', emoji:'📡', home:'Benfica',  away:'Porto',    score:'2 - 2', live:false },
   ];
 
-  var W = window.innerWidth;
-  var COLS = W < 400 ? 2 : 3;
-  var COL_W = W / COLS;
+  function makeCard(p) {
+    var card = document.createElement('div');
+    card.className = 'fb-page-card';
 
-  function spawnWidget() {
-    var m = MATCHES[Math.floor(Math.random() * MATCHES.length)];
-    var col = Math.floor(Math.random() * COLS);
-    var x = col * COL_W + Math.random() * (COL_W - 200);
-    if (x < 8) x = 8;
-    if (x > W - 220) x = W - 220;
+    var initials = p.name.replace(/[^A-Za-zÀ-ÿ]/g,'').slice(0,2).toUpperCase();
 
-    var el = document.createElement('div');
-    el.className = 'score-widget';
+    var liveHtml = p.live
+      ? '<div class="fb-card-live"><span class="dot"></span>EN DIRECT</div>'
+      : '<div style="height:16px;margin-bottom:4px;"></div>';
 
-    var duration = 12 + Math.random() * 8;
-    el.style.left   = x + 'px';
-    el.style.bottom = '-80px';
-    el.style.animationDuration = duration + 's';
-    el.style.animationDelay   = '0s';
-
-    el.innerHTML =
-      '<div class="badge ' + (m.live ? 'badge-live' : 'badge-ft') + '">' +
-        (m.live ? '🔴 LIVE' : 'FT') +
-      '</div>' +
-      '<div>' +
-        '<div class="teams">' + m.home + ' <span class="score">' + m.score + '</span> ' + m.away + '</div>' +
-        '<div class="comp">' + m.comp + '</div>' +
+    card.innerHTML =
+      '<div class="fb-card-cover" style="background:'+p.cover+'">'+
+        '<span>'+p.emoji+'</span>'+
+      '</div>'+
+      '<div class="fb-card-body">'+
+        '<div class="fb-card-avatar-row">'+
+          '<div class="fb-card-avatar">'+initials+'</div>'+
+          '<div class="fb-card-name">'+p.name+'</div>'+
+        '</div>'+
+        '<div class="fb-card-fans">👥 '+p.fans+' abonnés</div>'+
+        liveHtml+
+        '<div class="fb-card-score">'+
+          '<span class="team">'+p.home+'</span>'+
+          '<span class="sc">'+p.score+'</span>'+
+          '<span class="team" style="text-align:right">'+p.away+'</span>'+
+        '</div>'+
       '</div>';
-
-    layer.appendChild(el);
-
-    setTimeout(function() {
-      if (el.parentNode) el.parentNode.removeChild(el);
-    }, (duration + 0.5) * 1000);
+    return card;
   }
 
-  /* Stagger initial spawns */
-  for (var i = 0; i < 5; i++) {
-    (function(delay) {
-      setTimeout(spawnWidget, delay);
-    })(i * 1800);
+  /* Build each track with double cards for seamless loop */
+  function buildTrack(trackId, pages) {
+    var track = document.getElementById(trackId);
+    /* double for seamless infinite scroll */
+    pages.concat(pages).forEach(function(p){
+      track.appendChild(makeCard(p));
+    });
   }
 
-  /* Keep spawning */
-  setInterval(spawnWidget, 2200);
+  /* Row 1: pages 0-6 */
+  buildTrack('fb-track-1', PAGES.slice(0, 7));
+  /* Row 2: pages 3-9 (offset for visual variety) */
+  buildTrack('fb-track-2', PAGES.slice(3).concat(PAGES.slice(0,3)));
 })();
 
 /* ═══════════════════════════════════════════════════
    APP LOGIC
 ═══════════════════════════════════════════════════ */
 var SUPABASE_URL = 'https://jxrwgcsbomqvvchvkkdt.supabase.co';
-var API_BASE = SUPABASE_URL + '/functions/v1/web-portal';
+var API_BASE     = SUPABASE_URL + '/functions/v1/web-portal';
 
 var LEAGUES = [
-  { id: '4334', name: 'Ligue 1',         flag: '🇫🇷' },
-  { id: '4328', name: 'Premier League',  flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
-  { id: '4335', name: 'La Liga',          flag: '🇪🇸' },
-  { id: '4331', name: 'Bundesliga',       flag: '🇩🇪' },
-  { id: '4332', name: 'Serie A',          flag: '🇮🇹' },
-  { id: '4480', name: 'Champions League', flag: '🏆' },
-  { id: '4481', name: 'Europa League',    flag: '🟠' },
-  { id: '4329', name: 'Championship',     flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+  { id:'4334', name:'Ligue 1',         flag:'🇫🇷' },
+  { id:'4328', name:'Premier League',  flag:'🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+  { id:'4335', name:'La Liga',          flag:'🇪🇸' },
+  { id:'4331', name:'Bundesliga',       flag:'🇩🇪' },
+  { id:'4332', name:'Serie A',          flag:'🇮🇹' },
+  { id:'4480', name:'Champions League', flag:'🏆' },
+  { id:'4481', name:'Europa League',    flag:'🟠' },
+  { id:'4329', name:'Championship',     flag:'🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
 ];
 
-var state = { token: null, league: LEAGUES[0].id, filter: 'all' };
-
-function q(id) { return document.getElementById(id); }
-function getUrlToken() { return new URLSearchParams(window.location.search).get('token'); }
+var state = { token:null, league:LEAGUES[0].id, filter:'all' };
+function q(id){ return document.getElementById(id); }
+function getUrlToken(){ return new URLSearchParams(window.location.search).get('token'); }
 
 function init() {
   var urlToken = getUrlToken();
@@ -438,24 +481,15 @@ function init() {
     window.history.replaceState({}, '', window.location.pathname);
   }
   state.token = localStorage.getItem('editbot_web_token');
-
-  if (!state.token) {
-    showLogin();
-    return;
-  }
-
-  q('login-screen').style.display = 'none';
-  q('app-screen').style.display   = 'block';
-  renderLeagues();
-  bindFilters();
-  bindDrawers();
-  loadProfile();
-  loadMatches();
+  if (!state.token) { showLogin(); return; }
+  q('login-screen').style.display='none';
+  q('app-screen').style.display='block';
+  renderLeagues(); bindFilters(); bindDrawers(); loadProfile(); loadMatches();
 }
 
 function showLogin(msg) {
-  q('app-screen').style.display   = 'none';
-  q('login-screen').style.display = 'flex';
+  q('app-screen').style.display='none';
+  q('login-screen').style.display='flex';
   if (msg) q('login-msg').textContent = msg;
   q('login-btn').onclick = function() {
     window.location.href = SUPABASE_URL + '/functions/v1/facebook-web-login?init=1';
@@ -463,29 +497,27 @@ function showLogin(msg) {
 }
 
 function bindDrawers() {
-  q('menu-btn').onclick    = function() { q('drawer-left').classList.add('open');    q('overlay-left').classList.add('open'); };
-  q('overlay-left').onclick= function() { q('drawer-left').classList.remove('open'); q('overlay-left').classList.remove('open'); };
-  q('profile-btn').onclick = function() { q('drawer-right').classList.add('open');   q('overlay-right').classList.add('open'); };
-  q('overlay-right').onclick=function() { q('drawer-right').classList.remove('open');q('overlay-right').classList.remove('open'); };
-  q('logout-btn').onclick  = function() {
-    localStorage.removeItem('editbot_web_token');
-    state.token = null;
-    q('drawer-right').classList.remove('open');
-    q('overlay-right').classList.remove('open');
+  q('menu-btn').onclick     = function(){ q('drawer-left').classList.add('open');    q('overlay-left').classList.add('open'); };
+  q('overlay-left').onclick = function(){ q('drawer-left').classList.remove('open'); q('overlay-left').classList.remove('open'); };
+  q('profile-btn').onclick  = function(){ q('drawer-right').classList.add('open');   q('overlay-right').classList.add('open'); };
+  q('overlay-right').onclick= function(){ q('drawer-right').classList.remove('open');q('overlay-right').classList.remove('open'); };
+  q('logout-btn').onclick   = function(){
+    localStorage.removeItem('editbot_web_token'); state.token=null;
+    q('drawer-right').classList.remove('open'); q('overlay-right').classList.remove('open');
     showLogin('Tu as été déconnecté. Connecte-toi à nouveau.');
   };
 }
 
 function renderLeagues() {
-  var cur = LEAGUES.find(function(l){ return l.id === state.league; });
-  q('current-league-label').textContent = cur.flag + ' ' + cur.name;
-  var el = q('leagues-list'); el.innerHTML = '';
-  LEAGUES.forEach(function(l) {
-    var item = document.createElement('div');
-    item.className = 'league-item' + (l.id === state.league ? ' active' : '');
-    item.textContent = l.flag + '  ' + l.name;
-    item.onclick = function() {
-      state.league = l.id; renderLeagues(); loadMatches();
+  var cur=LEAGUES.find(function(l){return l.id===state.league;});
+  q('current-league-label').textContent=cur.flag+' '+cur.name;
+  var el=q('leagues-list'); el.innerHTML='';
+  LEAGUES.forEach(function(l){
+    var item=document.createElement('div');
+    item.className='league-item'+(l.id===state.league?' active':'');
+    item.textContent=l.flag+'  '+l.name;
+    item.onclick=function(){
+      state.league=l.id; renderLeagues(); loadMatches();
       q('drawer-left').classList.remove('open'); q('overlay-left').classList.remove('open');
     };
     el.appendChild(item);
@@ -493,91 +525,70 @@ function renderLeagues() {
 }
 
 function bindFilters() {
-  document.querySelectorAll('.filter-chip').forEach(function(chip) {
-    chip.onclick = function() {
-      document.querySelectorAll('.filter-chip').forEach(function(c){ c.classList.remove('active'); });
-      chip.classList.add('active'); state.filter = chip.dataset.filter; loadMatches();
+  document.querySelectorAll('.filter-chip').forEach(function(c){
+    c.onclick=function(){
+      document.querySelectorAll('.filter-chip').forEach(function(x){x.classList.remove('active');});
+      c.classList.add('active'); state.filter=c.dataset.filter; loadMatches();
     };
   });
 }
 
 function loadProfile() {
-  fetch(API_BASE + '?token=' + encodeURIComponent(state.token))
-    .then(function(r){ return r.json(); })
-    .then(function(d) {
-      if (d.error) { showLogin(d.error || 'Session expirée.'); localStorage.removeItem('editbot_web_token'); return; }
-      var pages = d.fbPages || [];
-      q('profile-name').textContent = pages.length ? pages[0].fb_page_name || 'Compte Facebook' : 'Aucune Page';
-      var pagesEl = q('pages-list'); pagesEl.innerHTML = '';
-      if (!pages.length) {
-        pagesEl.innerHTML = '<div class="page-item">Aucune Page Facebook connectée.</div>';
-      } else {
-        pages.forEach(function(p) {
-          var item = document.createElement('div');
-          item.className = 'page-item';
-          item.textContent = '📘 ' + (p.fb_page_name || p.fb_page_id);
-          pagesEl.appendChild(item);
-        });
-      }
+  fetch(API_BASE+'?token='+encodeURIComponent(state.token))
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.error){showLogin(d.error||'Session expirée.');localStorage.removeItem('editbot_web_token');return;}
+      var pages=d.fbPages||[];
+      q('profile-name').textContent=pages.length?pages[0].fb_page_name||'Compte Facebook':'Aucune Page';
+      var el=q('pages-list'); el.innerHTML='';
+      if(!pages.length){el.innerHTML='<div class="page-item">Aucune Page Facebook connectée.</div>';}
+      else{pages.forEach(function(p){var i=document.createElement('div');i.className='page-item';i.textContent='📘 '+(p.fb_page_name||p.fb_page_id);el.appendChild(i);});}
     }).catch(function(){});
 }
 
 function loadMatches() {
-  q('matches').innerHTML = '<div class="loading">Chargement des matchs…</div>';
-  var url = API_BASE + '?token=' + encodeURIComponent(state.token)
-    + '&action=matches&competitionId=' + encodeURIComponent(state.league)
-    + '&filter=' + encodeURIComponent(state.filter);
-  fetch(url)
-    .then(function(r){ return r.json(); })
-    .then(function(d) {
-      if (d.error) { showLogin(d.error || 'Session expirée.'); localStorage.removeItem('editbot_web_token'); return; }
-      renderMatches(d.matches || [], d.broadcastIds || []);
-    }).catch(function() {
-      q('matches').innerHTML = '<div class="empty">Erreur de chargement. Réessaie.</div>';
-    });
+  q('matches').innerHTML='<div class="loading">Chargement des matchs…</div>';
+  fetch(API_BASE+'?token='+encodeURIComponent(state.token)+'&action=matches&competitionId='+encodeURIComponent(state.league)+'&filter='+encodeURIComponent(state.filter))
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.error){showLogin(d.error||'Session expirée.');localStorage.removeItem('editbot_web_token');return;}
+      renderMatches(d.matches||[],d.broadcastIds||[]);
+    }).catch(function(){q('matches').innerHTML='<div class="empty">Erreur de chargement. Réessaie.</div>';});
 }
 
-function statusLabel(s) {
-  if (s === 'inprogress') return '🔴 En direct';
-  if (s === 'finished')   return 'Terminé';
-  if (s === 'postponed')  return 'Reporté';
-  return 'À venir';
+function statusLabel(s){
+  if(s==='inprogress')return'🔴 En direct';
+  if(s==='finished')return'Terminé';
+  if(s==='postponed')return'Reporté';
+  return'À venir';
 }
 
-function renderMatches(matches, broadcastIds) {
-  var el = q('matches');
-  if (!matches.length) { el.innerHTML = '<div class="empty">Aucun match pour cette sélection.</div>'; return; }
-  el.innerHTML = '';
-  matches.forEach(function(m) {
-    var isOn = broadcastIds.indexOf(m.match_id) !== -1;
-    var card = document.createElement('div'); card.className = 'match-card';
-    var scoreTxt = (m.home_score !== null && m.away_score !== null) ? (m.home_score + ' - ' + m.away_score) : 'vs';
-    card.innerHTML =
-      '<div class="teams">' + m.home_team + ' <span class="score">' + scoreTxt + '</span> ' + m.away_team + '</div>' +
-      '<div class="status' + (m.status==='inprogress'?' live':'') + '">' + statusLabel(m.status) + '</div>' +
-      '<div class="toggle-row">' +
-        '<span class="toggle-label">Diffuser sur Facebook</span>' +
-        '<div class="switch' + (isOn?' on':'') + '" data-match="' + m.match_id + '"><div class="knob"></div></div>' +
+function renderMatches(matches,broadcastIds){
+  var el=q('matches');
+  if(!matches.length){el.innerHTML='<div class="empty">Aucun match pour cette sélection.</div>';return;}
+  el.innerHTML='';
+  matches.forEach(function(m){
+    var isOn=broadcastIds.indexOf(m.match_id)!==-1;
+    var card=document.createElement('div'); card.className='match-card';
+    var sc=(m.home_score!==null&&m.away_score!==null)?(m.home_score+' - '+m.away_score):'vs';
+    card.innerHTML=
+      '<div class="teams">'+m.home_team+' <span class="score">'+sc+'</span> '+m.away_team+'</div>'+
+      '<div class="status'+(m.status==='inprogress'?' live':'')+'">'+statusLabel(m.status)+'</div>'+
+      '<div class="toggle-row">'+
+        '<span class="toggle-label">Diffuser sur Facebook</span>'+
+        '<div class="switch'+(isOn?' on':'')+'" data-match="'+m.match_id+'"><div class="knob"></div></div>'+
       '</div>';
-    var sw = card.querySelector('.switch');
-    sw.onclick = function() {
-      var nowOn = !sw.classList.contains('on');
-      sw.classList.toggle('on', nowOn);
-      toggleBroadcast(m, nowOn, sw);
+    var sw=card.querySelector('.switch');
+    sw.onclick=function(){
+      var on=!sw.classList.contains('on');
+      sw.classList.toggle('on',on);
+      fetch(API_BASE+'?token='+encodeURIComponent(state.token),{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({broadcast:{matchId:m.match_id,active:on,competition:m.competition,homeTeam:m.home_team,awayTeam:m.away_team}}),
+      }).then(function(r){return r.json();}).then(function(d){if(d.error){sw.classList.toggle('on',!on);alert(d.error);}}).catch(function(){sw.classList.toggle('on',!on);});
     };
     el.appendChild(card);
   });
-}
-
-function toggleBroadcast(match, active, swEl) {
-  fetch(API_BASE + '?token=' + encodeURIComponent(state.token), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ broadcast: { matchId: match.match_id, active: active, competition: match.competition, homeTeam: match.home_team, awayTeam: match.away_team } }),
-  })
-    .then(function(r){ return r.json(); })
-    .then(function(d){ if (d.error) { swEl.classList.toggle('on', !active); alert(d.error); } })
-    .catch(function() { swEl.classList.toggle('on', !active); });
 }
 
 init();
