@@ -6,221 +6,210 @@
 <title>Editbot — Mon espace</title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
-  body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh;overflow-x:hidden}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#fff;color:#111;min-height:100vh;overflow-x:hidden}
 
-  header{padding:16px;border-bottom:1px solid #232838;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:#0f1117;z-index:10}
-  .hamburger{display:flex;flex-direction:column;gap:4px;cursor:pointer;padding:6px}
-  .hamburger span{width:20px;height:2px;background:#e2e8f0;border-radius:2px}
-  header h1{font-size:17px;font-weight:700}
-  .avatar-btn{width:34px;height:34px;border-radius:50%;background:#1877f2;display:flex;align-items:center;justify-content:center;font-size:16px;cursor:pointer;border:none;color:#fff}
-
-  /* ── Login screen ───────────────────────────────────────── */
-  .login-wrap{
-    display:flex;flex-direction:column;align-items:center;
-    justify-content:flex-end;min-height:100vh;padding:0;
-    text-align:center;position:relative;overflow:hidden;
+  /* ── LOGIN SCREEN ─────────────────────────────────────── */
+  #login-screen{
+    position:fixed;inset:0;display:none;flex-direction:column;
+    align-items:center;justify-content:flex-end;
+    background:#fff;overflow:hidden;
   }
 
-  /* Background "app preview" blur effect */
-  .login-bg{
-    position:absolute;inset:0;
-    background:
-      radial-gradient(ellipse 80% 60% at 50% -10%, rgba(24,119,242,0.18) 0%, transparent 70%),
-      radial-gradient(ellipse 60% 40% at 80% 80%, rgba(24,119,242,0.08) 0%, transparent 60%),
-      #0f1117;
-    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
-    padding-bottom:340px;
+  /* Voronoi canvas */
+  #voronoi-canvas{
+    position:absolute;inset:0;width:100%;height:100%;z-index:0;
   }
 
-  /* Editbot branding in background */
-  .login-brand{
-    display:flex;flex-direction:column;align-items:center;gap:8px;
-    opacity:1;
+  /* Floating score widgets */
+  .widgets-layer{
+    position:absolute;inset:0;z-index:1;pointer-events:none;overflow:hidden;
   }
-  .login-brand-icon{
-    width:56px;height:56px;border-radius:14px;
-    background:linear-gradient(135deg,#1877f2 0%,#0a5ecc 100%);
-    display:flex;align-items:center;justify-content:center;font-size:28px;
-    box-shadow:0 8px 24px rgba(24,119,242,0.35);
+  .score-widget{
+    position:absolute;
+    background:#fff;
+    border:1.5px solid #e5e7eb;
+    border-radius:12px;
+    padding:10px 14px;
+    box-shadow:0 2px 12px rgba(0,0,0,0.08);
+    display:flex;align-items:center;gap:10px;
+    white-space:nowrap;
+    font-size:12px;
+    animation:floatWidget linear infinite;
+    opacity:0;
   }
-  .login-brand-name{
-    font-size:22px;font-weight:700;color:#fff;
-    letter-spacing:-0.3px;
+  .score-widget .badge{
+    font-size:10px;font-weight:700;letter-spacing:0.06em;
+    text-transform:uppercase;padding:2px 6px;border-radius:4px;
   }
-  .login-brand-tag{font-size:13px;color:#718096;}
+  .badge-live{background:#fee2e2;color:#dc2626;}
+  .badge-ft{background:#f3f4f6;color:#6b7280;}
+  .score-widget .teams{font-weight:600;color:#111;font-size:13px;}
+  .score-widget .score{font-weight:800;color:#111;font-size:14px;min-width:32px;text-align:center;}
+  .score-widget .comp{font-size:10px;color:#9ca3af;}
 
-  /* Fake "app" cards in background for depth */
-  .bg-cards{display:flex;gap:10px;padding:0 16px;max-width:380px;width:100%;}
-  .bg-card{
-    flex:1;background:rgba(26,31,46,0.7);border:1px solid rgba(45,55,72,0.5);
-    border-radius:12px;padding:12px;backdrop-filter:blur(4px);
+  @keyframes floatWidget{
+    0%  {opacity:0;transform:translateY(0)}
+    8%  {opacity:1}
+    88% {opacity:1}
+    100%{opacity:0;transform:translateY(-520px)}
   }
-  .bg-card-label{font-size:10px;color:#4a5568;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;}
-  .bg-card-val{font-size:15px;font-weight:700;color:#e2e8f0;}
-  .bg-card-sub{font-size:10px;color:#718096;margin-top:2px;}
 
-  /* Bottom sheet */
-  .login-sheet{
+  /* Bottom card */
+  .login-card{
     position:relative;z-index:10;
     width:100%;max-width:480px;
-    background:#161b27;
-    border-radius:20px 20px 0 0;
-    border-top:1px solid #2d3748;
-    padding:28px 24px 40px;
-    box-shadow:0 -8px 40px rgba(0,0,0,0.5);
-    animation:slideUp .25s ease-out;
-  }
-  @keyframes slideUp{from{transform:translateY(30px);opacity:0}to{transform:translateY(0);opacity:1}}
-
-  .sheet-handle{
-    width:36px;height:4px;border-radius:999px;
-    background:#2d3748;margin:0 auto 24px;
+    background:#fff;
+    border-radius:28px 28px 0 0;
+    border-top:1px solid #e5e7eb;
+    padding:24px 24px 48px;
+    box-shadow:0 -4px 32px rgba(0,0,0,0.08);
   }
 
-  .sheet-title{font-size:17px;font-weight:700;color:#fff;margin-bottom:6px;}
-  .sheet-sub{font-size:13px;color:#718096;line-height:1.5;margin-bottom:22px;}
+  .card-handle{
+    width:40px;height:4px;border-radius:999px;
+    background:#e5e7eb;margin:0 auto 20px;
+  }
 
-  /* Facebook button — styled like Replit auth buttons */
-  .btn-fb-auth{
-    display:flex;align-items:center;gap:12px;
-    width:100%;padding:15px 18px;
-    background:#1a1f2e;
-    border:1px solid #2d3748;
-    border-radius:12px;
-    font-size:15px;font-weight:600;
-    color:#e2e8f0;cursor:pointer;
-    transition:background .15s, border-color .15s, transform .1s;
-    text-align:left;
+  .card-logo{
+    display:flex;align-items:center;gap:10px;margin-bottom:18px;
   }
-  .btn-fb-auth:hover{background:#1f2740;border-color:#1877f2;transform:translateY(-1px);}
-  .btn-fb-auth:active{transform:translateY(0);}
-  .btn-fb-auth .fb-logo{
-    width:36px;height:36px;border-radius:8px;
-    background:#1877f2;display:flex;align-items:center;justify-content:center;
-    flex-shrink:0;box-shadow:0 2px 8px rgba(24,119,242,0.4);
+  .card-logo-icon{
+    width:40px;height:40px;border-radius:10px;
+    background:#111;display:flex;align-items:center;justify-content:center;
+    font-size:20px;flex-shrink:0;
   }
-  .btn-fb-auth .btn-text{flex:1;}
-  .btn-fb-auth .btn-text strong{display:block;font-size:15px;color:#fff;}
-  .btn-fb-auth .btn-text span{font-size:12px;color:#718096;font-weight:400;}
-  .btn-fb-auth .arrow{color:#4a5568;font-size:16px;}
+  .card-logo-text{font-size:18px;font-weight:800;color:#111;letter-spacing:-0.4px;}
+  .card-logo-sub{font-size:12px;color:#9ca3af;margin-top:1px;}
+
+  .card-headline{font-size:22px;font-weight:800;color:#111;margin-bottom:6px;letter-spacing:-0.5px;line-height:1.25;}
+  .card-desc{font-size:14px;color:#6b7280;line-height:1.6;margin-bottom:22px;}
+
+  /* Facebook button */
+  .btn-fb{
+    display:flex;align-items:center;justify-content:center;gap:12px;
+    width:100%;padding:16px 20px;
+    background:#1877f2;
+    border:none;border-radius:14px;
+    font-size:16px;font-weight:700;color:#fff;
+    cursor:pointer;
+    box-shadow:0 4px 16px rgba(24,119,242,0.35);
+    transition:transform .15s,box-shadow .15s,background .15s;
+    position:relative;overflow:hidden;
+  }
+  .btn-fb::before{
+    content:'';position:absolute;inset:0;
+    background:linear-gradient(135deg,rgba(255,255,255,0.15) 0%,transparent 60%);
+    pointer-events:none;
+  }
+  .btn-fb:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(24,119,242,0.4);}
+  .btn-fb:active{transform:translateY(0);box-shadow:0 2px 8px rgba(24,119,242,0.3);}
+  .btn-fb svg{flex-shrink:0;}
 
   .login-legal{
-    margin-top:20px;font-size:11px;color:#4a5568;line-height:1.6;
+    margin-top:16px;font-size:11px;color:#9ca3af;text-align:center;line-height:1.6;
   }
-  .login-legal a{color:#718096;text-decoration:underline;}
+  .login-legal a{color:#6b7280;text-decoration:underline;}
 
-  /* ── Overlay + side drawer (compétitions) ───────────────── */
-  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:20;display:none}
+  /* ── APP SCREEN ────────────────────────────────────────── */
+  header{padding:16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:#fff;z-index:10}
+  .hamburger{display:flex;flex-direction:column;gap:4px;cursor:pointer;padding:6px}
+  .hamburger span{width:20px;height:2px;background:#111;border-radius:2px}
+  header h1{font-size:17px;font-weight:700;color:#111}
+  .avatar-btn{width:34px;height:34px;border-radius:50%;background:#1877f2;display:flex;align-items:center;justify-content:center;font-size:16px;cursor:pointer;border:none;color:#fff}
+
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:20;display:none}
   .overlay.open{display:block}
-  .drawer{position:fixed;top:0;left:0;bottom:0;width:280px;background:#151823;z-index:30;transform:translateX(-100%);transition:transform .2s ease;overflow-y:auto;border-right:1px solid #232838}
+  .drawer{position:fixed;top:0;left:0;bottom:0;width:280px;background:#fff;z-index:30;transform:translateX(-100%);transition:transform .2s ease;overflow-y:auto;border-right:1px solid #e5e7eb}
   .drawer.open{transform:translateX(0)}
-  .drawer-header{padding:18px 16px;font-size:15px;font-weight:700;border-bottom:1px solid #232838}
-  .league-item{padding:14px 16px;font-size:14px;cursor:pointer;border-bottom:1px solid #1c2130;display:flex;align-items:center;gap:10px}
-  .league-item.active{background:#1a1f2e;color:#f97316;font-weight:700}
+  .drawer-header{padding:18px 16px;font-size:15px;font-weight:700;border-bottom:1px solid #e5e7eb;color:#111}
+  .league-item{padding:14px 16px;font-size:14px;cursor:pointer;border-bottom:1px solid #f3f4f6;display:flex;align-items:center;gap:10px;color:#374151}
+  .league-item.active{background:#f0f9ff;color:#1877f2;font-weight:700}
 
-  /* ── Profile panel (right drawer) ──────────────────────── */
-  .profile-drawer{position:fixed;top:0;right:0;bottom:0;width:300px;background:#151823;z-index:30;transform:translateX(100%);transition:transform .2s ease;border-left:1px solid #232838}
+  .profile-drawer{position:fixed;top:0;right:0;bottom:0;width:300px;background:#fff;z-index:30;transform:translateX(100%);transition:transform .2s ease;border-left:1px solid #e5e7eb}
   .profile-drawer.open{transform:translateX(0)}
-  .profile-header{padding:24px 20px;text-align:center;border-bottom:1px solid #232838}
+  .profile-header{padding:24px 20px;text-align:center;border-bottom:1px solid #e5e7eb}
   .profile-avatar{width:64px;height:64px;border-radius:50%;background:#1877f2;display:flex;align-items:center;justify-content:center;font-size:28px;margin:0 auto 12px}
-  .profile-name{font-size:16px;font-weight:700}
-  .profile-status{font-size:12px;color:#22c55e;margin-top:4px}
+  .profile-name{font-size:16px;font-weight:700;color:#111}
+  .profile-status{font-size:12px;color:#16a34a;margin-top:4px}
   .profile-body{padding:16px}
-  .page-item{padding:12px;background:#1a1f2e;border-radius:10px;margin-bottom:8px;font-size:13px}
-  .btn-logout{width:100%;padding:13px;background:rgba(229,62,62,.15);color:#fc8181;border:1px solid rgba(229,62,62,.3);border-radius:12px;font-size:14px;font-weight:600;cursor:pointer;margin-top:20px}
+  .page-item{padding:12px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:8px;font-size:13px;color:#374151}
+  .btn-logout{width:100%;padding:13px;background:#fff;color:#dc2626;border:1px solid #fca5a5;border-radius:12px;font-size:14px;font-weight:600;cursor:pointer;margin-top:20px}
 
-  /* ── Filters ────────────────────────────────────────────── */
-  .filters{display:flex;gap:8px;padding:14px 16px}
-  .filter-chip{flex-shrink:0;padding:7px 16px;border-radius:999px;background:#1a1f2e;border:1px solid #2d3748;font-size:13px;cursor:pointer}
-  .filter-chip.active{background:#fff;color:#0f1117;font-weight:600}
+  .filters{display:flex;gap:8px;padding:14px 16px;overflow-x:auto}
+  .filter-chip{flex-shrink:0;padding:7px 16px;border-radius:999px;background:#f9fafb;border:1px solid #e5e7eb;font-size:13px;cursor:pointer;color:#374151}
+  .filter-chip.active{background:#111;color:#fff;border-color:#111;font-weight:600}
 
-  .current-league{padding:0 16px 4px;font-size:13px;color:#718096}
+  .current-league{padding:0 16px 4px;font-size:13px;color:#9ca3af}
 
-  /* ── Matches ─────────────────────────────────────────────── */
   .matches{padding:8px 16px 40px;display:flex;flex-direction:column;gap:10px}
-  .match-card{background:#1a1f2e;border:1px solid #2d3748;border-radius:14px;padding:14px 16px}
-  .teams{font-size:14px;font-weight:600}
-  .score{font-size:15px;font-weight:800;color:#f97316}
-  .status{font-size:11px;color:#718096;margin-top:4px}
-  .status.live{color:#22c55e;font-weight:700}
-  .toggle-row{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px solid #232838}
-  .toggle-label{font-size:12px;color:#a0aec0}
-  .switch{position:relative;width:42px;height:24px;border-radius:999px;background:#2d3748;cursor:pointer;transition:background .15s;flex-shrink:0}
-  .switch.on{background:#f97316}
-  .switch .knob{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;transition:left .15s}
+  .match-card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:14px 16px;box-shadow:0 1px 4px rgba(0,0,0,0.04)}
+  .teams{font-size:14px;font-weight:600;color:#111}
+  .score{font-size:15px;font-weight:800;color:#ea580c}
+  .status{font-size:11px;color:#9ca3af;margin-top:4px}
+  .status.live{color:#16a34a;font-weight:700}
+  .toggle-row{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6}
+  .toggle-label{font-size:12px;color:#6b7280}
+  .switch{position:relative;width:42px;height:24px;border-radius:999px;background:#e5e7eb;cursor:pointer;transition:background .15s;flex-shrink:0}
+  .switch.on{background:#ea580c}
+  .switch .knob{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;transition:left .15s;box-shadow:0 1px 3px rgba(0,0,0,0.2)}
   .switch.on .knob{left:20px}
 
-  .empty{text-align:center;color:#718096;padding:40px 16px;font-size:14px}
-  .loading{text-align:center;color:#718096;padding:40px 16px;font-size:14px}
+  .empty{text-align:center;color:#9ca3af;padding:40px 16px;font-size:14px}
+  .loading{text-align:center;color:#9ca3af;padding:40px 16px;font-size:14px}
 </style>
 </head>
 <body>
 
-<!-- ── Login screen ──────────────────────────────────────────────── -->
-<div id="login-screen" class="login-wrap" style="display:none">
+<!-- ══════════════════════════════════════════════════
+     LOGIN SCREEN
+══════════════════════════════════════════════════ -->
+<div id="login-screen">
 
-  <!-- Background branding -->
-  <div class="login-bg">
-    <div class="login-brand">
-      <div class="login-brand-icon">⚽</div>
-      <div class="login-brand-name">Editbot</div>
-      <div class="login-brand-tag">Diffusion automatique de scores</div>
-    </div>
-    <div class="bg-cards">
-      <div class="bg-card">
-        <div class="bg-card-label">En direct</div>
-        <div class="bg-card-val">3 matchs</div>
-        <div class="bg-card-sub">🔴 Maintenant</div>
-      </div>
-      <div class="bg-card">
-        <div class="bg-card-label">Pages liées</div>
-        <div class="bg-card-val">—</div>
-        <div class="bg-card-sub">Connecte-toi</div>
-      </div>
-      <div class="bg-card">
-        <div class="bg-card-label">Publications</div>
-        <div class="bg-card-val">Auto</div>
-        <div class="bg-card-sub">✅ Actif</div>
+  <!-- Animated Voronoi canvas -->
+  <canvas id="voronoi-canvas"></canvas>
+
+  <!-- Floating score widgets layer -->
+  <div class="widgets-layer" id="widgets-layer"></div>
+
+  <!-- Bottom card -->
+  <div class="login-card">
+    <div class="card-handle"></div>
+
+    <div class="card-logo">
+      <div class="card-logo-icon">⚽</div>
+      <div>
+        <div class="card-logo-text">Editbot</div>
+        <div class="card-logo-sub">Diffusion automatique de scores</div>
       </div>
     </div>
-  </div>
 
-  <!-- Bottom sheet -->
-  <div class="login-sheet">
-    <div class="sheet-handle"></div>
-    <div class="sheet-title">Connecte-toi pour continuer</div>
-    <div class="sheet-sub" id="login-msg">Accède à ton espace Editbot et diffuse les scores en direct sur tes Pages Facebook.</div>
+    <div class="card-headline">Diffuse les scores<br>en direct sur Facebook</div>
+    <div class="card-desc" id="login-msg">Connecte tes Pages Facebook et active la diffusion automatique des scores de tes compétitions favorites.</div>
 
-    <!-- Facebook only button -->
-    <button class="btn-fb-auth" id="login-btn">
-      <div class="fb-logo">
-        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="white">
-          <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
-        </svg>
-      </div>
-      <div class="btn-text">
-        <strong>Continuer avec Facebook</strong>
-        <span>Pages Facebook · Diffusion automatique</span>
-      </div>
-      <span class="arrow">›</span>
+    <button class="btn-fb" id="login-btn">
+      <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="white">
+        <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+      </svg>
+      Continuer avec Facebook
     </button>
 
     <div class="login-legal">
-      En continuant, tu acceptes nos
+      En continuant, tu acceptes notre
       <a href="/privacy-policy.html">Politique de confidentialité</a>
-      et nos <a href="/data-deletion.html">conditions de suppression de données</a>.
+      et les <a href="/data-deletion.html">conditions de suppression</a>.
     </div>
   </div>
 </div>
 
-<!-- ── App screen ─────────────────────────────────────────────────── -->
+<!-- ══════════════════════════════════════════════════
+     APP SCREEN
+══════════════════════════════════════════════════ -->
 <div id="app-screen" style="display:none">
   <header>
     <div class="hamburger" id="menu-btn"><span></span><span></span><span></span></div>
     <h1>⚽ Editbot</h1>
     <button class="avatar-btn" id="profile-btn">👤</button>
   </header>
-
   <div class="current-league" id="current-league-label"></div>
   <div class="filters">
     <div class="filter-chip active" data-filter="all">Tous</div>
@@ -230,14 +219,12 @@
   <div class="matches" id="matches"><div class="loading">Chargement des matchs…</div></div>
 </div>
 
-<!-- Menu latéral : compétitions -->
 <div class="overlay" id="overlay-left"></div>
 <div class="drawer" id="drawer-left">
   <div class="drawer-header">Compétitions</div>
   <div id="leagues-list"></div>
 </div>
 
-<!-- Panneau profil (droite) -->
 <div class="overlay" id="overlay-right"></div>
 <div class="profile-drawer" id="drawer-right">
   <div class="profile-header">
@@ -252,212 +239,348 @@
 </div>
 
 <script>
-  var SUPABASE_URL = 'https://jxrwgcsbomqvvchvkkdt.supabase.co';
-  var API_BASE = SUPABASE_URL + '/functions/v1/web-portal';
+/* ═══════════════════════════════════════════════════
+   VORONOI + NETWORK ANIMATED BACKGROUND
+═══════════════════════════════════════════════════ */
+(function() {
+  var canvas = document.getElementById('voronoi-canvas');
+  var ctx = canvas.getContext('2d');
+  var W, H, pts, edges;
+  var POINT_COUNT = 28;
+  var SPEED = 0.25;
 
-  var LEAGUES = [
-    { id: '4334', name: 'Ligue 1',         flag: '🇫🇷' },
-    { id: '4328', name: 'Premier League',  flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
-    { id: '4335', name: 'La Liga',          flag: '🇪🇸' },
-    { id: '4331', name: 'Bundesliga',       flag: '🇩🇪' },
-    { id: '4332', name: 'Serie A',          flag: '🇮🇹' },
-    { id: '4480', name: 'Champions League', flag: '🏆' },
-    { id: '4481', name: 'Europa League',    flag: '🟠' },
-    { id: '4329', name: 'Championship',     flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+  function resize() {
+    W = canvas.width  = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+  }
+
+  function initPoints() {
+    pts = [];
+    for (var i = 0; i < POINT_COUNT; i++) {
+      pts.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        vx: (Math.random() - 0.5) * SPEED,
+        vy: (Math.random() - 0.5) * SPEED,
+      });
+    }
+  }
+
+  function dist2(a, b) {
+    var dx = a.x - b.x, dy = a.y - b.y;
+    return dx * dx + dy * dy;
+  }
+
+  function drawFrame() {
+    ctx.clearRect(0, 0, W, H);
+
+    /* Move points */
+    pts.forEach(function(p) {
+      p.x += p.vx; p.y += p.vy;
+      if (p.x < -40)  { p.x = -40;  p.vx = Math.abs(p.vx); }
+      if (p.x > W+40) { p.x = W+40; p.vx = -Math.abs(p.vx); }
+      if (p.y < -40)  { p.y = -40;  p.vy = Math.abs(p.vy); }
+      if (p.y > H+40) { p.y = H+40; p.vy = -Math.abs(p.vy); }
+    });
+
+    /* Draw Delaunay-ish edges (nearest neighbours) */
+    var MAX_DIST2 = (W * 0.30) * (W * 0.30);
+    ctx.lineWidth = 1;
+
+    for (var i = 0; i < pts.length; i++) {
+      for (var j = i + 1; j < pts.length; j++) {
+        var d2 = dist2(pts[i], pts[j]);
+        if (d2 < MAX_DIST2) {
+          var alpha = 1 - d2 / MAX_DIST2;
+          ctx.strokeStyle = 'rgba(17,17,17,' + (alpha * 0.18) + ')';
+          ctx.beginPath();
+          ctx.moveTo(pts[i].x, pts[i].y);
+          ctx.lineTo(pts[j].x, pts[j].y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    /* Draw nodes */
+    pts.forEach(function(p) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(17,17,17,0.18)';
+      ctx.fill();
+    });
+
+    /* Draw Voronoi-like polygon fills (lightweight: convex hull of each point's region) */
+    /* Simple approximation: for each point find its 3 nearest neighbours and fill the triangle */
+    for (var i = 0; i < pts.length; i++) {
+      var neighbours = [];
+      for (var j = 0; j < pts.length; j++) {
+        if (i === j) continue;
+        neighbours.push({ idx: j, d2: dist2(pts[i], pts[j]) });
+      }
+      neighbours.sort(function(a, b) { return a.d2 - b.d2; });
+      var near = neighbours.slice(0, 2);
+      if (near.length < 2) continue;
+      var p0 = pts[i], p1 = pts[near[0].idx], p2 = pts[near[1].idx];
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      ctx.lineTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(24,119,242,0.012)';
+      ctx.fill();
+    }
+
+    requestAnimationFrame(drawFrame);
+  }
+
+  window.addEventListener('resize', function() {
+    resize();
+    initPoints();
+  });
+
+  resize();
+  initPoints();
+  drawFrame();
+})();
+
+/* ═══════════════════════════════════════════════════
+   FLOATING SCORE WIDGETS
+═══════════════════════════════════════════════════ */
+(function() {
+  var layer = document.getElementById('widgets-layer');
+
+  var MATCHES = [
+    { home:'PSG',        away:'OM',         score:'2 - 1', comp:'Ligue 1',        live:true  },
+    { home:'Man City',   away:'Arsenal',    score:'1 - 1', comp:'Premier League', live:true  },
+    { home:'Real Madrid',away:'Barcelone',  score:'3 - 0', comp:'La Liga',        live:false },
+    { home:'Bayern',     away:'Dortmund',   score:'2 - 2', comp:'Bundesliga',     live:true  },
+    { home:'Juventus',   away:'AC Milan',   score:'1 - 0', comp:'Serie A',        live:false },
+    { home:'Liverpool',  away:'Chelsea',    score:'0 - 0', comp:'Premier League', live:true  },
+    { home:'Atletico',   away:'Séville',    score:'1 - 2', comp:'La Liga',        live:false },
+    { home:'Inter',      away:'Napoli',     score:'2 - 1', comp:'Serie A',        live:true  },
+    { home:'Ajax',       away:'PSV',        score:'1 - 1', comp:'Eredivisie',     live:true  },
+    { home:'Benfica',    away:'Porto',      score:'0 - 1', comp:'Liga NOS',       live:false },
   ];
 
-  var state = { token: null, league: LEAGUES[0].id, filter: 'all' };
+  var W = window.innerWidth;
+  var COLS = W < 400 ? 2 : 3;
+  var COL_W = W / COLS;
 
-  function q(id) { return document.getElementById(id); }
-  function getUrlToken() { return new URLSearchParams(window.location.search).get('token'); }
+  function spawnWidget() {
+    var m = MATCHES[Math.floor(Math.random() * MATCHES.length)];
+    var col = Math.floor(Math.random() * COLS);
+    var x = col * COL_W + Math.random() * (COL_W - 200);
+    if (x < 8) x = 8;
+    if (x > W - 220) x = W - 220;
 
-  function init() {
-    var urlToken = getUrlToken();
-    if (urlToken) {
-      localStorage.setItem('editbot_web_token', urlToken);
-      window.history.replaceState({}, '', window.location.pathname);
-    }
-    state.token = localStorage.getItem('editbot_web_token');
+    var el = document.createElement('div');
+    el.className = 'score-widget';
 
-    if (!state.token) {
-      showLogin();
-      return;
-    }
+    var duration = 12 + Math.random() * 8;
+    el.style.left   = x + 'px';
+    el.style.bottom = '-80px';
+    el.style.animationDuration = duration + 's';
+    el.style.animationDelay   = '0s';
 
-    q('app-screen').style.display = 'block';
-    renderLeagues();
-    bindFilters();
-    bindDrawers();
-    loadProfile();
-    loadMatches();
+    el.innerHTML =
+      '<div class="badge ' + (m.live ? 'badge-live' : 'badge-ft') + '">' +
+        (m.live ? '🔴 LIVE' : 'FT') +
+      '</div>' +
+      '<div>' +
+        '<div class="teams">' + m.home + ' <span class="score">' + m.score + '</span> ' + m.away + '</div>' +
+        '<div class="comp">' + m.comp + '</div>' +
+      '</div>';
+
+    layer.appendChild(el);
+
+    setTimeout(function() {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    }, (duration + 0.5) * 1000);
   }
 
-  function showLogin(msg) {
-    q('app-screen').style.display = 'none';
-    q('login-screen').style.display = 'flex';
-    if (msg) q('login-msg').textContent = msg;
-    q('login-btn').onclick = function() {
-      window.location.href = SUPABASE_URL + '/functions/v1/facebook-web-login?init=1';
-    };
+  /* Stagger initial spawns */
+  for (var i = 0; i < 5; i++) {
+    (function(delay) {
+      setTimeout(spawnWidget, delay);
+    })(i * 1800);
   }
 
-  function bindDrawers() {
-    q('menu-btn').onclick = function() {
-      q('drawer-left').classList.add('open');
-      q('overlay-left').classList.add('open');
-    };
-    q('overlay-left').onclick = function() {
-      q('drawer-left').classList.remove('open');
-      q('overlay-left').classList.remove('open');
-    };
-    q('profile-btn').onclick = function() {
-      q('drawer-right').classList.add('open');
-      q('overlay-right').classList.add('open');
-    };
-    q('overlay-right').onclick = function() {
-      q('drawer-right').classList.remove('open');
-      q('overlay-right').classList.remove('open');
-    };
-    q('logout-btn').onclick = function() {
-      localStorage.removeItem('editbot_web_token');
-      state.token = null;
-      q('drawer-right').classList.remove('open');
-      q('overlay-right').classList.remove('open');
-      showLogin('Tu as été déconnecté. Connecte-toi à nouveau pour continuer.');
-    };
+  /* Keep spawning */
+  setInterval(spawnWidget, 2200);
+})();
+
+/* ═══════════════════════════════════════════════════
+   APP LOGIC
+═══════════════════════════════════════════════════ */
+var SUPABASE_URL = 'https://jxrwgcsbomqvvchvkkdt.supabase.co';
+var API_BASE = SUPABASE_URL + '/functions/v1/web-portal';
+
+var LEAGUES = [
+  { id: '4334', name: 'Ligue 1',         flag: '🇫🇷' },
+  { id: '4328', name: 'Premier League',  flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+  { id: '4335', name: 'La Liga',          flag: '🇪🇸' },
+  { id: '4331', name: 'Bundesliga',       flag: '🇩🇪' },
+  { id: '4332', name: 'Serie A',          flag: '🇮🇹' },
+  { id: '4480', name: 'Champions League', flag: '🏆' },
+  { id: '4481', name: 'Europa League',    flag: '🟠' },
+  { id: '4329', name: 'Championship',     flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+];
+
+var state = { token: null, league: LEAGUES[0].id, filter: 'all' };
+
+function q(id) { return document.getElementById(id); }
+function getUrlToken() { return new URLSearchParams(window.location.search).get('token'); }
+
+function init() {
+  var urlToken = getUrlToken();
+  if (urlToken) {
+    localStorage.setItem('editbot_web_token', urlToken);
+    window.history.replaceState({}, '', window.location.pathname);
+  }
+  state.token = localStorage.getItem('editbot_web_token');
+
+  if (!state.token) {
+    showLogin();
+    return;
   }
 
-  function renderLeagues() {
-    q('current-league-label').textContent =
-      LEAGUES.find(function(l) { return l.id === state.league; }).flag + ' ' +
-      LEAGUES.find(function(l) { return l.id === state.league; }).name;
+  q('login-screen').style.display = 'none';
+  q('app-screen').style.display   = 'block';
+  renderLeagues();
+  bindFilters();
+  bindDrawers();
+  loadProfile();
+  loadMatches();
+}
 
-    var el = q('leagues-list');
-    el.innerHTML = '';
-    LEAGUES.forEach(function(l) {
-      var item = document.createElement('div');
-      item.className = 'league-item' + (l.id === state.league ? ' active' : '');
-      item.textContent = l.flag + '  ' + l.name;
-      item.onclick = function() {
-        state.league = l.id;
-        renderLeagues();
-        loadMatches();
-        q('drawer-left').classList.remove('open');
-        q('overlay-left').classList.remove('open');
-      };
-      el.appendChild(item);
+function showLogin(msg) {
+  q('app-screen').style.display   = 'none';
+  q('login-screen').style.display = 'flex';
+  if (msg) q('login-msg').textContent = msg;
+  q('login-btn').onclick = function() {
+    window.location.href = SUPABASE_URL + '/functions/v1/facebook-web-login?init=1';
+  };
+}
+
+function bindDrawers() {
+  q('menu-btn').onclick    = function() { q('drawer-left').classList.add('open');    q('overlay-left').classList.add('open'); };
+  q('overlay-left').onclick= function() { q('drawer-left').classList.remove('open'); q('overlay-left').classList.remove('open'); };
+  q('profile-btn').onclick = function() { q('drawer-right').classList.add('open');   q('overlay-right').classList.add('open'); };
+  q('overlay-right').onclick=function() { q('drawer-right').classList.remove('open');q('overlay-right').classList.remove('open'); };
+  q('logout-btn').onclick  = function() {
+    localStorage.removeItem('editbot_web_token');
+    state.token = null;
+    q('drawer-right').classList.remove('open');
+    q('overlay-right').classList.remove('open');
+    showLogin('Tu as été déconnecté. Connecte-toi à nouveau.');
+  };
+}
+
+function renderLeagues() {
+  var cur = LEAGUES.find(function(l){ return l.id === state.league; });
+  q('current-league-label').textContent = cur.flag + ' ' + cur.name;
+  var el = q('leagues-list'); el.innerHTML = '';
+  LEAGUES.forEach(function(l) {
+    var item = document.createElement('div');
+    item.className = 'league-item' + (l.id === state.league ? ' active' : '');
+    item.textContent = l.flag + '  ' + l.name;
+    item.onclick = function() {
+      state.league = l.id; renderLeagues(); loadMatches();
+      q('drawer-left').classList.remove('open'); q('overlay-left').classList.remove('open');
+    };
+    el.appendChild(item);
+  });
+}
+
+function bindFilters() {
+  document.querySelectorAll('.filter-chip').forEach(function(chip) {
+    chip.onclick = function() {
+      document.querySelectorAll('.filter-chip').forEach(function(c){ c.classList.remove('active'); });
+      chip.classList.add('active'); state.filter = chip.dataset.filter; loadMatches();
+    };
+  });
+}
+
+function loadProfile() {
+  fetch(API_BASE + '?token=' + encodeURIComponent(state.token))
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      if (d.error) { showLogin(d.error || 'Session expirée.'); localStorage.removeItem('editbot_web_token'); return; }
+      var pages = d.fbPages || [];
+      q('profile-name').textContent = pages.length ? pages[0].fb_page_name || 'Compte Facebook' : 'Aucune Page';
+      var pagesEl = q('pages-list'); pagesEl.innerHTML = '';
+      if (!pages.length) {
+        pagesEl.innerHTML = '<div class="page-item">Aucune Page Facebook connectée.</div>';
+      } else {
+        pages.forEach(function(p) {
+          var item = document.createElement('div');
+          item.className = 'page-item';
+          item.textContent = '📘 ' + (p.fb_page_name || p.fb_page_id);
+          pagesEl.appendChild(item);
+        });
+      }
+    }).catch(function(){});
+}
+
+function loadMatches() {
+  q('matches').innerHTML = '<div class="loading">Chargement des matchs…</div>';
+  var url = API_BASE + '?token=' + encodeURIComponent(state.token)
+    + '&action=matches&competitionId=' + encodeURIComponent(state.league)
+    + '&filter=' + encodeURIComponent(state.filter);
+  fetch(url)
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      if (d.error) { showLogin(d.error || 'Session expirée.'); localStorage.removeItem('editbot_web_token'); return; }
+      renderMatches(d.matches || [], d.broadcastIds || []);
+    }).catch(function() {
+      q('matches').innerHTML = '<div class="empty">Erreur de chargement. Réessaie.</div>';
     });
-  }
+}
 
-  function bindFilters() {
-    document.querySelectorAll('.filter-chip').forEach(function(chip) {
-      chip.onclick = function() {
-        document.querySelectorAll('.filter-chip').forEach(function(c) { c.classList.remove('active'); });
-        chip.classList.add('active');
-        state.filter = chip.dataset.filter;
-        loadMatches();
-      };
-    });
-  }
+function statusLabel(s) {
+  if (s === 'inprogress') return '🔴 En direct';
+  if (s === 'finished')   return 'Terminé';
+  if (s === 'postponed')  return 'Reporté';
+  return 'À venir';
+}
 
-  function loadProfile() {
-    fetch(API_BASE + '?token=' + encodeURIComponent(state.token))
-      .then(function(r) { return r.json(); })
-      .then(function(d) {
-        if (d.error) { showLogin(d.error || 'Session expirée, reconnecte-toi.'); localStorage.removeItem('editbot_web_token'); return; }
-        var pages = d.fbPages || [];
-        q('profile-name').textContent = pages.length ? pages[0].fb_page_name || 'Compte Facebook' : 'Aucune Page';
-        var pagesEl = q('pages-list');
-        pagesEl.innerHTML = '';
-        if (!pages.length) {
-          pagesEl.innerHTML = '<div class="page-item">Aucune Page Facebook connectée.</div>';
-        } else {
-          pages.forEach(function(p) {
-            var item = document.createElement('div');
-            item.className = 'page-item';
-            item.textContent = '📘 ' + (p.fb_page_name || p.fb_page_id);
-            pagesEl.appendChild(item);
-          });
-        }
-      })
-      .catch(function() {});
-  }
+function renderMatches(matches, broadcastIds) {
+  var el = q('matches');
+  if (!matches.length) { el.innerHTML = '<div class="empty">Aucun match pour cette sélection.</div>'; return; }
+  el.innerHTML = '';
+  matches.forEach(function(m) {
+    var isOn = broadcastIds.indexOf(m.match_id) !== -1;
+    var card = document.createElement('div'); card.className = 'match-card';
+    var scoreTxt = (m.home_score !== null && m.away_score !== null) ? (m.home_score + ' - ' + m.away_score) : 'vs';
+    card.innerHTML =
+      '<div class="teams">' + m.home_team + ' <span class="score">' + scoreTxt + '</span> ' + m.away_team + '</div>' +
+      '<div class="status' + (m.status==='inprogress'?' live':'') + '">' + statusLabel(m.status) + '</div>' +
+      '<div class="toggle-row">' +
+        '<span class="toggle-label">Diffuser sur Facebook</span>' +
+        '<div class="switch' + (isOn?' on':'') + '" data-match="' + m.match_id + '"><div class="knob"></div></div>' +
+      '</div>';
+    var sw = card.querySelector('.switch');
+    sw.onclick = function() {
+      var nowOn = !sw.classList.contains('on');
+      sw.classList.toggle('on', nowOn);
+      toggleBroadcast(m, nowOn, sw);
+    };
+    el.appendChild(card);
+  });
+}
 
-  function loadMatches() {
-    q('matches').innerHTML = '<div class="loading">Chargement des matchs…</div>';
-    var url = API_BASE + '?token=' + encodeURIComponent(state.token)
-      + '&action=matches&competitionId=' + encodeURIComponent(state.league)
-      + '&filter=' + encodeURIComponent(state.filter);
+function toggleBroadcast(match, active, swEl) {
+  fetch(API_BASE + '?token=' + encodeURIComponent(state.token), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ broadcast: { matchId: match.match_id, active: active, competition: match.competition, homeTeam: match.home_team, awayTeam: match.away_team } }),
+  })
+    .then(function(r){ return r.json(); })
+    .then(function(d){ if (d.error) { swEl.classList.toggle('on', !active); alert(d.error); } })
+    .catch(function() { swEl.classList.toggle('on', !active); });
+}
 
-    fetch(url)
-      .then(function(r) { return r.json(); })
-      .then(function(d) {
-        if (d.error) { showLogin(d.error || 'Session expirée, reconnecte-toi.'); localStorage.removeItem('editbot_web_token'); return; }
-        renderMatches(d.matches || [], d.broadcastIds || []);
-      })
-      .catch(function() {
-        q('matches').innerHTML = '<div class="empty">Erreur de chargement. Réessaie.</div>';
-      });
-  }
-
-  function statusLabel(s) {
-    if (s === 'inprogress') return '🔴 En direct';
-    if (s === 'finished') return 'Terminé';
-    if (s === 'postponed') return 'Reporté';
-    return 'À venir';
-  }
-
-  function renderMatches(matches, broadcastIds) {
-    var el = q('matches');
-    if (!matches.length) {
-      el.innerHTML = '<div class="empty">Aucun match pour cette sélection.</div>';
-      return;
-    }
-    el.innerHTML = '';
-    matches.forEach(function(m) {
-      var isOn = broadcastIds.indexOf(m.match_id) !== -1;
-      var card = document.createElement('div');
-      card.className = 'match-card';
-
-      var scoreTxt = (m.home_score !== null && m.away_score !== null)
-        ? (m.home_score + ' - ' + m.away_score) : 'vs';
-
-      card.innerHTML =
-        '<div class="teams">' + m.home_team + ' <span class="score">' + scoreTxt + '</span> ' + m.away_team + '</div>' +
-        '<div class="status' + (m.status === 'inprogress' ? ' live' : '') + '">' + statusLabel(m.status) + '</div>' +
-        '<div class="toggle-row">' +
-          '<span class="toggle-label">Diffuser sur Facebook</span>' +
-          '<div class="switch' + (isOn ? ' on' : '') + '" data-match="' + m.match_id + '"><div class="knob"></div></div>' +
-        '</div>';
-
-      var sw = card.querySelector('.switch');
-      sw.onclick = function() {
-        var nowOn = !sw.classList.contains('on');
-        sw.classList.toggle('on', nowOn);
-        toggleBroadcast(m, nowOn, sw);
-      };
-
-      el.appendChild(card);
-    });
-  }
-
-  function toggleBroadcast(match, active, swEl) {
-    fetch(API_BASE + '?token=' + encodeURIComponent(state.token), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        broadcast: {
-          matchId: match.match_id, active: active, competition: match.competition,
-          homeTeam: match.home_team, awayTeam: match.away_team,
-        },
-      }),
-    })
-      .then(function(r) { return r.json(); })
-      .then(function(d) { if (d.error) { swEl.classList.toggle('on', !active); alert(d.error); } })
-      .catch(function() { swEl.classList.toggle('on', !active); });
-  }
-
-  init();
+init();
 </script>
 </body>
 </html>
