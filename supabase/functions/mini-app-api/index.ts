@@ -19,7 +19,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { LEAGUES } from '../_shared/config.ts';
 import { posterSurPage } from '../_shared/facebook.ts';
-import { formatAnnonceFacebook, formatScoreFacebook } from '../_shared/templates.ts';
+import { formatAnnonceFacebook, buildFacebookPost } from '../_shared/templates.ts';
 
 const SUPABASE_URL  = Deno.env.get('SUPABASE_URL')              ?? '';
 const SUPABASE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -241,7 +241,7 @@ async function handleBroadcast(req: Request, chatId: number): Promise<Response> 
         const mst = m.status ?? 'scheduled';
         const fbMsg = (mst !== 'inprogress' && mst !== 'finished')
           ? formatAnnonceFacebook({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, matchDate: m.match_date })
-          : formatScoreFacebook({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null, minute: m.match_minute ?? null });
+          : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: (m as any).events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null });
         Promise.allSettled(
           (pagesToPost as Array<{ fb_page_id: string; fb_page_name: string; fb_page_access_token: string }>).map(page =>
             posterSurPage(page.fb_page_id, page.fb_page_access_token, fbMsg)
