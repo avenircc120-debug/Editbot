@@ -144,11 +144,14 @@ export async function toggleBroadcast(
   token: string,
   matchId: string,
   active: boolean,
-  pageIds?: string[],
-  competition?: string,
-  homeTeam?: string,
-  awayTeam?: string
+  options?: {
+    pageIds?: string[];
+    competition?: string;
+    homeTeam?: string;
+    awayTeam?: string;
+  }
 ): Promise<void> {
+  const { pageIds, competition, homeTeam, awayTeam } = options ?? {};
   const res = await apiFetch('/broadcast', token, {
     method: 'POST',
     body: JSON.stringify({ matchId, active, pageIds, competition, homeTeam, awayTeam }),
