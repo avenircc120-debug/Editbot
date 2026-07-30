@@ -291,6 +291,10 @@
   .switch.on .knob{left:20px}
   .empty{text-align:center;color:#9ca3af;padding:40px 16px;font-size:14px}
   .loading{text-align:center;color:#9ca3af;padding:40px 16px;font-size:14px}
+  .match-date{font-size:11px;color:#6b7280;margin-bottom:6px;font-weight:500}
+  .match-date.live-date{color:#16a34a;font-weight:700}
+  .league-count{margin-left:auto;background:#f3f4f6;color:#6b7280;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;flex-shrink:0}
+  .league-item.active .league-count{background:#dbeafe;color:#1877f2}
 </style>
 </head>
 <body>
@@ -648,7 +652,7 @@ var LEAGUES=[
   {id:'4481',name:'Europa League',flag:'🟠'},
   {id:'4329',name:'Championship',flag:'🏴󠁧󠁢󠁥󠁮󠁧󠁿'},
 ];
-var state={token:null,league:LEAGUES[0].id,filter:'all'};
+var state={token:null,league:LEAGUES[0].id,filter:'all',counts:{}};
 function q(id){return document.getElementById(id);}
 function getUrlToken(){return new URLSearchParams(window.location.search).get('token');}
 
@@ -713,7 +717,8 @@ function renderLeagues(){
   var el=q('leagues-list');el.innerHTML='';
   LEAGUES.forEach(function(l){
     var item=document.createElement('div');item.className='league-item'+(l.id===state.league?' active':'');
-    item.textContent=l.flag+'  '+l.name;
+    var cnt=state.counts[l.id];
+    item.innerHTML='<span>'+l.flag+'  '+l.name+'</span>'+(cnt!=null?'<span class="league-count">'+cnt+'</span>':'');
     item.onclick=function(){state.league=l.id;renderLeagues();loadMatches();q('drawer-left').classList.remove('open');q('overlay-left').classList.remove('open');};
     el.appendChild(item);
   });
@@ -741,10 +746,27 @@ function loadMatches(){
     .then(function(r){return r.json();})
     .then(function(d){
       if(d.error){showLogin(d.error||'Session expirée.');localStorage.removeItem('editbot_web_token');return;}
-      renderMatches(d.matches||[],d.broadcastIds||[]);
+      var matches=d.matches||[];
+      state.counts[state.league]=matches.length;
+      renderLeagues();
+      renderMatches(matches,d.broadcastIds||[]);
     }).catch(function(){q('matches').innerHTML='<div class="empty">Erreur de chargement. Réessaie.</div>';});
 }
 function statusLabel(s){if(s==='inprogress')return'🔴 En direct';if(s==='finished')return'Terminé';if(s==='postponed')return'Reporté';return'À venir';}
+function formatDate(iso){
+  if(!iso)return'';
+  var d=new Date(iso);
+  if(isNaN(d))return'';
+  var now=new Date();
+  var today=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+  var matchDay=new Date(d.getFullYear(),d.getMonth(),d.getDate());
+  var diff=(matchDay-today)/86400000;
+  var time=d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
+  if(diff===0)return'Aujourd\'hui · '+time;
+  if(diff===1)return'Demain · '+time;
+  if(diff===-1)return'Hier · '+time;
+  return d.toLocaleDateString('fr-FR',{day:'numeric',month:'short'})+' · '+time;
+}
 function renderMatches(matches,broadcastIds){
   var el=q('matches');
   if(!matches.length){el.innerHTML='<div class="empty">Aucun match pour cette sélection.</div>';return;}
@@ -753,7 +775,9 @@ function renderMatches(matches,broadcastIds){
     var isOn=broadcastIds.indexOf(m.match_id)!==-1;
     var card=document.createElement('div');card.className='match-card';
     var sc=(m.home_score!==null&&m.away_score!==null)?(m.home_score+' - '+m.away_score):'vs';
-    card.innerHTML='<div class="teams">'+m.home_team+' <span class="score">'+sc+'</span> '+m.away_team+'</div>'+'<div class="status'+(m.status==='inprogress'?' live':'')+'">'+statusLabel(m.status)+'</div>'+'<div class="toggle-row"><span class="toggle-label">Diffuser sur Facebook</span><div class="switch'+(isOn?' on':'')+'" data-match="'+m.match_id+'"><div class="knob"></div></div></div>';
+    var dateStr=formatDate(m.match_date);
+    var isLive=m.status==='inprogress';
+    card.innerHTML=(dateStr?'<div class="match-date'+(isLive?' live-date':'')+'">'+dateStr+'</div>':'')+'<div class="teams">'+m.home_team+' <span class="score">'+sc+'</span> '+m.away_team+'</div>'+'<div class="status'+(isLive?' live':'')+'">'+statusLabel(m.status)+'</div>'+'<div class="toggle-row"><span class="toggle-label">Diffuser sur Facebook</span><div class="switch'+(isOn?' on':'')+'" data-match="'+m.match_id+'"><div class="knob"></div></div></div>';
     var sw=card.querySelector('.switch');
     sw.onclick=function(){var on=!sw.classList.contains('on');sw.classList.toggle('on',on);fetch(API_BASE+'?token='+encodeURIComponent(state.token),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({broadcast:{matchId:m.match_id,active:on,competition:m.competition,homeTeam:m.home_team,awayTeam:m.away_team}})}).then(function(r){return r.json();}).then(function(d){if(d.error){sw.classList.toggle('on',!on);alert(d.error);}}).catch(function(){sw.classList.toggle('on',!on);});};
     el.appendChild(card);
