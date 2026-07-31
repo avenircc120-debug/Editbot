@@ -164,7 +164,7 @@ async function handlePost(token, req) {
           ? formatAnnonceFacebook({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, matchDate: m.match_date })
           : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: m.events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null });
 
-        Promise.allSettled(
+        await Promise.allSettled(
           (fbPages as Array<{ fb_page_id: string; fb_page_name: string; fb_page_access_token: string }>).map(page =>
             posterSurPage(page.fb_page_id, page.fb_page_access_token, fbMsg)
               .then(r => console.log(r.success
