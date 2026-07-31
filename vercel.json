@@ -1,6 +1,6 @@
 {
-  "buildCommand": "npm --prefix mini-app install && npm --prefix mini-app run build",
-  "outputDirectory": "mini-app/dist",
+  "buildCommand": "npm install && npm run build",
+  "outputDirectory": "dist",
   "rewrites": [
     {
       "source": "/(.*)",
