@@ -313,11 +313,29 @@ Deno.serve(async (req) => {
     }
   }
 
-  // Une fois par jour à 2h UTC : jours 8 à 30 (programme étendu 30 jours).
+  // Une fois par jour à 2h UTC : fenêtre glissante 30 jours (futurs J+8..J+30 + passés J-1..J-7)
   if (continuer && now.getUTCHours() === 2 && now.getUTCMinutes() < 4) {
+    // Jours futurs J+8 à J+30 (programme étendu)
     for (let decalage = 8; decalage <= 30; decalage++) {
       const d = new Date(now);
       d.setUTCDate(d.getUTCDate() + decalage);
+      const ok = await ingererJournee(dateISO(d), stats, matchsAModifier);
+      if (!ok) break;
+    }
+    // Jours passés J-1 à J-7 (résultats récents — upsert met à jour les scores finaux)
+    for (let decalage = 1; decalage <= 7 && continuer; decalage++) {
+      const d = new Date(now);
+      d.setUTCDate(d.getUTCDate() - decalage);
+      const ok = await ingererJournee(dateISO(d), stats, matchsAModifier);
+      if (!ok) break;
+    }
+  }
+
+  // Une fois par jour à 3h UTC : historique profond J-8 à J-30
+  if (continuer && now.getUTCHours() === 3 && now.getUTCMinutes() < 4) {
+    for (let decalage = 8; decalage <= 30 && continuer; decalage++) {
+      const d = new Date(now);
+      d.setUTCDate(d.getUTCDate() - decalage);
       const ok = await ingererJournee(dateISO(d), stats, matchsAModifier);
       if (!ok) break;
     }
