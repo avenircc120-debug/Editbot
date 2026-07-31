@@ -654,7 +654,7 @@ var LEAGUES=[
   {id:'4351',name:'Brasileirao',flag:'🇧🇷'},
   {id:'4429',name:'Coupe du Monde',flag:'🌍'},
 ];
-var state={token:null,league:LEAGUES[0].id,filter:'all',counts:{}};
+var state={token:null,league:LEAGUES[0].id,filter:'all',counts:{},fbPages:[]};
 function q(id){return document.getElementById(id);}
 function getUrlToken(){return new URLSearchParams(window.location.search).get('token');}
 
@@ -730,6 +730,65 @@ function bindFilters(){
     c.onclick=function(){document.querySelectorAll('.filter-chip').forEach(function(x){x.classList.remove('active');});c.classList.add('active');state.filter=c.dataset.filter;loadMatches();};
   });
 }
+/* ─── Page Picker Modal ─────────────────────────────────── */
+function showPagePicker(matchId,isOn,match){
+  if(!isOn){
+    // Désactivation directe, pas besoin de choisir les pages
+    doBroadcast(matchId,false,match,[]);
+    return;
+  }
+  if(!state.fbPages||!state.fbPages.length){
+    alert('Aucune page Facebook connectée. Connecte une page dans le menu Profil.');
+    return;
+  }
+  var overlay=document.createElement('div');
+  overlay.id='page-picker-overlay';
+  overlay.style.cssText='position:fixed;inset:0;z-index:9999;display:flex;align-items:flex-end;justify-content:center;background:rgba(0,0,0,0.55);';
+  var sheet=document.createElement('div');
+  sheet.style.cssText='background:#1c1c1e;border-radius:16px 16px 0 0;width:100%;max-width:480px;padding:20px 16px 32px;box-shadow:0 -4px 24px rgba(0,0,0,0.4);';
+  var selected=new Set();
+  function render(){
+    sheet.innerHTML='<div style="font-weight:700;font-size:15px;margin-bottom:14px;color:#fff;">📘 Sur quelle(s) page(s) diffuser ?</div>'
+      +state.fbPages.map(function(p){
+        var chk=selected.has(p.fb_page_id)?'checked':'';
+        return '<label style="display:flex;align-items:center;gap:10px;padding:12px 4px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,0.07);color:#fff;">'
+          +'<input type="checkbox" '+chk+' data-pid="'+p.fb_page_id+'" style="width:20px;height:20px;accent-color:#30d158;cursor:pointer;flex-shrink:0;">'
+          +'<span style="font-size:15px;">'+p.fb_page_name+'</span></label>';
+      }).join('')
+      +'<div style="display:flex;gap:10px;margin-top:20px;">'
+      +'<button id="pp-cancel" style="flex:1;padding:13px 0;border-radius:10px;border:none;background:rgba(255,255,255,0.1);color:#fff;font-size:15px;cursor:pointer;">Annuler</button>'
+      +'<button id="pp-confirm" style="flex:2;padding:13px 0;border-radius:10px;border:none;background:'+(selected.size===0?'rgba(255,255,255,0.1)':'#30d158')+';color:'+(selected.size===0?'rgba(255,255,255,0.4)':'#000')+';font-size:15px;font-weight:600;cursor:'+(selected.size===0?'not-allowed':'pointer')+';">'
+      +(selected.size===0?'Sélectionner une page':'✓ Diffuser ('+selected.size+')')+'</button></div>';
+    sheet.querySelectorAll('input[data-pid]').forEach(function(cb){
+      cb.onchange=function(){
+        if(cb.checked) selected.add(cb.dataset.pid); else selected.delete(cb.dataset.pid);
+        render();
+      };
+    });
+    sheet.querySelector('#pp-cancel').onclick=function(){document.body.removeChild(overlay);};
+    sheet.querySelector('#pp-confirm').onclick=function(){
+      if(!selected.size) return;
+      document.body.removeChild(overlay);
+      doBroadcast(matchId,true,match,[...selected]);
+    };
+  }
+  render();
+  overlay.appendChild(sheet);
+  overlay.onclick=function(e){if(e.target===overlay)document.body.removeChild(overlay);};
+  document.body.appendChild(overlay);
+}
+
+function doBroadcast(matchId,on,match,pageIds){
+  var sw=document.querySelector('.switch[data-match="'+matchId+'"]');
+  if(sw) sw.classList.toggle('on',on);
+  fetch(API_BASE+'?token='+encodeURIComponent(state.token),{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({broadcast:{matchId:matchId,active:on,competition:match.competition,homeTeam:match.home_team,awayTeam:match.away_team,pageIds:pageIds}})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(d.error){if(sw)sw.classList.toggle('on',!on);alert(d.error);}
+  }).catch(function(){if(sw)sw.classList.toggle('on',!on);});
+}
+
 function loadProfile(){
   fetch(API_BASE+'?token='+encodeURIComponent(state.token))
     .then(function(r){return r.json();})
@@ -797,7 +856,7 @@ function renderMatches(matches,broadcastIds){
     var isLive=m.status==='inprogress';
     card.innerHTML=(dateStr?'<div class="match-date'+(isLive?' live-date':'')+'">'+dateStr+'</div>':'')+'<div class="teams">'+m.home_team+' <span class="score">'+sc+'</span> '+m.away_team+'</div>'+'<div class="status'+(isLive?' live':'')+'">'+statusLabel(m.status)+'</div>'+'<div class="toggle-row"><span class="toggle-label">Diffuser sur Facebook</span><div class="switch'+(isOn?' on':'')+'" data-match="'+m.match_id+'"><div class="knob"></div></div></div>';
     var sw=card.querySelector('.switch');
-    sw.onclick=function(){var on=!sw.classList.contains('on');sw.classList.toggle('on',on);fetch(API_BASE+'?token='+encodeURIComponent(state.token),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({broadcast:{matchId:m.match_id,active:on,competition:m.competition,homeTeam:m.home_team,awayTeam:m.away_team}})}).then(function(r){return r.json();}).then(function(d){if(d.error){sw.classList.toggle('on',!on);alert(d.error);}}).catch(function(){sw.classList.toggle('on',!on);});};
+    sw.onclick=function(){var on=!sw.classList.contains('on');showPagePicker(m.match_id,on,m);};
     el.appendChild(card);
   });
 }
