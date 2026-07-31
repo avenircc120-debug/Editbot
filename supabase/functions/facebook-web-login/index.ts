@@ -6,7 +6,7 @@
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { prolongerToken, recupererFbUserId, recupererPages } from '../_shared/facebook.ts';
+import { prolongerToken, recupererFbUserId, recupererNomUtilisateur, recupererPages } from '../_shared/facebook.ts';
 
 const SUPABASE_URL    = Deno.env.get('SUPABASE_URL')              ?? '';
 const SUPABASE_KEY    = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -117,9 +117,10 @@ Deno.serve(async (req: Request) => {
       }
 
       // Échanger le token et récupérer l'identité Facebook
-      const [longToken, fbUserId] = await Promise.all([
+      const [longToken, fbUserId, fbUserName] = await Promise.all([
         prolongerToken(shortToken),
         recupererFbUserId(shortToken),
+        recupererNomUtilisateur(shortToken),
       ]);
 
       if (!fbUserId) {
@@ -157,6 +158,7 @@ Deno.serve(async (req: Request) => {
             fb_page_id:           page.id,
             fb_page_name:         page.name,
             fb_page_access_token: page.access_token,
+            fb_user_name:         fbUserName ?? null,
             is_active:            true,
           }, { onConflict: 'telegram_user_id,fb_page_id' });
 
