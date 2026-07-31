@@ -131,7 +131,7 @@ async function handlePost(token, req) {
   }
 
   if (body.broadcast) {
-    const { matchId, active, competition, homeTeam, awayTeam } = body.broadcast;
+    const { matchId, active, competition, homeTeam, awayTeam, pageIds } = body.broadcast;
     if (!matchId) return json({ error: 'matchId requis' }, 400);
 
     if (active) {
@@ -139,10 +139,11 @@ async function handlePost(token, req) {
         telegram_user_id: chatId, match_id: matchId,
         competition: competition ?? null, home_team: homeTeam ?? null, away_team: awayTeam ?? null,
         is_active: true, created_at: new Date().toISOString(),
+        ...(pageIds && pageIds.length > 0 ? { fb_page_ids: pageIds } : {}),
       }, { onConflict: 'telegram_user_id,match_id' });
 
       // ── Post immédiat sur Facebook dès l'activation ────────────────────────
-      const [{ data: matchRow }, { data: fbPages }] = await Promise.all([
+      const [{ data: matchRow }, { data: allFbPages }] = await Promise.all([
         supabase.from('matchs_index')
           .select('home_team, away_team, competition, status, match_date, home_score, away_score, events_log, home_goal_details, away_goal_details, match_minute')
           .eq('match_id', matchId).maybeSingle(),
@@ -151,7 +152,12 @@ async function handlePost(token, req) {
           .eq('telegram_user_id', chatId).eq('is_active', true),
       ]);
 
-      if (matchRow && fbPages && fbPages.length > 0) {
+      // Filtrer aux pages sélectionnées si pageIds fournis
+      const fbPages = (pageIds && pageIds.length > 0)
+        ? (allFbPages ?? []).filter((p: any) => pageIds.includes(p.fb_page_id))
+        : (allFbPages ?? []);
+
+      if (matchRow && fbPages && (fbPages as any[]).length > 0) {
         const m   = matchRow as any;
         const mst = m.status ?? 'scheduled';
         const fbMsg = (mst !== 'inprogress' && mst !== 'finished')
