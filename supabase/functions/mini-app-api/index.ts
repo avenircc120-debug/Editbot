@@ -167,7 +167,7 @@ async function handleMatches(chatId: number, url: URL): Promise<Response> {
 
   const now     = new Date();
   const moins2h = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
-  const j7      = new Date(now.getTime() + 7  * 24 * 60 * 60 * 1000).toISOString();
+  const j30     = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
   const debJour = now.toISOString().slice(0, 10) + 'T00:00:00.000Z';
   const finJour = now.toISOString().slice(0, 10) + 'T23:59:59.999Z';
 
@@ -184,7 +184,7 @@ async function handleMatches(chatId: number, url: URL): Promise<Response> {
   } else if (filter === 'today') {
     q = q.gte('match_date', debJour).lte('match_date', finJour);
   } else {
-    q = q.gte('match_date', moins2h).lte('match_date', j7);
+    q = q.gte('match_date', moins2h).lte('match_date', j30);
   }
 
   const { data: matchs } = await q;
@@ -242,12 +242,25 @@ async function handleBroadcast(req: Request, chatId: number): Promise<Response> 
         const fbMsg = (mst !== 'inprogress' && mst !== 'finished')
           ? formatAnnonceFacebook({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, matchDate: m.match_date })
           : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: (m as any).events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null });
-        Promise.allSettled(
+        const postResults = await Promise.allSettled(
           (pagesToPost as Array<{ fb_page_id: string; fb_page_name: string; fb_page_access_token: string }>).map(page =>
             posterSurPage(page.fb_page_id, page.fb_page_access_token, fbMsg)
-              .then(r => console.log(r.success ? `[broadcast] ✓ ${page.fb_page_name}` : `[broadcast] ✗ ${page.fb_page_name}: ${r.error}`))
+              .then(r => ({ ...r, fb_page_id: page.fb_page_id, name: page.fb_page_name }))
           )
         );
+        // Mettre à jour last_post_at pour les pages qui ont réussi
+        const now2 = new Date().toISOString();
+        for (const res of postResults) {
+          if (res.status === 'fulfilled' && res.value.success) {
+            console.log(`[broadcast] ✓ ${res.value.name}`);
+            await supabase.from('facebook_connections')
+              .update({ last_post_at: now2 })
+              .eq('telegram_user_id', chatId)
+              .eq('fb_page_id', res.value.fb_page_id);
+          } else if (res.status === 'fulfilled') {
+            console.log(`[broadcast] ✗ ${res.value.name}: ${res.value.error}`);
+          }
+        }
       }
   } else {
     await supabase
