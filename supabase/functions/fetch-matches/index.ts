@@ -303,9 +303,19 @@ Deno.serve(async (req) => {
   // ── TheSportsDB (source primaire) ─────────────────────────────────────────
   const continuer = await ingererJournee(dateISO(now), stats, matchsAModifier);
 
-  // Une fois par heure : hier + 3 prochains jours (programme complet).
+  // Une fois par heure : hier + 7 prochains jours (programme proche).
   if (continuer && now.getUTCMinutes() < 4) {
-    for (const decalage of [-1, 1, 2, 3]) {
+    for (const decalage of [-1, 1, 2, 3, 4, 5, 6, 7]) {
+      const d = new Date(now);
+      d.setUTCDate(d.getUTCDate() + decalage);
+      const ok = await ingererJournee(dateISO(d), stats, matchsAModifier);
+      if (!ok) break;
+    }
+  }
+
+  // Une fois par jour à 2h UTC : jours 8 à 30 (programme étendu 30 jours).
+  if (continuer && now.getUTCHours() === 2 && now.getUTCMinutes() < 4) {
+    for (let decalage = 8; decalage <= 30; decalage++) {
       const d = new Date(now);
       d.setUTCDate(d.getUTCDate() + decalage);
       const ok = await ingererJournee(dateISO(d), stats, matchsAModifier);
