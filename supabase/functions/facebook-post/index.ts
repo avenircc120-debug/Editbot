@@ -17,16 +17,13 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { editerPost, posterSurPage } from '../_shared/facebook.ts';
 import { buildFacebookPost, buildEventMarkers } from '../_shared/templates.ts';
-import { normalisePageIds, selectBroadcastPages, type FacebookPageForBroadcast } from '../_shared/broadcast.ts';
+import { normalisePageIds, selectBroadcastPages, estErreurToken, type FacebookPageForBroadcast } from '../_shared/broadcast.ts';
 
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL')              ?? '';
 const SUPABASE_KEY   = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const CRON_SECRET    = Deno.env.get('CRON_SECRET')               ?? '';
 const TELEGRAM_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN')        ?? '';
 const supabase       = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-// Codes d'erreur Facebook indiquant un token invalide/révoqué
-const FB_TOKEN_ERROR_CODES = new Set([190, 102, 467, 458, 460, 463, 464, 492]);
 
 interface LiveMatch {
   matchId:          string;
@@ -52,15 +49,6 @@ async function notifierUtilisateur(telegramUserId: number, texte: string): Promi
   });
 }
 
-function estErreurToken(erreurMessage: string): boolean {
-  const codes = erreurMessage.match(/\b(\d+)\b/g);
-  if (codes) {
-    for (const c of codes) {
-      if (FB_TOKEN_ERROR_CODES.has(Number(c))) return true;
-    }
-  }
-  return false;
-}
 
 Deno.serve(async (req: Request) => {
   const auth = req.headers.get('Authorization') ?? '';

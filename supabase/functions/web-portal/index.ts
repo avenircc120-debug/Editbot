@@ -7,6 +7,7 @@ import {
   normalisePageIds,
   publishToBroadcastPages,
   selectBroadcastPages,
+  estErreurToken,
   type BroadcastPageResult,
   type FacebookPageForBroadcast,
 } from '../_shared/broadcast.ts';
@@ -14,8 +15,18 @@ import {
 const SUPABASE_URL    = Deno.env.get('SUPABASE_URL')              ?? '';
 const SUPABASE_KEY    = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const FACEBOOK_APP_ID = Deno.env.get('FACEBOOK_APP_ID')           ?? '';
+const TELEGRAM_TOKEN  = Deno.env.get('TELEGRAM_BOT_TOKEN')        ?? '';
 const REDIRECT_URI    = SUPABASE_URL + '/functions/v1/facebook-oauth';
 const supabase        = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+async function notifierUtilisateur(telegramUserId: number, texte: string): Promise<void> {
+  if (!TELEGRAM_TOKEN) return;
+  await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: telegramUserId, text: texte, parse_mode: 'Markdown' }),
+  }).catch(() => {/* non bloquant */});
+}
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -199,10 +210,53 @@ async function handlePost(token, req) {
           : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: (m as any).events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null });
 
         pageResults = await publishToBroadcastPages(pagesToPost, fbMsg);
+
+        // ── Handle per-page failures ────────────────────────────────────────
+        const tokenExpiredPages: string[] = [];
+        const otherFailedPages:  string[] = [];
+
         for (const result of pageResults) {
-          console.log(result.success
-            ? `[web-portal broadcast] ✓ ${result.pageName}`
-            : `[web-portal broadcast] ✗ ${result.pageName}: ${result.error}`);
+          if (result.success) {
+            console.log(`[web-portal broadcast] ✓ ${result.pageName}`);
+            continue;
+          }
+
+          const errMsg = result.error ?? '';
+          console.error(`[web-portal broadcast] ✗ ${result.pageName}: ${errMsg}`);
+
+          if (estErreurToken(errMsg)) {
+            tokenExpiredPages.push(result.pageName);
+            // Mark token as expired in DB so facebook-post skips it too
+            await supabase
+              .from('facebook_connections')
+              .update({ is_active: false, updated_at: new Date().toISOString() })
+              .eq('telegram_user_id', chatId)
+              .eq('fb_page_id', result.fb_page_id);
+            // Telegram notification (best-effort)
+            await notifierUtilisateur(
+              chatId,
+              `⚠️ *Connexion Facebook expirée*\n\nTa Page *${result.pageName}* n'est plus accessible (token révoqué).\n\nOuvre le portail web pour reconnecter ta Page Facebook.`,
+            );
+          } else {
+            otherFailedPages.push(result.pageName);
+          }
+        }
+
+        // Build a human-readable warning if anything failed
+        let warning: string | undefined;
+        const parts: string[] = [];
+        if (tokenExpiredPages.length) {
+          parts.push(
+            `Token expiré — reconnecte ${tokenExpiredPages.map((n) => `"${n}"`).join(', ')} depuis le menu Profil.`,
+          );
+        }
+        if (otherFailedPages.length) {
+          parts.push(
+            `Publication refusée par Facebook pour : ${otherFailedPages.map((n) => `"${n}"`).join(', ')}.`,
+          );
+        }
+        if (parts.length) {
+          warning = 'La diffusion est enregistrée. ' + parts.join(' ');
         }
       }
       return json({
@@ -210,9 +264,7 @@ async function handlePost(token, req) {
         matchId,
         active: true,
         pages: pageResults,
-        warning: pageResults.some((result) => !result.success)
-          ? 'La diffusion est enregistrée, mais une ou plusieurs Pages ont refusé la publication.'
-          : undefined,
+        warning,
       });
     } else {
       const { error: disableError } = await supabase.from('broadcast_selections').update({ is_active: false })

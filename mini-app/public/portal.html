@@ -804,7 +804,13 @@ function doBroadcast(matchId,on,match,pageIds){
       return d;
     });
   }).then(function(d){
-    if(d.warning) alert(d.warning);
+    if(d.warning){
+      // If a token expired, reload the profile so the expired page
+      // disappears from state.fbPages immediately.
+      var needsReload=d.warning.indexOf('expiré')!==-1||d.warning.indexOf('expir')!==-1;
+      if(needsReload) loadProfile();
+      alert(d.warning);
+    }
   }).catch(function(err){
     if(sw)sw.classList.toggle('on',!on);
     alert(err&&err.message?err.message:'Erreur réseau pendant la diffusion.');

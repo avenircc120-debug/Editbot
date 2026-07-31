@@ -1,5 +1,24 @@
 import { posterSurPage } from './facebook.ts';
 
+// ─── Token expiry detection ──────────────────────────────────────────────────
+
+/** Facebook error codes that indicate an invalid / expired / revoked token. */
+export const FB_TOKEN_ERROR_CODES = new Set([190, 102, 467, 458, 460, 463, 464, 492]);
+
+/**
+ * Returns true when the error string from a Facebook Graph API call contains
+ * a code that signals a revoked or expired access token.
+ */
+export function estErreurToken(erreurMessage: string): boolean {
+  const codes = erreurMessage.match(/\b(\d+)\b/g);
+  if (codes) {
+    for (const c of codes) {
+      if (FB_TOKEN_ERROR_CODES.has(Number(c))) return true;
+    }
+  }
+  return false;
+}
+
 export interface FacebookPageForBroadcast {
   fb_page_id: string;
   fb_page_name: string;
