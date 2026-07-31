@@ -4,7 +4,7 @@
 export const THESPORTSDB = {
   BASE_URL: 'https://www.thesportsdb.com/api/v1/json',
   get KEY(): string {
-    return Deno.env.get('THESPORTSDB_KEY') ?? '3';
+    return Deno.env.get('THESPORTSDB_KEY') ?? '123';
   },
 };
 
