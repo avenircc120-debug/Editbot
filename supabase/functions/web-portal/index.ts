@@ -183,7 +183,7 @@ async function handlePost(token, req) {
       // ── Post immédiat sur Facebook dès l'activation ────────────────────────
       const { data: matchRow, error: matchError } = await supabase
         .from('matchs_index')
-          .select('home_team, away_team, competition, status, match_date, home_score, away_score, events_log, home_goal_details, away_goal_details, match_minute')
+          .select('home_team, away_team, competition, status, match_date, home_score, away_score, home_goal_details, away_goal_details, match_minute')
           .eq('match_id', matchId).maybeSingle();
       if (matchError) {
         console.error('[web-portal] Erreur lecture match:', matchError);
@@ -196,7 +196,7 @@ async function handlePost(token, req) {
         const mst = m.status ?? 'scheduled';
         const fbMsg = (mst !== 'inprogress' && mst !== 'finished')
           ? formatAnnonceFacebook({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, matchDate: m.match_date })
-          : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: m.events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null });
+          : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: (m as any).events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null });
 
         pageResults = await publishToBroadcastPages(pagesToPost, fbMsg);
         for (const result of pageResults) {
