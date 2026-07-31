@@ -1,7 +1,6 @@
 {
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
-  "framework": "vite",
+  "buildCommand": "npm --prefix mini-app install && npm --prefix mini-app run build",
+  "outputDirectory": "mini-app/dist",
   "rewrites": [
     {
       "source": "/(.*)",
