@@ -98,7 +98,7 @@ Tout ce qui concerne la compétition, Facebook, le wallet et les coupons est ren
 | `user_profiles` | `telegram_user_id`, `competition_suivie`, `competition_suivie_id`, `web_access_token` | Profil utilisateur — créé automatiquement au premier message |
 | `bot_sessions` | `chat_id`, `history` (JSONB) | Historique de conversation Groq (20 messages max) |
 | `matchs_index` | `match_id`, `tournament_id`, `status`, `home_score`, `away_score`, `match_date` | Source de vérité des scores — upsert à chaque CRON |
-| `broadcast_selections` | `telegram_user_id`, `match_id`, `is_active` | Matchs activés par l'utilisateur pour diffusion Facebook |
+| `broadcast_selections` | `telegram_user_id`, `match_id`, `is_active`, `fb_page_ids` | Matchs activés par l'utilisateur et liste explicite des Pages Facebook ciblées |
 | `facebook_connections` | `telegram_user_id`, `fb_page_id`, `fb_page_access_token`, `is_active`, `last_post_at` | Pages Facebook connectées (token long-lived 60 jours) |
 | `facebook_posts_log` | `connection_id`, `match_id`, `post_date`, `status` | Log des publications — idempotence UNIQUE(connection_id, match_id, post_date) |
 | `facebook_oauth_states` | `nonce`, `telegram_user_id`, `expires_at` | Nonces CSRF OAuth — usage unique, expire 10 min |
@@ -172,6 +172,7 @@ Auth : `?token=web_access_token` dans l'URL (généré par le bot Telegram).
 - **Idempotence** : UNIQUE(connection_id, match_id, post_date) — un seul post par connexion par match par jour
 - **Isolation** : une erreur sur une page ne bloque pas les autres
 - **Tokens révoqués** : désactivation automatique de la connexion + notification Telegram à l'utilisateur
+- **Multi-pages** : chaque `fb_page_id` sélectionné est recherché côté serveur dans `facebook_connections`, puis publié avec son propre `fb_page_access_token`. Aucun token de Page n'est envoyé au navigateur.
 
 ---
 

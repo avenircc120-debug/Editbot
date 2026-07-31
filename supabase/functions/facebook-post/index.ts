@@ -15,8 +15,9 @@
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { posterSurPage, editerPost } from '../_shared/facebook.ts';
+import { editerPost, posterSurPage } from '../_shared/facebook.ts';
 import { buildFacebookPost, buildEventMarkers } from '../_shared/templates.ts';
+import { normalisePageIds, selectBroadcastPages, type FacebookPageForBroadcast } from '../_shared/broadcast.ts';
 
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL')              ?? '';
 const SUPABASE_KEY   = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -86,15 +87,13 @@ Deno.serve(async (req: Request) => {
       continue;
     }
 
-    // Map : telegram_user_id → Set de fb_page_id autorisés (null = toutes les pages)
-    const pageFilter = new Map<number, Set<string> | null>();
+    // Map : telegram_user_id → IDs de pages autorisées (empty = legacy/all pages)
+    const pageFilter = new Map<number, string[]>();
     const userIds: number[] = [];
     for (const sel of selections) {
       const uid = Number(sel.telegram_user_id);
       userIds.push(uid);
-      const ids = Array.isArray(sel.fb_page_ids) && sel.fb_page_ids.length > 0
-        ? new Set<string>(sel.fb_page_ids as string[])
-        : null;
+      const ids = normalisePageIds(sel.fb_page_ids);
       pageFilter.set(uid, ids);
     }
 
@@ -115,8 +114,8 @@ Deno.serve(async (req: Request) => {
       const telegramId = Number(connexion.telegram_user_id);
 
       // ── Filtre par pages sélectionnées ────────────────────────────────────
-      const pagesAutorisees = pageFilter.get(telegramId);
-      if (pagesAutorisees !== null && !pagesAutorisees?.has(connexion.fb_page_id)) {
+      const pagesAutorisees = pageFilter.get(telegramId) ?? [];
+      if (pagesAutorisees.length > 0 && !pagesAutorisees.includes(String(connexion.fb_page_id).trim())) {
         continue;
       }
 

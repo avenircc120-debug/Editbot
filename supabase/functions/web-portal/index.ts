@@ -2,8 +2,14 @@
  * web-portal — Mon espace Editbot v3 (matchs 30j)
  */
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { posterSurPage } from '../_shared/facebook.ts';
 import { formatAnnonceFacebook, buildFacebookPost } from '../_shared/templates.ts';
+import {
+  normalisePageIds,
+  publishToBroadcastPages,
+  selectBroadcastPages,
+  type BroadcastPageResult,
+  type FacebookPageForBroadcast,
+} from '../_shared/broadcast.ts';
 
 const SUPABASE_URL    = Deno.env.get('SUPABASE_URL')              ?? '';
 const SUPABASE_KEY    = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -135,49 +141,88 @@ async function handlePost(token, req) {
     if (!matchId) return json({ error: 'matchId requis' }, 400);
 
     if (active) {
-      await supabase.from('broadcast_selections').upsert({
+      const requestedPageIds = normalisePageIds(pageIds);
+      const { data: allFbPages, error: pagesError } = await supabase
+        .from('facebook_connections')
+        .select('fb_page_id, fb_page_name, fb_page_access_token')
+        .eq('telegram_user_id', chatId)
+        .eq('is_active', true);
+
+      if (pagesError) {
+        console.error('[web-portal] Erreur lecture pages Facebook:', pagesError);
+        return json({ error: 'Impossible de charger les Pages Facebook.' }, 500);
+      }
+
+      const pages = (allFbPages ?? []) as FacebookPageForBroadcast[];
+      const pagesToPost = selectBroadcastPages(pages, requestedPageIds);
+
+      if (pages.length === 0) {
+        return json({ error: 'Aucune Page Facebook active pour ce compte.' }, 400);
+      }
+      if (requestedPageIds.length > 0 && pagesToPost.length !== requestedPageIds.length) {
+        return json({ error: 'Une ou plusieurs Pages Facebook sélectionnées ne sont plus disponibles.' }, 400);
+      }
+
+      // Persist the exact allow-list. The empty-list fallback is only for
+      // legacy callers and is expanded to all currently active page IDs.
+      const selectedPageIds = requestedPageIds.length > 0
+        ? requestedPageIds
+        : pages.map((page) => page.fb_page_id);
+
+      const { error: selectionError } = await supabase.from('broadcast_selections').upsert({
         telegram_user_id: chatId, match_id: matchId,
         competition: competition ?? null, home_team: homeTeam ?? null, away_team: awayTeam ?? null,
         is_active: true, created_at: new Date().toISOString(),
-        ...(pageIds && pageIds.length > 0 ? { fb_page_ids: pageIds } : {}),
+        fb_page_ids: selectedPageIds,
       }, { onConflict: 'telegram_user_id,match_id' });
+      if (selectionError) {
+        console.error('[web-portal] Erreur sauvegarde sélection:', selectionError);
+        return json({ error: 'Impossible d’enregistrer la diffusion.' }, 500);
+      }
 
       // ── Post immédiat sur Facebook dès l'activation ────────────────────────
-      const [{ data: matchRow }, { data: allFbPages }] = await Promise.all([
-        supabase.from('matchs_index')
+      const { data: matchRow, error: matchError } = await supabase
+        .from('matchs_index')
           .select('home_team, away_team, competition, status, match_date, home_score, away_score, events_log, home_goal_details, away_goal_details, match_minute')
-          .eq('match_id', matchId).maybeSingle(),
-        supabase.from('facebook_connections')
-          .select('fb_page_id, fb_page_name, fb_page_access_token')
-          .eq('telegram_user_id', chatId).eq('is_active', true),
-      ]);
+          .eq('match_id', matchId).maybeSingle();
+      if (matchError) {
+        console.error('[web-portal] Erreur lecture match:', matchError);
+        return json({ error: 'Impossible de charger le match.' }, 500);
+      }
 
-      // Filtrer aux pages sélectionnées si pageIds fournis
-      const fbPages = (pageIds && pageIds.length > 0)
-        ? (allFbPages ?? []).filter((p: any) => pageIds.includes(p.fb_page_id))
-        : (allFbPages ?? []);
-
-      if (matchRow && fbPages && (fbPages as any[]).length > 0) {
+      let pageResults: BroadcastPageResult[] = [];
+      if (matchRow) {
         const m   = matchRow as any;
         const mst = m.status ?? 'scheduled';
         const fbMsg = (mst !== 'inprogress' && mst !== 'finished')
           ? formatAnnonceFacebook({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, matchDate: m.match_date })
           : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: m.events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null });
 
-        await Promise.allSettled(
-          (fbPages as Array<{ fb_page_id: string; fb_page_name: string; fb_page_access_token: string }>).map(page =>
-            posterSurPage(page.fb_page_id, page.fb_page_access_token, fbMsg)
-              .then(r => console.log(r.success
-                ? `[web-portal broadcast] ✓ ${page.fb_page_name}`
-                : `[web-portal broadcast] ✗ ${page.fb_page_name}: ${r.error}`))
-          )
-        );
+        pageResults = await publishToBroadcastPages(pagesToPost, fbMsg);
+        for (const result of pageResults) {
+          console.log(result.success
+            ? `[web-portal broadcast] ✓ ${result.pageName}`
+            : `[web-portal broadcast] ✗ ${result.pageName}: ${result.error}`);
+        }
       }
+      return json({
+        ok: true,
+        matchId,
+        active: true,
+        pages: pageResults,
+        warning: pageResults.some((result) => !result.success)
+          ? 'La diffusion est enregistrée, mais une ou plusieurs Pages ont refusé la publication.'
+          : undefined,
+      });
     } else {
-      await supabase.from('broadcast_selections').update({ is_active: false })
+      const { error: disableError } = await supabase.from('broadcast_selections').update({ is_active: false })
         .eq('telegram_user_id', chatId).eq('match_id', matchId);
+      if (disableError) {
+        console.error('[web-portal] Erreur désactivation:', disableError);
+        return json({ error: 'Impossible de désactiver la diffusion.' }, 500);
+      }
+      return json({ ok: true, matchId, active: false });
     }
-    return json({ ok: true, matchId, active });
   }
 
   if (body.coupon) {
