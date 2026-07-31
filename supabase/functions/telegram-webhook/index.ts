@@ -173,7 +173,7 @@ async function envoyerMatchsEnDirect(chatId: number, competition: string, compet
     `🔴 *${competition}* — En direct\n\n${matchs.map(ligneMatch).join('\n')}`,
     { inline_keyboard: [
       [{ text: '🔄 Actualiser', callback_data: 'voir_direct' }],
-      [{ text: '📆 Programme 7j', callback_data: 'voir_programme' }, ...(miniAppBtn() ? [miniAppBtn()!] : [])],
+      [{ text: '📆 Programme 30j', callback_data: 'voir_programme' }, ...(miniAppBtn() ? [miniAppBtn()!] : [])],
     ]},
   );
 }
@@ -196,7 +196,7 @@ async function envoyerMatchsDuJour(chatId: number, competition: string, competit
 
 async function envoyerProgramme(chatId: number, competition: string, competitionId: string): Promise<void> {
   const maintenant = new Date();
-  const finSemaine = new Date(maintenant.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  const finSemaine = new Date(maintenant.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
   const { data: matchs } = await supabase
     .from('matchs_index')
@@ -206,10 +206,10 @@ async function envoyerProgramme(chatId: number, competition: string, competition
     .lte('match_date', finSemaine)
     .neq('status', 'postponed')
     .order('match_date', { ascending: true })
-    .limit(20);
+    .limit(30);
 
   if (!matchs?.length) {
-    return sendTelegram(chatId, `📭 Aucun match *${competition}* dans les 7 prochains jours.`, clavierAvecMonEspace('matchs', '📊 Voir les matchs'));
+    return sendTelegram(chatId, `📭 Aucun match *${competition}* dans les 30 prochains jours.`, clavierAvecMonEspace('matchs', '📊 Voir les matchs'));
   }
 
   const lignes = matchs.map(m =>
@@ -219,7 +219,7 @@ async function envoyerProgramme(chatId: number, competition: string, competition
   const chunks: string[][] = [];
   for (let i = 0; i < lignes.length; i += 10) chunks.push(lignes.slice(i, i + 10));
 
-  await sendTelegram(chatId, `📆 *${competition}* — Programme 7 jours\n\n${chunks[0].join('\n')}`);
+  await sendTelegram(chatId, `📆 *${competition}* — Programme 30 jours\n\n${chunks[0].join('\n')}`);
   for (let i = 1; i < chunks.length; i++) await sendTelegram(chatId, chunks[i].join('\n'));
   await sendTelegram(chatId, '_Mis à jour en temps réel._', clavierAvecMonEspace('matchs', '📊 Voir les matchs'));
 }
