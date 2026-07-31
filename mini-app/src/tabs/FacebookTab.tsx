@@ -137,8 +137,13 @@ function BroadcastRow({ match, token, pages, onToggle }: BroadcastRowProps) {
   async function doToggle(activate: boolean, pageIds?: string[]) {
     setBusy(true);
     try {
-      await toggleBroadcast(token, match.match_id, activate, pageIds,
-        match.competition, match.home_team, match.away_team);
+      // Wrap in options object — pageIds + match metadata sent together
+      await toggleBroadcast(token, match.match_id, activate, {
+        pageIds,
+        competition: match.competition,
+        homeTeam:    match.home_team,
+        awayTeam:    match.away_team,
+      });
       onToggle(match.match_id, activate, pageIds);
     } catch { /* silent */ }
     finally { setBusy(false); }
@@ -147,12 +152,12 @@ function BroadcastRow({ match, token, pages, onToggle }: BroadcastRowProps) {
   function handleToggle() {
     if (match.isBroadcasting) {
       doToggle(false);
-    } else if (pages.length === 1) {
-      doToggle(true, [pages[0].fb_page_id]);
     } else if (pages.length > 1) {
+      // Plusieurs pages → sélecteur
       setPicker(true);
     } else {
-      doToggle(true);
+      // 0 ou 1 page : pas de sélection forcée, le backend utilise toutes les pages actives
+      doToggle(true, undefined);
     }
   }
 

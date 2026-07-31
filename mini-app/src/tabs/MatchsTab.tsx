@@ -141,8 +141,10 @@ function MatchCard({ match, token, pages, onToggle }: MatchCardProps) {
       setShowPicker(true);
       return;
     }
-    // Désactivation ou 1 seule page → direct
-    doToggle(activate, activate && pages.length === 1 ? [pages[0].fb_page_id] : undefined);
+    // Désactivation ou ≤ 1 page → direct, sans figer un page_id spécifique.
+    // On passe undefined pour que le backend utilise toutes les pages actives
+    // (évite que l'ajout de nouvelles pages après coup soit ignoré).
+    doToggle(activate, undefined);
   }
 
   function handlePickerConfirm(pageIds: string[]) {

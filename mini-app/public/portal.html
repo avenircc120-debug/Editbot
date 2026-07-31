@@ -737,8 +737,22 @@ function showPagePicker(matchId,isOn,match){
     doBroadcast(matchId,false,match,[]);
     return;
   }
+  // Race condition : profil pas encore chargé → recharger d'abord, puis ouvrir
   if(!state.fbPages||!state.fbPages.length){
-    q('drawer-right').classList.add('open');q('overlay-right').classList.add('open');
+    fetch(API_BASE+'?token='+encodeURIComponent(state.token))
+      .then(function(r){return r.json();})
+      .then(function(d){
+        if(d.error){showLogin(d.error||'Session expirée.');return;}
+        state.fbPages=d.fbPages||[];
+        if(!state.fbPages.length){
+          // Vraiment aucune page connectée → ouvrir le tiroir profil
+          q('drawer-right').classList.add('open');q('overlay-right').classList.add('open');
+        } else {
+          showPagePicker(matchId,isOn,match);
+        }
+      }).catch(function(){
+        alert('Impossible de charger les Pages Facebook. Réessaie.');
+      });
     return;
   }
   var overlay=document.createElement('div');
