@@ -130,24 +130,49 @@ export interface FbPage {
   access_token: string;
 }
 
-/** Liste les Pages Facebook administrées par l'utilisateur. */
+/** Liste les Pages Facebook administrées par l'utilisateur.
+ *
+ * Gère la pagination et demande explicitement le champ `access_token`
+ * pour éviter que Facebook l'omette sur certaines pages.
+ * Filtre les pages sans token (permission pages_manage_posts manquante).
+ */
 export async function recupererPages(token: string): Promise<FbPage[]> {
-  try {
-    const res = await fetch(`${FB_API}/me/accounts?access_token=${encodeURIComponent(token)}`);
-    const data = await safeJson(res);
-    if (!res.ok || !data || data.error) {
-      console.error('[recupererPages] Erreur:', JSON.stringify(data?.error ?? data));
-      return [];
+  const pages: FbPage[] = [];
+  // Demander explicitement access_token — Facebook peut l'omettre sans fields=
+  let nextUrl: string | null =
+    `${FB_API}/me/accounts?fields=id,name,access_token&limit=100&access_token=${encodeURIComponent(token)}`;
+
+  let iterations = 0; // garde-fou anti-boucle infinie
+  while (nextUrl && iterations < 10) {
+    iterations++;
+    try {
+      const res  = await fetch(nextUrl);
+      const data = await safeJson(res);
+      if (!res.ok || !data || data.error) {
+        console.error('[recupererPages] Erreur page', iterations, ':', JSON.stringify(data?.error ?? data));
+        break;
+      }
+
+      for (const p of (data.data ?? [])) {
+        if (!p.access_token) {
+          // La page existe mais le token est absent (permission insuffisante ou
+          // page non gérée en mode Pages Manager). On la saute et on le signale.
+          console.warn('[recupererPages] Page sans access_token ignorée:', p.id, p.name);
+          continue;
+        }
+        pages.push({ id: p.id, name: p.name, access_token: p.access_token });
+      }
+
+      // Pagination : suivre le curseur "next" si présent
+      nextUrl = data.paging?.next ?? null;
+    } catch (err) {
+      console.error('[recupererPages] Exception page', iterations, ':', err);
+      break;
     }
-    return (data.data ?? []).map((p: any) => ({
-      id:           p.id,
-      name:         p.name,
-      access_token: p.access_token,
-    }));
-  } catch (err) {
-    console.error('[recupererPages] Exception:', err);
-    return [];
   }
+
+  console.log(`[recupererPages] ${pages.length} page(s) avec token récupérée(s)`);
+  return pages;
 }
 
 // ─── Publication ────────────────────────────────────────────────────────────

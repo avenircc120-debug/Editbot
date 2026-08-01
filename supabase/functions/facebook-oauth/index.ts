@@ -88,6 +88,8 @@ async function traiterToken(
   console.log('[facebook-oauth] Pages trouvées:', pages.length);
   if (!pages.length) return { ok: false, pageNames: [] };
 
+  // ── Sauvegarder les pages avec leurs tokens frais ──────────────────────────
+  const savedPageIds: string[] = [];
   for (const page of pages) {
     const { error: upsertErr } = await supabase.from('facebook_connections').upsert({
       telegram_user_id:     telegramUserId,
@@ -97,8 +99,39 @@ async function traiterToken(
       fb_page_name:         page.name,
       fb_page_access_token: page.access_token,
       is_active:            true,
+      updated_at:           new Date().toISOString(),
     }, { onConflict: 'telegram_user_id,fb_page_id' });
-    if (upsertErr) console.error('[facebook-oauth] Erreur upsert page', page.id, upsertErr);
+    if (upsertErr) {
+      console.error('[facebook-oauth] Erreur upsert page', page.id, upsertErr);
+    } else {
+      savedPageIds.push(page.id);
+    }
+  }
+
+  // ── Désactiver les pages de CE compte FB qui ne sont plus retournées ────────
+  // Cas : admin révoqué, page supprimée, permission pages_manage_posts retirée.
+  // On ne touche qu'aux pages du même fb_user_id pour ne pas perturber
+  // les autres comptes Facebook connectés par le même utilisateur Telegram.
+  if (fbUserId && savedPageIds.length > 0) {
+    const { data: staleRows, error: staleErr } = await supabase
+      .from('facebook_connections')
+      .select('id, fb_page_id, fb_page_name')
+      .eq('telegram_user_id', telegramUserId)
+      .eq('fb_user_id', fbUserId)
+      .eq('is_active', true)
+      .not('fb_page_id', 'in', `(${savedPageIds.join(',')})`);
+
+    if (staleErr) {
+      console.warn('[facebook-oauth] Impossible de vérifier les pages obsolètes:', staleErr);
+    } else if (staleRows && staleRows.length > 0) {
+      const staleIds = staleRows.map((r: any) => r.id);
+      const staleNames = staleRows.map((r: any) => r.fb_page_name ?? r.fb_page_id).join(', ');
+      console.log(`[facebook-oauth] Désactivation de ${staleIds.length} page(s) obsolète(s): ${staleNames}`);
+      await supabase
+        .from('facebook_connections')
+        .update({ is_active: false, updated_at: new Date().toISOString() })
+        .in('id', staleIds);
+    }
   }
 
   await supabase.from('user_profiles').upsert(
