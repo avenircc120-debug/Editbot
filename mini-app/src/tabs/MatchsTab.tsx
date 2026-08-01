@@ -29,11 +29,12 @@ interface PagePickerProps {
   pages: FBPage[];
   onConfirm: (pageIds: string[]) => void;
   onCancel: () => void;
+  initialSelected?: string[];
 }
 
-function PagePicker({ pages, onConfirm, onCancel }: PagePickerProps) {
-  // Aucune page pré-cochée : l'utilisateur choisit explicitement
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+function PagePicker({ pages, onConfirm, onCancel, initialSelected = [] }: PagePickerProps) {
+  // Pré-cocher les pages déjà sélectionnées si l'utilisateur réactive un match
+  const [selected, setSelected] = useState<Set<string>>(new Set(initialSelected));
 
   function toggle(id: string) {
     setSelected(prev => {
@@ -137,13 +138,13 @@ function MatchCard({ match, token, pages, onToggle }: MatchCardProps) {
     if (busy) return;
     const activate = !match.isBroadcasting;
     // Activation + plusieurs pages → afficher le sélecteur
+    // Pré-cocher les pages déjà choisies si le match était déjà en diffusion
     if (activate && pages.length > 1) {
       setShowPicker(true);
       return;
     }
-    // Désactivation ou ≤ 1 page → direct, sans figer un page_id spécifique.
-    // On passe undefined pour que le backend utilise toutes les pages actives
-    // (évite que l'ajout de nouvelles pages après coup soit ignoré).
+    // Désactivation ou une seule page → direct.
+    // On passe undefined pour que le backend utilise toutes les pages actives.
     doToggle(activate, undefined);
   }
 
@@ -152,6 +153,9 @@ function MatchCard({ match, token, pages, onToggle }: MatchCardProps) {
     doToggle(true, pageIds);
   }
 
+  // Pages déjà sélectionnées pour ce match (pour pré-cocher le sélecteur)
+  const previousPageIds = match.broadcastPageIds ?? [];
+
   return (
     <>
       <div className={`match-card${isFinished ? ' finished' : ''}`}>
@@ -159,7 +163,7 @@ function MatchCard({ match, token, pages, onToggle }: MatchCardProps) {
         <div className="match-info">
           {match.isBroadcasting && (
             <span style={{ fontSize: 11, color: 'var(--green)', marginBottom: 2, display: 'block' }}>
-              📡 En diffusion
+              📡 En diffusion{previousPageIds.length > 0 ? ` (${previousPageIds.length} page${previousPageIds.length > 1 ? 's' : ''})` : ''}
             </span>
           )}
           {showScore ? (
@@ -196,6 +200,7 @@ function MatchCard({ match, token, pages, onToggle }: MatchCardProps) {
           pages={pages}
           onConfirm={handlePickerConfirm}
           onCancel={() => setShowPicker(false)}
+          initialSelected={previousPageIds}
         />
       )}
     </>

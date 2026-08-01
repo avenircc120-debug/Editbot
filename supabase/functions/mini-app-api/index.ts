@@ -195,18 +195,24 @@ async function handleMatches(chatId: number, url: URL): Promise<Response> {
 
   const { data: matchs } = await q;
 
-  // Broadcast actifs de l'utilisateur
+  // Broadcast actifs de l'utilisateur (avec pages choisies par match)
   const { data: selections } = await supabase
     .from('broadcast_selections')
-    .select('match_id')
+    .select('match_id, fb_page_ids')
     .eq('telegram_user_id', chatId)
     .eq('is_active', true);
 
-  const selected = new Set((selections ?? []).map((s: { match_id: string }) => s.match_id));
+  const broadcastMap = new Map(
+    (selections ?? []).map((s: { match_id: string; fb_page_ids: unknown }) => [
+      s.match_id,
+      Array.isArray(s.fb_page_ids) ? (s.fb_page_ids as string[]) : [],
+    ])
+  );
 
   const result = (matchs ?? []).map((m: Record<string, unknown>) => ({
     ...m,
-    isBroadcasting: selected.has(m.match_id as string),
+    isBroadcasting: broadcastMap.has(m.match_id as string),
+    broadcastPageIds: broadcastMap.get(m.match_id as string) ?? [],
   }));
 
   return json({ matches: result });

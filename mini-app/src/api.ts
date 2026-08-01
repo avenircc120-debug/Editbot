@@ -46,6 +46,8 @@ export interface Match {
   competition: string;
   tournament_id: string | null;
   isBroadcasting: boolean;
+  /** IDs des pages Facebook sélectionnées pour la diffusion de ce match. */
+  broadcastPageIds: string[];
 }
 
 export interface Transaction {
@@ -134,8 +136,11 @@ export async function getMatches(
   if (competitionId) params.set('competitionId', competitionId);
   const res = await apiFetch(`/matches?${params}`, token);
   if (!res.ok) throw new Error('Erreur matchs');
-  const data = await res.json();
-  return (data as { matches: Match[] }).matches;
+  const data = await res.json() as { matches: Match[] };
+  return (data.matches ?? []).map(m => ({
+    ...m,
+    broadcastPageIds: Array.isArray(m.broadcastPageIds) ? m.broadcastPageIds : [],
+  }));
 }
 
 // ─── Diffusion (broadcast) ───────────────────────────────────────────────────

@@ -12,7 +12,6 @@ const SUPABASE_URL   = Deno.env.get('SUPABASE_URL')              ?? '';
 const SUPABASE_KEY   = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const TELEGRAM_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN')        ?? '';
 const WEB_APP_URL    = (Deno.env.get('WEB_APP_URL') ?? '').replace(/\/$/, '');
-const REDIRECT_URI   = `${SUPABASE_URL}/functions/v1/facebook-oauth`;
 const supabase       = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ─── Détection d'intention ─────────────────────────────────────────────────────
@@ -21,9 +20,8 @@ const RE_AUJOURD_HUI = /(aujourd.?hui|ce soir|ce matin|matchs? du jour|y a.t.il)
 const RE_PROGRAMME   = /(programme|calendrier|planning|cette semaine|prochains? matchs?|à venir|quand.{0,10}joue)/i;
 const RE_WALLET       = /(solde|wallet|portefeuille|dépôt|depot|retrait|argent|combien.{0,15}ai|mon compte)/i;
 const RE_COUPONS      = /(coupon|code.{0,10}promo|bookmaker|1xbet|1win|code.{0,10}réduc|réduction)/i;
-const RE_FACEBOOK_TAB = /(mes? pages? facebook|page.{0,15}(connecter|relier|gérer|voir)|diffus|broadcast)/i;
+const RE_FACEBOOK_TAB = /(mes? pages? facebook|page.{0,15}(connecter|relier|gérer|voir|ajouter)|diffus|broadcast|ajouter.{0,20}facebook|connecter.{0,20}facebook)/i;
 const RE_COMPETITIONS = /(compétition|competition|championnat|ligue|chang.{0,15}comp|choisir.{0,15}comp|sélectionn|selectionn)/i;
-const RE_AJOUTER_FB  = /(ajouter|connecter|lier|relier).{0,20}facebook/i;
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface ProfilUtilisateur {
@@ -105,18 +103,6 @@ async function renvoyerMiniApp(chatId: number, msg: string): Promise<void> {
     msg,
     btn ? { inline_keyboard: [[btn]] } : undefined,
   );
-}
-
-// ─── Génération lien Facebook OAuth ───────────────────────────────────────────
-
-async function genererLienFacebook(chatId: number): Promise<string> {
-  const nonce = crypto.randomUUID();
-  await supabase.from('facebook_oauth_states').insert({
-    nonce,
-    telegram_user_id: chatId,
-    expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-  });
-  return `${REDIRECT_URI}?init=1&nonce=${nonce}`;
 }
 
 // ─── Affichage des scores ───────────────────────────────────────────────────────
@@ -400,16 +386,6 @@ Deno.serve(async (req: Request) => {
       return new Response('ok');
     }
 
-    // ── Connecter Facebook (lien direct OAuth) ────────────────────────────────
-    if (RE_AJOUTER_FB.test(texte)) {
-      const lien = await genererLienFacebook(chatId);
-      await sendTelegram(chatId,
-        '🔗 Clique ci-dessous pour connecter une nouvelle Page Facebook.\n_Lien valable 10 minutes._',
-        { inline_keyboard: [[{ text: '➕ Connecter une Page Facebook', url: lien }]] },
-      );
-      return new Response('ok');
-    }
-
     // ── Routing par onglet ────────────────────────────────────────────────────
     if (RE_WALLET.test(texte)) {
       await sendTelegram(chatId,
@@ -427,9 +403,9 @@ Deno.serve(async (req: Request) => {
       return new Response('ok');
     }
 
-    if (RE_FACEBOOK_TAB.test(texte) && !RE_AJOUTER_FB.test(texte)) {
+    if (RE_FACEBOOK_TAB.test(texte)) {
       await sendTelegram(chatId,
-        '📘 Tes pages Facebook se gèrent dans Mon espace 👇',
+        '📘 Connecte et gère tes Pages Facebook depuis Mon espace 👇',
         clavierAvecMonEspace('facebook', '📘 Mes pages Facebook'),
       );
       return new Response('ok');
