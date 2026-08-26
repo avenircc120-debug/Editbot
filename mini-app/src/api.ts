@@ -5,7 +5,7 @@
 
 const API_BASE = 'https://jxrwgcsbomqvvchvkkdt.supabase.co/functions/v1/mini-app-api';
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface League {
   tsdb_id: string;
@@ -80,7 +80,7 @@ export interface AuthResult {
   token: string;
 }
 
-// ─── Utilitaire fetch ─────────────────────────────────────────────────────────
+// ─── Utilitaire fetch ────────────────────────────────────────────────────────
 
 async function apiFetch(
   path: string,
@@ -95,7 +95,7 @@ async function apiFetch(
   });
 }
 
-// ─── Auth ─────────────────────────────────────────────────────────────────────
+// ─── Auth ──────────────────────────────────────────────────────────────────────
 
 export async function authenticate(initData: string): Promise<AuthResult> {
   const res = await apiFetch('/auth', null, {
@@ -109,7 +109,7 @@ export async function authenticate(initData: string): Promise<AuthResult> {
   return res.json();
 }
 
-// ─── Profil & compétition ────────────────────────────────────────────────────
+// ─── Profil & compétition ───────────────────────────────────────────────
 
 export async function getProfile(token: string): Promise<Profile> {
   const res = await apiFetch('/profile', token);
@@ -125,7 +125,7 @@ export async function updateCompetition(token: string, tsdbId: string): Promise<
   if (!res.ok) throw new Error('Erreur mise à jour compétition');
 }
 
-// ─── Matchs ───────────────────────────────────────────────────────────────────
+// ─── Matchs ─────────────────────────────────────────────────────────────────
 
 export async function getMatches(
   token: string,
@@ -143,7 +143,7 @@ export async function getMatches(
   }));
 }
 
-// ─── Diffusion (broadcast) ───────────────────────────────────────────────────
+// ─── Diffusion (broadcast) ──────────────────────────────────────────────────
 
 export async function toggleBroadcast(
   token: string,
@@ -164,7 +164,7 @@ export async function toggleBroadcast(
   if (!res.ok) throw new Error('Erreur diffusion');
 }
 
-// ─── Wallet ───────────────────────────────────────────────────────────────────
+// ─── Wallet ─────────────────────────────────────────────────────────────────────
 
 export async function getWallet(token: string): Promise<WalletData> {
   const res = await apiFetch('/wallet', token);
@@ -186,7 +186,7 @@ export async function requestWalletOperation(
   if (!res.ok) throw new Error('Erreur opération wallet');
 }
 
-// ─── Coupons ─────────────────────────────────────────────────────────────────
+// ─── Coupons ────────────────────────────────────────────────────────────────
 
 export async function getCoupons(token: string): Promise<Coupon[]> {
   const res = await apiFetch('/coupons', token);
@@ -213,7 +213,7 @@ export async function deleteCoupon(token: string, couponId: number): Promise<voi
   if (!res.ok) throw new Error('Erreur suppression coupon');
 }
 
-// ─── Facebook ─────────────────────────────────────────────────────────────────
+// ─── Facebook ───────────────────────────────────────────────────────────────
 
 export async function getFacebookPages(token: string): Promise<FBPage[]> {
   const res = await apiFetch('/facebook', token);
@@ -230,6 +230,20 @@ export async function getFacebookConnectUrl(token: string, isAdditional = false)
   return (data as { url: string }).url;
 }
 
+/** Connecte une Page via un jeton d'accès apporté par l'utilisateur (sa propre App Meta). */
+export async function connectFacebookManual(
+  token: string,
+  pageAccessToken: string
+): Promise<{ fb_page_id: string; fb_page_name: string }> {
+  const res = await apiFetch('/facebook/manual', token, {
+    method: 'POST',
+    body: JSON.stringify({ pageAccessToken }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((data as { error?: string }).error ?? 'Erreur connexion Facebook');
+  return (data as { page: { fb_page_id: string; fb_page_name: string } }).page;
+}
+
 /** Déconnecte une page individuelle (soft delete par id). */
 export async function disconnectFacebookPage(token: string, pageId: number): Promise<void> {
   const res = await apiFetch(`/facebook/${pageId}`, token, { method: 'DELETE' });
@@ -242,7 +256,7 @@ export async function disconnectFacebookAccount(token: string, fbUserId: string)
   if (!res.ok) throw new Error('Erreur déconnexion compte Facebook');
 }
 
-// ─── Live counts par compétition ─────────────────────────────────────────────
+// ─── Live counts par compétition ─────────────────────────────────────────
 
 export interface MatchCounts {
   liveCounts:      Record<string, number>;

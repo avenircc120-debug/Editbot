@@ -7,6 +7,7 @@ import {
   getFacebookConnectUrl,
   disconnectFacebookPage,
   disconnectFacebookAccount,
+  connectFacebookManual,
 } from '@/api';
 
 function openExternal(url: string) {
@@ -21,7 +22,7 @@ function openExternal(url: string) {
   }
 }
 
-// ── Groupement des pages par compte Facebook ──────────────────────────────────
+// ── Groupement des pages par compte Facebook ────────────────────────────────────
 
 interface FbAccount {
   fbUserId: string;
@@ -45,7 +46,7 @@ function groupByAccount(pages: FBPage[]): FbAccount[] {
   return [...map.values()];
 }
 
-// ── Sélecteur de pages (pour activer la diffusion) ────────────────────────────
+// ── Sélecteur de pages (pour activer la diffusion) ───────────────────────────────────
 
 interface PagePickerProps {
   pages: FBPage[];
@@ -121,7 +122,7 @@ function PagePicker({ pages, onConfirm, onCancel }: PagePickerProps) {
   );
 }
 
-// ── Ligne de match avec activation de diffusion ───────────────────────────────
+// ── Ligne de match avec activation de diffusion ───────────────────────────────────────
 
 interface BroadcastRowProps {
   match: Match;
@@ -195,7 +196,7 @@ function BroadcastRow({ match, token, pages, onToggle }: BroadcastRowProps) {
   );
 }
 
-// ── Carte d'un compte Facebook avec ses pages ─────────────────────────────────
+// ── Carte d'un compte Facebook avec ses pages ──────────────────────────────────────
 
 interface AccountCardProps {
   account: FbAccount;
@@ -302,6 +303,80 @@ function AccountCard({ account, onDisconnectPage, onDisconnectAccount }: Account
   );
 }
 
+// ── Connexion via jeton personnel (App Meta de l'utilisateur) ──────────────────
+
+interface ManualConnectFormProps {
+  onConnected: () => void;
+  onCancel: () => void;
+  token: string;
+}
+
+function ManualConnectForm({ onConnected, onCancel, token }: ManualConnectFormProps) {
+  const [pageAccessToken, setPageAccessToken] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit() {
+    if (!pageAccessToken.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await connectFacebookManual(token, pageAccessToken.trim());
+      setPageAccessToken('');
+      onConnected();
+    } catch (e: unknown) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ margin: '8px 12px', padding: 14 }}>
+      <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--text, #e6edf3)', marginBottom: 6 }}>
+        🔑 Connecter avec mon propre jeton
+      </div>
+      <p style={{ fontSize: 11.5, color: 'var(--muted, #8b949e)', lineHeight: 1.6, margin: '0 0 10px' }}>
+        Crée ta propre application sur <strong>developers.facebook.com</strong>, génère un
+        <strong> jeton d'accès de Page</strong> (Page Access Token, pas un jeton utilisateur), puis colle-le ci-dessous.
+      </p>
+      <textarea
+        value={pageAccessToken}
+        onChange={(e) => setPageAccessToken(e.target.value)}
+        placeholder="Colle ton jeton d'accès de Page ici…"
+        rows={3}
+        disabled={busy}
+        style={{
+          width: '100%', boxSizing: 'border-box', resize: 'vertical',
+          padding: '10px 12px', borderRadius: 10, border: '1px solid var(--border, #30363d)',
+          background: 'rgba(255,255,255,0.04)', color: 'var(--text, #e6edf3)',
+          fontSize: 12.5, fontFamily: 'monospace',
+        }}
+      />
+      {error && (
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--red, #f85149)' }}>{error}</div>
+      )}
+      <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+        <button onClick={onCancel} disabled={busy} style={{
+          flex: 1, padding: '11px 0', borderRadius: 10, border: 'none',
+          background: 'rgba(255,255,255,0.1)', color: 'var(--text, #fff)',
+          fontSize: 14, cursor: busy ? 'not-allowed' : 'pointer',
+        }}>Annuler</button>
+        <button
+          onClick={handleSubmit}
+          disabled={busy || !pageAccessToken.trim()}
+          style={{
+            flex: 2, padding: '11px 0', borderRadius: 10, border: 'none',
+            background: (busy || !pageAccessToken.trim()) ? 'rgba(255,255,255,0.1)' : 'var(--green, #30d158)',
+            color: (busy || !pageAccessToken.trim()) ? 'rgba(255,255,255,0.4)' : '#000',
+            fontSize: 14, fontWeight: 600, cursor: (busy || !pageAccessToken.trim()) ? 'not-allowed' : 'pointer',
+          }}
+        >{busy ? 'Vérification…' : 'Connecter'}</button>
+      </div>
+    </div>
+  );
+}
+
 // ── Onglet principal Facebook ─────────────────────────────────────────────────
 
 export default function FacebookTab({ token }: { token: string }) {
@@ -310,6 +385,7 @@ export default function FacebookTab({ token }: { token: string }) {
   const [loading,     setLoading]     = useState(true);
   const [error,       setError]       = useState<string | null>(null);
   const [connecting,  setConnecting]  = useState(false);
+  const [showManual,  setShowManual]  = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -391,7 +467,7 @@ export default function FacebookTab({ token }: { token: string }) {
 
   return (
     <>
-      {/* ── En-tête ──────────────────────────────────────────────────────── */}
+      {/* ── En-tête ────────────────────────────────────────── */}
       <div className="section-header" style={{ marginTop: 4 }}>
         Comptes Facebook
         <span className="badge">{accounts.length}</span>
@@ -411,7 +487,7 @@ export default function FacebookTab({ token }: { token: string }) {
         </>
       )}
 
-      {/* ── Comptes groupés ──────────────────────────────────────────────── */}
+      {/* ── Comptes groupés ───────────────────────────────────────── */}
       {!loading && accounts.length === 0 && !error && (
         <div className="empty-state">
           <div className="emoji">📘</div>
@@ -438,13 +514,32 @@ export default function FacebookTab({ token }: { token: string }) {
         {connecting ? 'Ouverture…' : accounts.length === 0 ? '+ Connecter un compte Facebook' : '+ Ajouter un autre compte Facebook'}
       </button>
 
+      {/* ── Connexion via jeton personnel ─────────────────────────────── */}
+      {!showManual ? (
+        <button
+          onClick={() => setShowManual(true)}
+          style={{
+            display: 'block', width: 'calc(100% - 24px)', margin: '8px 12px 0',
+            padding: '10px 0', borderRadius: 10, border: '1px dashed var(--border, #30363d)',
+            background: 'transparent', color: 'var(--muted, #8b949e)',
+            fontSize: 12.5, cursor: 'pointer',
+          }}
+        >🔑 Ou connecter avec mon propre jeton d'accès</button>
+      ) : (
+        <ManualConnectForm
+          token={token}
+          onCancel={() => setShowManual(false)}
+          onConnected={() => { setShowManual(false); load(); }}
+        />
+      )}
+
       {accounts.length > 0 && (
         <div style={{ padding: '4px 16px 8px', fontSize: 11, color: 'var(--muted, #8b949e)' }}>
           Chaque compte peut avoir plusieurs pages. Les scores seront diffusés sur les pages que tu actives dans les matchs en direct.
         </div>
       )}
 
-      {/* ── Matchs en direct avec diffusion ─────────────────────────────── */}
+      {/* ── Matchs en direct avec diffusion ─────────────────────────────────── */}
       <div className="section-header live" style={{ marginTop: 10 }}>
         <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--red)', flexShrink: 0, animation: 'pulse-live 1.5s infinite', display: 'inline-block' }} />
         Diffusion des matchs en direct
