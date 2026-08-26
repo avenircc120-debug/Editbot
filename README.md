@@ -137,7 +137,7 @@ Déployée sur Vercel. SPA React 19 + Vite 7. Auth : `initData` Telegram → tok
 | Onglet | Fichier | Fonctionnalités |
 |---|---|---|
 | **Matchs** | `tabs/MatchsTab.tsx` | Compétition suivie en en-tête, filtres Tous / En direct / Aujourd'hui, 4 sections (live / aujourd'hui / programme / terminés), toggle "Diffuser" par match (optimiste + rollback) |
-| **Facebook** | `tabs/FacebookTab.tsx` | Pages connectées avec date du dernier post, bouton déconnecter, bouton connecter nouvelle page (OAuth) |
+| **Facebook** | `tabs/FacebookTab.tsx` | Pages connectées avec date du dernier post, bouton déconnecter, bouton connecter nouvelle page (OAuth ou jeton personnel) |
 | **Wallet** | `tabs/WalletTab.tsx` | Solde FCFA, historique 20 transactions, bottom sheet Dépôt/Retrait (Orange Money, Wave, MTN, Autre) |
 | **Coupons** | `tabs/CouponsTab.tsx` | Codes promo bookmakers, ajout (bookmaker, code, description, prix FCFA), suppression |
 
@@ -164,6 +164,21 @@ Auth : `?token=web_access_token` dans l'URL (généré par le bot Telegram).
 | `POST { broadcast }` | Active/désactive la diffusion d'un match |
 | `POST { coupon }` | Ajoute un coupon |
 | `POST { deleteCouponId }` | Soft delete d'un coupon (`active = false`) |
+
+---
+
+## Connexion Facebook — deux méthodes
+
+| Méthode | Comment | Avantage |
+|---|---|---|
+| **OAuth** (historique) | L'utilisateur clique "Connecter Facebook", se connecte via le SDK Facebook avec NOTRE App Meta (`FACEBOOK_APP_ID`/`FACEBOOK_APP_SECRET`), on récupère ses Pages automatiquement. | Rapide, aucune manip technique côté utilisateur. |
+| **Jeton personnel** (nouveau) | L'utilisateur crée sa **propre** App sur developers.facebook.com, configure lui-même les permissions (`pages_manage_posts`, `pages_read_engagement`), génère un **jeton d'accès de Page**, puis le colle dans l'interface (Mini App onglet Facebook, ou portail web). | Évite les blocages App Review de Meta sur NOTRE App partagée — chaque utilisateur gère sa propre App. |
+
+Les deux méthodes stockent le résultat de la même façon dans `facebook_connections` (`fb_page_id`, `fb_page_name`, `fb_page_access_token`) — la publication (`posterSurPage`) ne fait aucune différence entre les deux origines.
+
+Endpoint dédié au jeton personnel : `POST /facebook/manual` (`mini-app-api` et `web-portal`) — body `{ pageAccessToken }`. Le jeton est validé via `GET /me?fields=id,name,category` (Graph API) : un jeton de Page renvoie la Page elle-même sur `/me`, ce qui permet de récupérer `fb_page_id`/`fb_page_name` sans que l'utilisateur ait à les ressaisir, et de rejeter un jeton utilisateur (`category` absent) avec un message clair.
+
+Limite assumée : un jeton personnel n'est prolongé que par l'utilisateur lui-même (on ne peut pas appeler `prolongerToken` avec notre App sur un jeton émis par une App tierce) — s'il expire, la publication échoue et l'utilisateur est notifié comme pour un jeton OAuth révoqué (voir garanties ci-dessous), à charge pour lui de regénérer un jeton longue durée depuis sa propre App.
 
 ---
 
