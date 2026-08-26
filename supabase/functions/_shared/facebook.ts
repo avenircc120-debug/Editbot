@@ -227,6 +227,35 @@ export async function editerPost(
   }
 }
 
+// ─── Jeton apporté par l'utilisateur (sa propre App Meta) ─────────────────────
+
+/**
+ * Valide un jeton d'accès de Page collé par l'utilisateur et identifie la Page.
+ *
+ * Contrairement au flux OAuth (qui utilise NOTRE App Meta et nécessite
+ * l'App Review pour `pages_manage_posts`), ici l'utilisateur a créé sa
+ * propre App Meta et généré lui-même un jeton d'accès de Page. On ne fait
+ * aucune hypothèse sur son origine : on vérifie juste qu'il fonctionne et
+ * on identifie la Page qu'il représente via `/me` (un jeton de Page renvoie
+ * la Page elle-même sur cet endpoint, jamais un profil personnel).
+ */
+export async function validerJetonPage(
+  pageAccessToken: string,
+): Promise<{ id: string; name: string; category: string | null } | { error: string }> {
+  try {
+    const res = await fetch(
+      `${FB_API}/me?fields=id,name,category&access_token=${encodeURIComponent(pageAccessToken)}`,
+    );
+    const data = await safeJson(res);
+    if (!res.ok || !data) return { error: `Impossible de contacter Facebook (HTTP ${res.status}).` };
+    if (data.error) return { error: data.error.message ?? 'Jeton Facebook invalide.' };
+    if (!data.id || !data.name) return { error: 'Réponse Facebook incomplète.' };
+    return { id: data.id, name: data.name, category: data.category ?? null };
+  } catch (err) {
+    return { error: `Erreur réseau : ${String(err)}` };
+  }
+}
+
 /** Récupère le nom affiché du compte Facebook connecté (ex: "Jean Dupont"). */
 export async function recupererNomUtilisateur(token: string): Promise<string> {
   try {

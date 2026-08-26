@@ -13,12 +13,14 @@
  *   POST  /coupons           → ajouter coupon
  *   DELETE /coupons/:id      → supprimer coupon
  *   GET   /facebook          → liste pages connectées
+ *   POST  /facebook/manual   → connecter une Page via un jeton apporté par l'utilisateur
  *   DELETE /facebook/:id     → déconnecter une page
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { LEAGUES } from '../_shared/config.ts';
 import { formatAnnonceFacebook, buildFacebookPost } from '../_shared/templates.ts';
+import { validerJetonPage } from '../_shared/facebook.ts';
 import {
   normalisePageIds,
   publishToBroadcastPages,
@@ -414,6 +416,44 @@ async function handleFacebookAccountDelete(chatId: number, fbUserId: string): Pr
   return json({ ok: true });
 }
 
+/**
+ * Connecte une Page Facebook via un jeton d'accès apporté par l'utilisateur
+ * (généré depuis sa propre App Meta for Developers) — alternative au flux
+ * OAuth qui évite les blocages de validation App Review de Meta.
+ */
+async function handleFacebookManualConnect(req: Request, chatId: number): Promise<Response> {
+  const { pageAccessToken } = await req.json().catch(() => ({}));
+  const token = typeof pageAccessToken === 'string' ? pageAccessToken.trim() : '';
+  if (!token) return json({ error: 'Le jeton d’accès de Page est requis.' }, 400);
+
+  const result = await validerJetonPage(token);
+  if ('error' in result) return json({ error: `Jeton refusé par Facebook : ${result.error}` }, 400);
+  if (!result.category) {
+    return json({
+      error: 'Ce jeton correspond à un profil personnel, pas à une Page Facebook. ' +
+        'Génère un jeton d’accès de PAGE (pas d’utilisateur) depuis ton App Meta.',
+    }, 400);
+  }
+
+  const { error: upsertErr } = await supabase.from('facebook_connections').upsert({
+    telegram_user_id:     chatId,
+    fb_user_id:           result.id,
+    fb_user_name:         result.name,
+    fb_page_id:           result.id,
+    fb_page_name:         result.name,
+    fb_page_access_token: token,
+    is_active:            true,
+    updated_at:           new Date().toISOString(),
+  }, { onConflict: 'telegram_user_id,fb_page_id' });
+
+  if (upsertErr) {
+    console.error('[mini-app-api] Erreur upsert page (jeton manuel):', upsertErr);
+    return json({ error: 'Impossible d’enregistrer la Page Facebook.' }, 500);
+  }
+
+  return json({ ok: true, page: { fb_page_id: result.id, fb_page_name: result.name } });
+}
+
 /** Génère un lien OAuth Facebook à usage unique (nonce anti-CSRF, valable 10 min).
  *  Si add=true, le paramètre est transmis pour identifier une demande d'ajout de compte. */
 async function handleFacebookConnectUrl(chatId: number, add: boolean): Promise<Response> {
@@ -492,6 +532,7 @@ Deno.serve(async (req: Request) => {
     if (parentRoute === 'coupons'  && req.method === 'DELETE') return handleCouponsDelete(chatId, route);
     if (route === 'facebook'       && req.method === 'GET')    return handleFacebookGet(chatId);
     if (route === 'connect-url' && parentRoute === 'facebook' && req.method === 'GET') return handleFacebookConnectUrl(chatId, url.searchParams.get('add') === '1');
+    if (route === 'manual' && parentRoute === 'facebook' && req.method === 'POST') return handleFacebookManualConnect(req, chatId);
     if (parentRoute === 'account' && parts[parts.length - 3] === 'facebook' && req.method === 'DELETE') return handleFacebookAccountDelete(chatId, route);
     if (parentRoute === 'facebook' && route !== 'account' && req.method === 'DELETE') return handleFacebookDelete(chatId, route);
 
