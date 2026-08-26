@@ -8,9 +8,9 @@
   *{margin:0;padding:0;box-sizing:border-box}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#f5f5f0;color:#111;min-height:100vh;overflow-x:hidden}
 
-  /* ══════════════════════════════════════════
+  /* ═════════════════════════════════
      SCREEN 1 — ONBOARDING CAROUSEL
-  ══════════════════════════════════════════ */
+  ═════════════════════════════════ */
   #screen-onboard{
     position:fixed;inset:0;display:none;flex-direction:column;
     align-items:center;background:#f5f5f0;overflow:hidden;
@@ -195,9 +195,9 @@
   }
   .btn-continue:active{transform:scale(0.98);}
 
-  /* ══════════════════════════════════════════
+  /* ═════════════════════════════════
      SCREEN 2 — FACEBOOK LOGIN
-  ══════════════════════════════════════════ */
+  ═════════════════════════════════ */
   #screen-login{
     position:fixed;inset:0;display:none;flex-direction:column;
     align-items:center;justify-content:flex-end;
@@ -249,9 +249,9 @@
   .sheet-legal{margin-top:14px;font-size:11px;color:#9ca3af;text-align:center;line-height:1.6;}
   .sheet-legal a{color:#6b7280;text-decoration:underline;}
 
-  /* ══════════════════════════════════════════
+  /* ═════════════════════════════════
      APP SCREEN
-  ══════════════════════════════════════════ */
+  ═════════════════════════════════ */
   header{padding:16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:#fff;z-index:10}
   .hamburger{display:flex;flex-direction:column;gap:4px;cursor:pointer;padding:6px}
   .hamburger span{width:20px;height:2px;background:#111;border-radius:2px}
@@ -299,9 +299,9 @@
 </head>
 <body>
 
-<!-- ══════════════════════════════════════════════
+<!-- ══════════════════════════════════════
      SCREEN 1 — ONBOARDING
-══════════════════════════════════════════════ -->
+══════════════════════════════════════ -->
 <div id="screen-onboard">
 
   <div class="ob-top">
@@ -468,9 +468,9 @@
 
 </div>
 
-<!-- ══════════════════════════════════════════════
+<!-- ══════════════════════════════════════
      SCREEN 2 — FACEBOOK LOGIN
-══════════════════════════════════════════════ -->
+══════════════════════════════════════ -->
 <div id="screen-login">
 
   <canvas id="voronoi-canvas"></canvas>
@@ -504,9 +504,9 @@
   </div>
 </div>
 
-<!-- ══════════════════════════════════════════════
+<!-- ══════════════════════════════════════
      APP SCREEN
-══════════════════════════════════════════════ -->
+══════════════════════════════════════ -->
 <div id="app-screen" style="display:none">
   <header>
     <div class="hamburger" id="menu-btn"><span></span><span></span><span></span></div>
@@ -541,9 +541,9 @@
 </div>
 
 <script>
-/* ═══════════════════════════════════════════
+/* ═════════════════════════════════════════
    CAROUSEL — auto-scroll + dots
-═══════════════════════════════════════════ */
+══════════════════════════════════════════ */
 (function(){
   var track  = document.getElementById('carousel-track');
   var dotsEl = document.getElementById('carousel-dots');
@@ -588,9 +588,9 @@
   setTimeout(function(){ scrollTo(0); startAuto(); }, 100);
 })();
 
-/* ═══════════════════════════════════════════
+/* ══════════════════════════════════════════
    BRIGHT-BLUE VORONOI CANVAS
-═══════════════════════════════════════════ */
+══════════════════════════════════════════ */
 (function(){
   var canvas=document.getElementById('voronoi-canvas');
   var ctx=canvas.getContext('2d');
@@ -624,10 +624,10 @@
   resize();init();frame();
 })();
 
-/* ═══════════════════════════════════════════
+/* ══════════════════════════════════════════
    APP LOGIC — utilise mini-app-api (même
    backend que la Mini App Telegram)
-═══════════════════════════════════════════ */
+══════════════════════════════════════════ */
 var SUPABASE_URL='https://jxrwgcsbomqvvchvkkdt.supabase.co';
 var API_BASE=SUPABASE_URL+'/functions/v1/mini-app-api';
 var LEAGUES=[
@@ -720,9 +720,49 @@ function bindFilters(){
   });
 }
 
-/* ─── Bouton FB connect (factored out) ─────────────────── */
+/* ─── Bouton FB connect (factored out) ─────────────────────── */
 function fbConnectIconSvg(size){
   return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="white"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>';
+}
+
+/* ─── Connexion via jeton personnel (App Meta de l'utilisateur) ────────── */
+function addManualConnectUI(el){
+  var wrap=document.createElement('div');
+  wrap.style.cssText='margin-top:10px;';
+  var toggleBtn=document.createElement('button');
+  toggleBtn.textContent="🔑 Ou connecter avec mon propre jeton";
+  toggleBtn.style.cssText='width:100%;padding:10px;border:1px dashed rgba(255,255,255,0.25);border-radius:10px;background:transparent;color:#8b949e;font-size:12px;cursor:pointer;';
+  var form=document.createElement('div');
+  form.style.cssText='display:none;margin-top:8px;';
+  form.innerHTML=
+    '<p style="font-size:11px;color:#8b949e;line-height:1.6;margin:0 0 8px;">'+
+    'Crée ta propre application sur <b>developers.facebook.com</b>, génère un '+
+    '<b>jeton d\'accès de Page</b> (pas un jeton utilisateur), puis colle-le ici.</p>'+
+    '<textarea rows="3" placeholder="Colle ton jeton d\'accès de Page ici…" '+
+    'style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:#fff;font-size:12px;font-family:monospace;"></textarea>'+
+    '<div style="color:#f85149;font-size:12px;margin-top:6px;"></div>'+
+    '<button style="margin-top:8px;width:100%;padding:11px;border:none;border-radius:10px;background:#30d158;color:#000;font-weight:600;font-size:14px;cursor:pointer;">Connecter</button>';
+  toggleBtn.onclick=function(){ form.style.display = form.style.display==='none' ? 'block' : 'none'; };
+  wrap.appendChild(toggleBtn);
+  wrap.appendChild(form);
+  el.appendChild(wrap);
+
+  var ta=form.querySelector('textarea');
+  var errEl=form.querySelector('div');
+  var btn=form.querySelector('button');
+  btn.onclick=function(){
+    var val=ta.value.trim();
+    errEl.textContent='';
+    if(!val) return;
+    btn.disabled=true;btn.textContent='Vérification…';
+    fetch(API_BASE+'/facebook/manual',{method:'POST',headers:authHeaders(),body:JSON.stringify({pageAccessToken:val})})
+      .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return {ok:r.ok,d:d};});})
+      .then(function(res){
+        if(!res.ok){errEl.textContent=res.d.error||'Erreur.';btn.disabled=false;btn.textContent='Connecter';return;}
+        ta.value='';
+        loadProfile();
+      }).catch(function(){errEl.textContent='Erreur réseau.';btn.disabled=false;btn.textContent='Connecter';});
+  };
 }
 
 function getFbConnectUrl(add, btn, originalHtml){
@@ -736,7 +776,7 @@ function getFbConnectUrl(add, btn, originalHtml){
     }).catch(function(){alert('Erreur réseau.');btn.disabled=false;btn.innerHTML=originalHtml;});
 }
 
-/* ─── Page Picker Modal ─────────────────────────────────── */
+/* ─── Page Picker Modal ─────────────────────── */
 function showPagePicker(matchId, isOn, match, previousPageIds){
   if(!isOn){
     doBroadcast(matchId, false, match, []);
@@ -805,7 +845,7 @@ function showPagePicker(matchId, isOn, match, previousPageIds){
   document.body.appendChild(overlay);
 }
 
-/* ─── Broadcast toggle ──────────────────────────────────── */
+/* ─── Broadcast toggle ──────────────────────── */
 function doBroadcast(matchId, on, match, pageIds){
   var sw=document.querySelector('.switch[data-match="'+matchId+'"]');
   if(sw) sw.classList.toggle('on', on);
@@ -840,7 +880,7 @@ function doBroadcast(matchId, on, match, pageIds){
   });
 }
 
-/* ─── Profil (tiroir droit) ─────────────────────────────── */
+/* ─── Profil (tiroir droit) ─────────────────────── */
 function loadProfile(){
   fetch(API_BASE+'/profile',{headers:authHeaders()})
     .then(function(r){return r.json();})
@@ -859,6 +899,7 @@ function loadProfile(){
         btnConnect.innerHTML=connectHtml;
         btnConnect.onclick=function(){getFbConnectUrl(false,btnConnect,connectHtml);};
         el.appendChild(btnConnect);
+        addManualConnectUI(el);
       } else {
         pages.forEach(function(p){
           var i=document.createElement('div');i.className='page-item';
@@ -871,13 +912,14 @@ function loadProfile(){
         btnAdd.innerHTML=addHtml;
         btnAdd.onclick=function(){getFbConnectUrl(true,btnAdd,addHtml);};
         el.appendChild(btnAdd);
+        addManualConnectUI(el);
       }
     }).catch(function(err){
       alert(err&&err.message?err.message:'Impossible de charger les Pages Facebook.');
     });
 }
 
-/* ─── Matchs ────────────────────────────────────────────── */
+/* ─── Matchs ─────────────────────── */
 function loadMatches(){
   q('matches').innerHTML='<div class="loading">Chargement des matchs…</div>';
   fetch(
