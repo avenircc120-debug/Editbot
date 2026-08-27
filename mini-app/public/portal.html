@@ -666,6 +666,8 @@ function showLogin(msg){
   q('app-screen').style.display='none';
   if(msg){ q('login-msg').textContent=msg; q('login-msg').style.display='block'; } else { q('login-msg').style.display='none'; }
   var btn=q('login-btn');
+  btn.style.display='flex';
+  q('manual-login-form').style.display='none';
   btn.onclick=function(){
     btn.classList.add('loading');
     btn.innerHTML='<div class="fb-spinner"></div> Connexion en cours…';
@@ -673,7 +675,11 @@ function showLogin(msg){
   };
 
   var mToggle=q('manual-toggle-login'), mForm=q('manual-login-form');
-  mToggle.onclick=function(){ mForm.style.display = mForm.style.display==='none' ? 'block' : 'none'; };
+  mToggle.onclick=function(){
+    var opening = mForm.style.display==='none';
+    mForm.style.display = opening ? 'block' : 'none';
+    btn.style.display = opening ? 'none' : 'flex';
+  };
 
   var mInput=q('manual-login-input'), mErr=q('manual-login-error'), mSubmit=q('manual-login-submit');
   mSubmit.onclick=function(){
