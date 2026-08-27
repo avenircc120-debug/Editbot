@@ -685,11 +685,23 @@ function launchApp(){
   q('screen-onboard').style.display='none';
   q('screen-login').style.display='none';
   q('app-screen').style.display='block';
-  renderLeagues();bindFilters();bindDrawers();loadProfile();loadMatches();
+  renderLeagues();bindFilters();bindDrawers();loadProfile();loadMatches();loadLeagueCounts();
+}
+
+function loadLeagueCounts(){
+  fetch(API_BASE+'/live-counts',{headers:authHeaders()})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var live=d.liveCounts||{}, sched=d.scheduledCounts||{};
+      LEAGUES.forEach(function(l){
+        state.counts[l.id]=(live[l.id]||0)+(sched[l.id]||0);
+      });
+      renderLeagues();
+    }).catch(function(){});
 }
 
 function bindDrawers(){
-  q('menu-btn').onclick=function(){q('drawer-left').classList.add('open');q('overlay-left').classList.add('open');};
+  q('menu-btn').onclick=function(){q('drawer-left').classList.add('open');q('overlay-left').classList.add('open');loadLeagueCounts();};
   q('overlay-left').onclick=function(){q('drawer-left').classList.remove('open');q('overlay-left').classList.remove('open');};
   q('profile-btn').onclick=function(){q('drawer-right').classList.add('open');q('overlay-right').classList.add('open');};
   q('overlay-right').onclick=function(){q('drawer-right').classList.remove('open');q('overlay-right').classList.remove('open');};
