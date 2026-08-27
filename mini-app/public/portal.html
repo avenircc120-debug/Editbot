@@ -4,13 +4,21 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Editbot</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#111111">
+<link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAA+UlEQVR4nM1X2w0EIQhUcw1o/zVCCXtfJB5BXmb15muDwIwuEK1FQO/9key7QMTKbT+Gt4g1Ie00Oedqp8m5iGY5vo16Y/czPpkgABDtY4xwrtAJrIh3hLhrAADKGENNTuteoW4BRD4TSeTzt1eEKSCym0ysKmBOsPqmnXt8JahFaAXPx675anWzFJBJmIkJT0KrC6K4PopNAVbv78apAqTe1/4zrVkzwy3gBJYC+DSLDCQel2rDKKkGTYC7BlbrHh8Nri6w7B6ftABvomyMuwt4Qq1AI4JTd8JrV7I30KTn0ikgYv2PSXjjFIizccNJ8lLY65hw8nn+BU8vgPHSQRlLAAAAAElFTkSuQmCC" type="image/png">
+<link rel="apple-touch-icon" href="data:image/png;base64,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">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Editbot">
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#f5f5f0;color:#111;min-height:100vh;overflow-x:hidden}
 
-  /* ══════════════════════════════════════════
+  /* ══════════════════════════════════════════════════
      SCREEN 1 — ONBOARDING CAROUSEL
-  ══════════════════════════════════════════ */
+  ══════════════════════════════════════════════════ */
   #screen-onboard{
     position:fixed;inset:0;display:none;flex-direction:column;
     align-items:center;background:#f5f5f0;overflow:hidden;
@@ -195,9 +203,9 @@
   }
   .btn-continue:active{transform:scale(0.98);}
 
-  /* ══════════════════════════════════════════
+  /* ══════════════════════════════════════════════════
      SCREEN 2 — FACEBOOK LOGIN
-  ══════════════════════════════════════════ */
+  ══════════════════════════════════════════════════ */
   #screen-login{
     position:fixed;inset:0;display:none;flex-direction:column;
     align-items:center;justify-content:flex-end;
@@ -239,9 +247,9 @@
   .sheet-legal{margin-top:14px;font-size:11px;color:#9ca3af;text-align:center;line-height:1.6;}
   .sheet-legal a{color:#6b7280;text-decoration:underline;}
 
-  /* ══════════════════════════════════════════
+  /* ══════════════════════════════════════════════════
      APP SCREEN
-  ══════════════════════════════════════════ */
+  ══════════════════════════════════════════════════ */
   header{padding:16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:#fff;z-index:10}
   .hamburger{display:flex;flex-direction:column;gap:4px;cursor:pointer;padding:6px}
   .hamburger span{width:20px;height:2px;background:#111;border-radius:2px}
@@ -290,9 +298,9 @@
   .league-count{margin-left:auto;background:#f3f4f6;color:#6b7280;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;flex-shrink:0}
   .league-item.active .league-count{background:#dbeafe;color:#1877f2}
 
-  /* ══════════════════════════════════════════
+  /* ══════════════════════════════════════════════════
      PRÉFÉRENCES "SET & FORGET"
-  ══════════════════════════════════════════ */
+  ══════════════════════════════════════════════════ */
   .pref-back{padding:14px 16px 0;font-size:13px;color:#1877f2;cursor:pointer;font-weight:600}
   .pref-view{padding:16px}
   .pref-section{margin-bottom:24px}
@@ -317,9 +325,9 @@
 </head>
 <body>
 
-<!-- ══════════════════════════════════════════════
+<!-- ═══════════════════════════════════════════
      SCREEN 1 — ONBOARDING
-══════════════════════════════════════════════ -->
+═══════════════════════════════════════════ -->
 <div id="screen-onboard">
 
   <div class="ob-top">
@@ -486,9 +494,9 @@
 
 </div>
 
-<!-- ══════════════════════════════════════════════
+<!-- ═══════════════════════════════════════════
      SCREEN 2 — FACEBOOK LOGIN
-══════════════════════════════════════════════ -->
+═══════════════════════════════════════════ -->
 <div id="screen-login">
 
   <canvas id="voronoi-canvas"></canvas>
@@ -525,9 +533,9 @@
   </div>
 </div>
 
-<!-- ══════════════════════════════════════════════
+<!-- ═══════════════════════════════════════════
      APP SCREEN
-══════════════════════════════════════════════ -->
+═══════════════════════════════════════════ -->
 <div id="app-screen" style="display:none">
   <header>
     <div class="hamburger" id="menu-btn"><span></span><span></span><span></span></div>
@@ -554,6 +562,7 @@
   </div>
   <div class="league-item" id="menu-competitions-item">🏆  Compétition</div>
   <div class="league-item" id="menu-preferences-item">🎯  Automatique</div>
+  <div class="league-item" id="menu-install-item" style="display:none">📲  Installer l'application</div>
   <div class="profile-body">
     <div class="profile-section-title" id="connexion-toggle">
       <span>📘 Connexion Facebook</span>
@@ -569,9 +578,9 @@
 </div>
 
 <script>
-/* ═══════════════════════════════════════════
+/* ════════════════════════════════════
    CAROUSEL — auto-scroll + dots
-═══════════════════════════════════════════ */
+════════════════════════════════════ */
 (function(){
   var track  = document.getElementById('carousel-track');
   var dotsEl = document.getElementById('carousel-dots');
@@ -616,9 +625,9 @@
   setTimeout(function(){ scrollTo(0); startAuto(); }, 100);
 })();
 
-/* ═══════════════════════════════════════════
+/* ════════════════════════════════════
    BRIGHT-BLUE VORONOI CANVAS
-═══════════════════════════════════════════ */
+════════════════════════════════════ */
 (function(){
   var canvas=document.getElementById('voronoi-canvas');
   var ctx=canvas.getContext('2d');
@@ -652,10 +661,10 @@
   resize();init();frame();
 })();
 
-/* ═══════════════════════════════════════════
+/* ════════════════════════════════════
    APP LOGIC — utilise mini-app-api (même
    backend que la Mini App Telegram)
-═══════════════════════════════════════════ */
+════════════════════════════════════ */
 var SUPABASE_URL='https://jxrwgcsbomqvvchvkkdt.supabase.co';
 var API_BASE=SUPABASE_URL+'/functions/v1/mini-app-api';
 var LEAGUES=[
@@ -940,6 +949,10 @@ function bindDrawers(){
     q('drawer-left').classList.remove('open');q('overlay-left').classList.remove('open');
     showPreferencesView();
   };
+  q('menu-install-item').onclick=function(){
+    q('drawer-left').classList.remove('open');q('overlay-left').classList.remove('open');
+    installApp();
+  };
   q('connexion-toggle').onclick=function(){
     var content=q('connexion-content'), chevron=q('connexion-chevron');
     var opening=content.style.display==='none';
@@ -1008,7 +1021,7 @@ function addManualConnectUI(el){
   };
 }
 
-/* ─── Page Picker Modal ─────────────────────────────────── */
+/* ─── Page Picker Modal ──────────────────────── */
 function showPagePicker(matchId, isOn, match, previousPageIds){
   if(!isOn){
     doBroadcast(matchId, false, match, []);
@@ -1077,7 +1090,7 @@ function showPagePicker(matchId, isOn, match, previousPageIds){
   document.body.appendChild(overlay);
 }
 
-/* ─── Broadcast toggle ──────────────────────────────────── */
+/* ─── Broadcast toggle ──────────────────────── */
 function doBroadcast(matchId, on, match, pageIds){
   var sw=document.querySelector('.switch[data-match="'+matchId+'"]');
   if(sw) sw.classList.toggle('on', on);
@@ -1112,7 +1125,7 @@ function doBroadcast(matchId, on, match, pageIds){
   });
 }
 
-/* ─── Profil (tiroir droit) ─────────────────────────────── */
+/* ─── Profil (tiroir droit) ───────────────── */
 function loadProfile(){
   fetch(API_BASE+'/profile',{headers:authHeaders()})
     .then(function(r){return r.json();})
@@ -1138,7 +1151,7 @@ function loadProfile(){
     });
 }
 
-/* ─── Matchs ────────────────────────────────────────────── */
+/* ─── Matchs ───────────────────────── */
 function loadMatches(){
   q('matches').innerHTML='<div class="loading">Chargement des matchs…</div>';
   fetch(
@@ -1200,6 +1213,56 @@ function renderMatches(matches){
       showPagePicker(m.match_id, on, m, prevPageIds);
     };
     el.appendChild(card);
+  });
+}
+
+/* ─── Installation de l'application (PWA) ────────────────────── */
+var deferredInstallPrompt=null;
+
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('/sw.js').catch(function(){/* non bloquant */});
+}
+
+window.addEventListener('beforeinstallprompt', function(e){
+  e.preventDefault();
+  deferredInstallPrompt=e;
+  var item=q('menu-install-item');
+  if(item) item.style.display='block';
+});
+
+window.addEventListener('appinstalled', function(){
+  deferredInstallPrompt=null;
+  var item=q('menu-install-item');
+  if(item) item.style.display='none';
+});
+
+function isIos(){
+  return /iphone|ipad|ipod/i.test(navigator.userAgent);
+}
+function isInStandaloneMode(){
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone===true;
+}
+
+function installApp(){
+  if(deferredInstallPrompt){
+    deferredInstallPrompt.prompt();
+    deferredInstallPrompt.userChoice.finally(function(){deferredInstallPrompt=null;});
+    return;
+  }
+  if(isIos() && !isInStandaloneMode()){
+    alert('Pour installer Editbot sur iPhone :\n\n1. Appuie sur le bouton Partager (le carré avec une flèche) en bas de Safari\n2. Choisis "Sur l\'écran d\'accueil"\n3. Appuie sur "Ajouter"');
+    return;
+  }
+  alert('L\'installation n\'est pas disponible sur ce navigateur pour le moment. Essaie avec Chrome sur Android, ou Safari sur iPhone.');
+}
+
+// Sur iOS, aucun événement beforeinstallprompt n'existe : on affiche le
+// bouton d'office (tant que l'app n'est pas déjà installée) et on guide
+// l'utilisateur manuellement au clic.
+if(isIos() && !isInStandaloneMode()){
+  document.addEventListener('DOMContentLoaded', function(){
+    var item=q('menu-install-item');
+    if(item) item.style.display='block';
   });
 }
 
