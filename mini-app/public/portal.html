@@ -8,9 +8,9 @@
   *{margin:0;padding:0;box-sizing:border-box}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#f5f5f0;color:#111;min-height:100vh;overflow-x:hidden}
 
-  /* ═════════════════════════════════
+  /* ══════════════════════════════════════════
      SCREEN 1 — ONBOARDING CAROUSEL
-  ═════════════════════════════════ */
+  ══════════════════════════════════════════ */
   #screen-onboard{
     position:fixed;inset:0;display:none;flex-direction:column;
     align-items:center;background:#f5f5f0;overflow:hidden;
@@ -195,9 +195,9 @@
   }
   .btn-continue:active{transform:scale(0.98);}
 
-  /* ═════════════════════════════════
+  /* ══════════════════════════════════════════
      SCREEN 2 — FACEBOOK LOGIN
-  ═════════════════════════════════ */
+  ══════════════════════════════════════════ */
   #screen-login{
     position:fixed;inset:0;display:none;flex-direction:column;
     align-items:center;justify-content:flex-end;
@@ -249,9 +249,9 @@
   .sheet-legal{margin-top:14px;font-size:11px;color:#9ca3af;text-align:center;line-height:1.6;}
   .sheet-legal a{color:#6b7280;text-decoration:underline;}
 
-  /* ═════════════════════════════════
+  /* ══════════════════════════════════════════
      APP SCREEN
-  ═════════════════════════════════ */
+  ══════════════════════════════════════════ */
   header{padding:16px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:#fff;z-index:10}
   .hamburger{display:flex;flex-direction:column;gap:4px;cursor:pointer;padding:6px}
   .hamburger span{width:20px;height:2px;background:#111;border-radius:2px}
@@ -299,9 +299,9 @@
 </head>
 <body>
 
-<!-- ══════════════════════════════════════
+<!-- ══════════════════════════════════════════════
      SCREEN 1 — ONBOARDING
-══════════════════════════════════════ -->
+══════════════════════════════════════════════ -->
 <div id="screen-onboard">
 
   <div class="ob-top">
@@ -468,9 +468,9 @@
 
 </div>
 
-<!-- ══════════════════════════════════════
+<!-- ══════════════════════════════════════════════
      SCREEN 2 — FACEBOOK LOGIN
-══════════════════════════════════════ -->
+══════════════════════════════════════════════ -->
 <div id="screen-login">
 
   <canvas id="voronoi-canvas"></canvas>
@@ -504,9 +504,9 @@
   </div>
 </div>
 
-<!-- ══════════════════════════════════════
+<!-- ══════════════════════════════════════════════
      APP SCREEN
-══════════════════════════════════════ -->
+══════════════════════════════════════════════ -->
 <div id="app-screen" style="display:none">
   <header>
     <div class="hamburger" id="menu-btn"><span></span><span></span><span></span></div>
@@ -541,9 +541,9 @@
 </div>
 
 <script>
-/* ═════════════════════════════════════════
+/* ═══════════════════════════════════════════
    CAROUSEL — auto-scroll + dots
-══════════════════════════════════════════ */
+═══════════════════════════════════════════ */
 (function(){
   var track  = document.getElementById('carousel-track');
   var dotsEl = document.getElementById('carousel-dots');
@@ -588,9 +588,9 @@
   setTimeout(function(){ scrollTo(0); startAuto(); }, 100);
 })();
 
-/* ══════════════════════════════════════════
+/* ═══════════════════════════════════════════
    BRIGHT-BLUE VORONOI CANVAS
-══════════════════════════════════════════ */
+═══════════════════════════════════════════ */
 (function(){
   var canvas=document.getElementById('voronoi-canvas');
   var ctx=canvas.getContext('2d');
@@ -624,10 +624,10 @@
   resize();init();frame();
 })();
 
-/* ══════════════════════════════════════════
+/* ═══════════════════════════════════════════
    APP LOGIC — utilise mini-app-api (même
    backend que la Mini App Telegram)
-══════════════════════════════════════════ */
+═══════════════════════════════════════════ */
 var SUPABASE_URL='https://jxrwgcsbomqvvchvkkdt.supabase.co';
 var API_BASE=SUPABASE_URL+'/functions/v1/mini-app-api';
 var LEAGUES=[
@@ -720,12 +720,7 @@ function bindFilters(){
   });
 }
 
-/* ─── Bouton FB connect (factored out) ─────────────────────── */
-function fbConnectIconSvg(size){
-  return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="white"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>';
-}
-
-/* ─── Connexion via jeton personnel (App Meta de l'utilisateur) ────────── */
+/* ─── Connexion via jeton personnel (App Meta de l'utilisateur) ──────────── */
 function addManualConnectUI(el){
   var wrap=document.createElement('div');
   wrap.style.cssText='margin-top:10px;';
@@ -765,18 +760,7 @@ function addManualConnectUI(el){
   };
 }
 
-function getFbConnectUrl(add, btn, originalHtml){
-  var url=API_BASE+'/facebook/connect-url'+(add?'?add=1':'');
-  btn.disabled=true;btn.textContent='Chargement…';
-  fetch(url,{headers:authHeaders()})
-    .then(function(r){return r.json();})
-    .then(function(d){
-      if(d.url){window.location.href=d.url;}
-      else{alert(d.error||'Erreur lors de la génération du lien.');btn.disabled=false;btn.innerHTML=originalHtml;}
-    }).catch(function(){alert('Erreur réseau.');btn.disabled=false;btn.innerHTML=originalHtml;});
-}
-
-/* ─── Page Picker Modal ─────────────────────── */
+/* ─── Page Picker Modal ─────────────────────────────────── */
 function showPagePicker(matchId, isOn, match, previousPageIds){
   if(!isOn){
     doBroadcast(matchId, false, match, []);
@@ -845,7 +829,7 @@ function showPagePicker(matchId, isOn, match, previousPageIds){
   document.body.appendChild(overlay);
 }
 
-/* ─── Broadcast toggle ──────────────────────── */
+/* ─── Broadcast toggle ──────────────────────────────────── */
 function doBroadcast(matchId, on, match, pageIds){
   var sw=document.querySelector('.switch[data-match="'+matchId+'"]');
   if(sw) sw.classList.toggle('on', on);
@@ -880,7 +864,7 @@ function doBroadcast(matchId, on, match, pageIds){
   });
 }
 
-/* ─── Profil (tiroir droit) ─────────────────────── */
+/* ─── Profil (tiroir droit) ─────────────────────────────── */
 function loadProfile(){
   fetch(API_BASE+'/profile',{headers:authHeaders()})
     .then(function(r){return r.json();})
@@ -892,13 +876,6 @@ function loadProfile(){
       var el=q('pages-list');el.innerHTML='';
       if(!pages.length){
         el.innerHTML='<div class="page-item">Aucune Page Facebook connectée.</div>';
-        var btnConnect=document.createElement('button');
-        btnConnect.className='btn-fb';
-        btnConnect.style.cssText='margin-top:12px;width:100%;padding:12px;border:none;border-radius:10px;background:#1877f2;color:#fff;font-size:15px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;';
-        var connectHtml=fbConnectIconSvg(18)+'Connecter mes Pages Facebook';
-        btnConnect.innerHTML=connectHtml;
-        btnConnect.onclick=function(){getFbConnectUrl(false,btnConnect,connectHtml);};
-        el.appendChild(btnConnect);
         addManualConnectUI(el);
       } else {
         pages.forEach(function(p){
@@ -906,12 +883,6 @@ function loadProfile(){
           i.textContent='📘 '+(p.fb_page_name||p.fb_page_id);
           el.appendChild(i);
         });
-        var btnAdd=document.createElement('button');
-        btnAdd.style.cssText='margin-top:12px;width:100%;padding:12px;border:none;border-radius:10px;background:#1877f2;color:#fff;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;';
-        var addHtml=fbConnectIconSvg(16)+'+ Ajouter une autre Page';
-        btnAdd.innerHTML=addHtml;
-        btnAdd.onclick=function(){getFbConnectUrl(true,btnAdd,addHtml);};
-        el.appendChild(btnAdd);
         addManualConnectUI(el);
       }
     }).catch(function(err){
@@ -919,7 +890,7 @@ function loadProfile(){
     });
 }
 
-/* ─── Matchs ─────────────────────── */
+/* ─── Matchs ────────────────────────────────────────────── */
 function loadMatches(){
   q('matches').innerHTML='<div class="loading">Chargement des matchs…</div>';
   fetch(
