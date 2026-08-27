@@ -285,6 +285,30 @@
   .match-date.live-date{color:#16a34a;font-weight:700}
   .league-count{margin-left:auto;background:#f3f4f6;color:#6b7280;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;flex-shrink:0}
   .league-item.active .league-count{background:#dbeafe;color:#1877f2}
+
+  /* ══════════════════════════════════════════
+     PRÉFÉRENCES "SET & FORGET"
+  ══════════════════════════════════════════ */
+  .pref-back{padding:14px 16px 0;font-size:13px;color:#1877f2;cursor:pointer;font-weight:600}
+  .pref-view{padding:16px}
+  .pref-section{margin-bottom:24px}
+  .pref-section-title{font-size:13px;font-weight:700;color:#111;margin-bottom:10px}
+  .pref-toggle-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;margin-bottom:24px}
+  .pref-toggle-label{font-size:14px;font-weight:600;color:#111}
+  .pref-toggle-desc{font-size:12px;color:#9ca3af;margin-top:2px}
+  .team-search-wrap{position:relative}
+  .team-search-input{width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;font-size:14px;color:#111}
+  .team-results{margin-top:8px;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden}
+  .team-result-item{padding:10px 12px;font-size:13px;color:#374151;cursor:pointer;border-bottom:1px solid #f3f4f6}
+  .team-result-item:last-child{border-bottom:none}
+  .team-selected{display:flex;align-items:center;justify-content:space-between;padding:12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px}
+  .team-selected-name{font-size:14px;font-weight:600;color:#1877f2}
+  .team-remove-btn{background:none;border:none;color:#dc2626;font-size:13px;cursor:pointer;font-weight:600}
+  .comp-list{display:flex;flex-direction:column;gap:6px}
+  .comp-item{display:flex;align-items:center;gap:10px;padding:10px 12px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;font-size:13px;color:#374151;cursor:pointer}
+  .comp-item input{width:18px;height:18px;accent-color:#1877f2;cursor:pointer;flex-shrink:0}
+  .btn-save-pref{width:100%;padding:14px;background:#111;color:#fff;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer}
+  .btn-save-pref:disabled{opacity:0.6;cursor:default}
 </style>
 </head>
 <body>
@@ -513,6 +537,7 @@
   </div>
   <div class="matches" id="matches"><div class="loading">Chargement des matchs…</div></div>
   <div class="matches" id="competitions-view" style="display:none"></div>
+  <div id="preferences-view" style="display:none"></div>
 </div>
 
 <div class="overlay" id="overlay-left"></div>
@@ -524,6 +549,7 @@
     <div class="profile-status">● Connecté</div>
   </div>
   <div class="league-item" id="menu-competitions-item">🏆  Compétition</div>
+  <div class="league-item" id="menu-preferences-item">🎯  Automatique</div>
   <div class="profile-body">
     <div id="pages-list"></div>
   </div>
@@ -716,6 +742,7 @@ function launchApp(){
   q('screen-login').style.display='none';
   q('app-screen').style.display='block';
   q('competitions-view').style.display='none';
+  q('preferences-view').style.display='none';
   q('current-league-label').style.display='block';
   q('filters-row').style.display='flex';
   q('matches').style.display='flex';
@@ -739,6 +766,132 @@ function backToMatches(){
   q('matches').style.display='flex';
   renderLeagues();
   loadMatches();
+}
+
+/* ─── Préférences "Set & Forget" (équipe favorite + compétitions suivies) ── */
+function showPreferencesView(){
+  q('current-league-label').style.display='none';
+  q('filters-row').style.display='none';
+  q('matches').style.display='none';
+  q('competitions-view').style.display='none';
+  var view=q('preferences-view');
+  view.style.display='block';
+  view.innerHTML='<div class="loading">Chargement…</div>';
+  fetch(API_BASE+'/preferences',{headers:authHeaders()})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.error){showLogin(d.error||'Session expirée.');return;}
+      renderPreferencesForm(d);
+    }).catch(function(){view.innerHTML='<div class="empty">Erreur de chargement.</div>';});
+}
+
+function backFromPreferences(){
+  q('preferences-view').style.display='none';
+  q('current-league-label').style.display='block';
+  q('filters-row').style.display='flex';
+  q('matches').style.display='flex';
+  renderLeagues();
+  loadMatches();
+}
+
+function renderPreferencesForm(data){
+  var view=q('preferences-view');
+  var selectedTeam=data.favoriteTeamId?{id:data.favoriteTeamId,name:data.favoriteTeamName}:null;
+  var selectedComps=new Set(data.followedCompetitionIds||[]);
+  var autoEnabled=!!data.autoBroadcastEnabled;
+
+  function render(){
+    view.innerHTML=
+      '<div class="pref-back" id="pref-back">← Retour</div>'+
+      '<div class="pref-view">'+
+        '<div class="pref-toggle-row">'+
+          '<div><div class="pref-toggle-label">Mode automatique</div><div class="pref-toggle-desc">Diffuse un match chaque jour sans intervention</div></div>'+
+          '<div class="switch'+(autoEnabled?' on':'')+'" id="pref-auto-switch"><div class="knob"></div></div>'+
+        '</div>'+
+        '<div class="pref-section">'+
+          '<div class="pref-section-title">⭐ Équipe favorite</div>'+
+          (selectedTeam
+            ? '<div class="team-selected"><span class="team-selected-name">'+selectedTeam.name+'</span><button class="team-remove-btn" id="pref-team-remove">Retirer</button></div>'
+            : '<div class="team-search-wrap"><input type="text" class="team-search-input" id="pref-team-search" placeholder="Rechercher une équipe…" autocomplete="off"><div class="team-results" id="pref-team-results" style="display:none"></div></div>'
+          )+
+        '</div>'+
+        '<div class="pref-section">'+
+          '<div class="pref-section-title">🏆 Compétitions suivies</div>'+
+          '<div class="comp-list">'+
+            LEAGUES.map(function(l){
+              var checked=selectedComps.has(l.id)?'checked':'';
+              return '<label class="comp-item"><input type="checkbox" '+checked+' data-comp="'+l.id+'"><span>'+l.flag+' '+l.name+'</span></label>';
+            }).join('')+
+          '</div>'+
+        '</div>'+
+        '<button class="btn-save-pref" id="pref-save-btn">Enregistrer</button>'+
+      '</div>';
+
+    q('pref-back').onclick=backFromPreferences;
+
+    var sw=q('pref-auto-switch');
+    sw.onclick=function(){ autoEnabled=!autoEnabled; sw.classList.toggle('on',autoEnabled); };
+
+    if(selectedTeam){
+      q('pref-team-remove').onclick=function(){ selectedTeam=null; render(); };
+    } else {
+      var input=q('pref-team-search'), results=q('pref-team-results');
+      var debounceTimer;
+      input.oninput=function(){
+        clearTimeout(debounceTimer);
+        var val=input.value.trim();
+        if(val.length<2){ results.style.display='none'; results.innerHTML=''; return; }
+        debounceTimer=setTimeout(function(){
+          fetch(API_BASE+'/teams/search?q='+encodeURIComponent(val),{headers:authHeaders()})
+            .then(function(r){return r.json();})
+            .then(function(d){
+              var teams=d.teams||[];
+              if(!teams.length){
+                results.innerHTML='<div class="team-result-item" style="color:#9ca3af;cursor:default;">Aucun résultat.</div>';
+                results.style.display='block';
+                return;
+              }
+              results.innerHTML=teams.map(function(t){
+                return '<div class="team-result-item" data-tid="'+t.id+'" data-tname="'+String(t.name).replace(/"/g,'&quot;')+'">'+t.name+'</div>';
+              }).join('');
+              results.style.display='block';
+              results.querySelectorAll('.team-result-item[data-tid]').forEach(function(item){
+                item.onclick=function(){
+                  selectedTeam={id:item.dataset.tid,name:item.dataset.tname};
+                  render();
+                };
+              });
+            }).catch(function(){});
+        }, 350);
+      };
+    }
+
+    view.querySelectorAll('.comp-item input').forEach(function(cb){
+      cb.onchange=function(){
+        if(cb.checked) selectedComps.add(cb.dataset.comp); else selectedComps.delete(cb.dataset.comp);
+      };
+    });
+
+    q('pref-save-btn').onclick=function(){
+      var btn=q('pref-save-btn');
+      btn.disabled=true;btn.textContent='Enregistrement…';
+      fetch(API_BASE+'/preferences',{
+        method:'POST',headers:authHeaders(),
+        body:JSON.stringify({
+          favoriteTeamId:       selectedTeam?selectedTeam.id:null,
+          favoriteTeamName:     selectedTeam?selectedTeam.name:null,
+          autoBroadcastEnabled: autoEnabled,
+          competitionIds:       [...selectedComps]
+        })
+      }).then(function(r){return r.json().catch(function(){return {};}).then(function(d){return {ok:r.ok,d:d};});})
+        .then(function(res){
+          if(!res.ok||res.d.error){ alert(res.d.error||'Erreur.'); btn.disabled=false; btn.textContent='Enregistrer'; return; }
+          btn.textContent='✓ Enregistré';
+          setTimeout(backFromPreferences, 700);
+        }).catch(function(){ alert('Erreur réseau.'); btn.disabled=false; btn.textContent='Enregistrer'; });
+    };
+  }
+  render();
 }
 
 function loadLeagueCounts(){
@@ -772,6 +925,10 @@ function bindDrawers(){
   q('menu-competitions-item').onclick=function(){
     q('drawer-left').classList.remove('open');q('overlay-left').classList.remove('open');
     showCompetitionsView();
+  };
+  q('menu-preferences-item').onclick=function(){
+    q('drawer-left').classList.remove('open');q('overlay-left').classList.remove('open');
+    showPreferencesView();
   };
   q('logout-btn').onclick=function(){
     localStorage.removeItem('editbot_web_token');state.token=null;
