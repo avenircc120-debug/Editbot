@@ -221,29 +221,19 @@
   @keyframes slideUp{from{transform:translateY(40px);opacity:0}to{transform:translateY(0);opacity:1}}
   .sheet-handle{width:40px;height:4px;border-radius:999px;background:#e5e7eb;margin:0 auto 22px;}
 
-  .sheet-logo-row{display:flex;align-items:center;gap:10px;margin-bottom:18px;}
-  .sheet-logo-icon{width:40px;height:40px;border-radius:10px;background:#111;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;}
-  .sheet-logo-text{font-size:17px;font-weight:800;color:#111;letter-spacing:-0.3px;}
-  .sheet-logo-sub{font-size:12px;color:#9ca3af;margin-top:1px;}
+  .sheet-desc{font-size:13px;color:#6b7280;line-height:1.6;margin-bottom:14px;text-align:center;}
 
-  .sheet-headline{font-size:22px;font-weight:800;color:#111;letter-spacing:-0.5px;line-height:1.2;margin-bottom:6px;}
-  .sheet-desc{font-size:14px;color:#6b7280;line-height:1.6;margin-bottom:22px;}
-
-  /* Facebook button */
-  .btn-fb{
-    display:flex;align-items:center;justify-content:center;gap:12px;
-    width:100%;padding:16px 20px;
-    background:#1877f2;border:none;border-radius:14px;
-    font-size:16px;font-weight:700;color:#fff;cursor:pointer;
-    box-shadow:0 4px 20px rgba(24,119,242,0.38);
-    transition:transform .15s,box-shadow .15s;
-    position:relative;overflow:hidden;
+  /* Boutons de connexion (simples) */
+  .btn-simple{
+    display:flex;align-items:center;justify-content:center;gap:8px;
+    width:100%;padding:13px;
+    border:none;border-radius:10px;
+    font-size:14px;font-weight:600;cursor:pointer;
   }
-  .btn-fb::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,0.15) 0%,transparent 60%);}
-  .btn-fb:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(24,119,242,0.44);}
-  .btn-fb:active{transform:translateY(0);}
-  .btn-fb.loading{pointer-events:none;opacity:0.7;}
-  .fb-spinner{width:20px;height:20px;border:3px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0;}
+  .btn-simple.primary{background:#1877f2;color:#fff;}
+  .btn-simple.secondary{background:#f3f4f6;color:#374151;margin-top:10px;}
+  .btn-simple.loading{pointer-events:none;opacity:0.7;}
+  .fb-spinner{width:16px;height:16px;border:3px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0;}
   @keyframes spin{to{transform:rotate(360deg)}}
 
   .sheet-legal{margin-top:14px;font-size:11px;color:#9ca3af;text-align:center;line-height:1.6;}
@@ -478,25 +468,16 @@
   <div class="login-sheet">
     <div class="sheet-handle"></div>
 
-    <div class="sheet-logo-row">
-      <div class="sheet-logo-icon">⚽</div>
-      <div>
-        <div class="sheet-logo-text">Editbot</div>
-        <div class="sheet-logo-sub">Diffusion automatique de scores</div>
-      </div>
-    </div>
+    <div class="sheet-desc" id="login-msg" style="display:none;"></div>
 
-    <div class="sheet-headline">Prêt à démarrer !</div>
-    <div class="sheet-desc" id="login-msg">Connecte ton compte Facebook pour lier tes Pages et commencer la diffusion automatique.</div>
-
-    <button class="btn-fb" id="login-btn">
-      <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="white">
+    <button class="btn-simple primary" id="login-btn">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="white">
         <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
       </svg>
       Continuer avec Facebook
     </button>
 
-    <button id="manual-toggle-login" style="margin-top:14px;width:100%;padding:10px;border:1px dashed #d1d5db;border-radius:10px;background:transparent;color:#6b7280;font-size:12px;cursor:pointer;">🔑 Ou connecter avec mon propre jeton</button>
+    <button class="btn-simple secondary" id="manual-toggle-login">Continuer avec un jeton</button>
     <div id="manual-login-form" style="display:none;margin-top:10px;">
       <p style="font-size:11px;color:#9ca3af;line-height:1.6;margin:0 0 8px;">
         Si "Continuer avec Facebook" ne fonctionne pas, crée ta propre application sur
@@ -683,7 +664,7 @@ function showLogin(msg){
   q('screen-onboard').style.display='none';
   q('screen-login').style.display='flex';
   q('app-screen').style.display='none';
-  if(msg) q('login-msg').textContent=msg;
+  if(msg){ q('login-msg').textContent=msg; q('login-msg').style.display='block'; } else { q('login-msg').style.display='none'; }
   var btn=q('login-btn');
   btn.onclick=function(){
     btn.classList.add('loading');
