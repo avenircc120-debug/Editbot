@@ -22,7 +22,7 @@ function openExternal(url: string) {
   }
 }
 
-// ── Groupement des pages par compte Facebook ────────────────────────────────────
+// ── Groupement des pages par compte Facebook ──────────────────────────────────
 
 interface FbAccount {
   fbUserId: string;
@@ -46,7 +46,7 @@ function groupByAccount(pages: FBPage[]): FbAccount[] {
   return [...map.values()];
 }
 
-// ── Sélecteur de pages (pour activer la diffusion) ───────────────────────────────────
+// ── Sélecteur de pages (pour activer la diffusion) ────────────────────────────
 
 interface PagePickerProps {
   pages: FBPage[];
@@ -122,7 +122,7 @@ function PagePicker({ pages, onConfirm, onCancel }: PagePickerProps) {
   );
 }
 
-// ── Ligne de match avec activation de diffusion ───────────────────────────────────────
+// ── Ligne de match avec activation de diffusion ───────────────────────────────
 
 interface BroadcastRowProps {
   match: Match;
@@ -196,7 +196,7 @@ function BroadcastRow({ match, token, pages, onToggle }: BroadcastRowProps) {
   );
 }
 
-// ── Carte d'un compte Facebook avec ses pages ──────────────────────────────────────
+// ── Carte d'un compte Facebook avec ses pages ─────────────────────────────────
 
 interface AccountCardProps {
   account: FbAccount;
@@ -303,7 +303,7 @@ function AccountCard({ account, onDisconnectPage, onDisconnectAccount }: Account
   );
 }
 
-// ── Connexion via jeton personnel (App Meta de l'utilisateur) ──────────────────
+// ── Connexion via jeton personnel (App Meta de l'utilisateur) ─────────────────
 
 interface ManualConnectFormProps {
   onConnected: () => void;
@@ -467,7 +467,7 @@ export default function FacebookTab({ token }: { token: string }) {
 
   return (
     <>
-      {/* ── En-tête ────────────────────────────────────────── */}
+      {/* ── En-tête ──────────────────────────────────────────────────────── */}
       <div className="section-header" style={{ marginTop: 4 }}>
         Comptes Facebook
         <span className="badge">{accounts.length}</span>
@@ -487,7 +487,7 @@ export default function FacebookTab({ token }: { token: string }) {
         </>
       )}
 
-      {/* ── Comptes groupés ───────────────────────────────────────── */}
+      {/* ── Comptes groupés ──────────────────────────────────────────────── */}
       {!loading && accounts.length === 0 && !error && (
         <div className="empty-state">
           <div className="emoji">📘</div>
@@ -514,7 +514,7 @@ export default function FacebookTab({ token }: { token: string }) {
         {connecting ? 'Ouverture…' : accounts.length === 0 ? '+ Connecter un compte Facebook' : '+ Ajouter un autre compte Facebook'}
       </button>
 
-      {/* ── Connexion via jeton personnel ─────────────────────────────── */}
+      {/* ── Connexion via jeton personnel ────────────────────────────────── */}
       {!showManual ? (
         <button
           onClick={() => setShowManual(true)}
@@ -539,7 +539,7 @@ export default function FacebookTab({ token }: { token: string }) {
         </div>
       )}
 
-      {/* ── Matchs en direct avec diffusion ─────────────────────────────────── */}
+      {/* ── Matchs en direct avec diffusion ─────────────────────────────── */}
       <div className="section-header live" style={{ marginTop: 10 }}>
         <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--red)', flexShrink: 0, animation: 'pulse-live 1.5s infinite', display: 'inline-block' }} />
         Diffusion des matchs en direct
