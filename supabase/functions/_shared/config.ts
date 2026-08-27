@@ -39,6 +39,34 @@ export const LEAGUES: Array<{ tsdb_id: string; name: string; flag: string }> = [
   { tsdb_id: '4356', name: 'Australian A-League',       flag: '🇦🇺' },
 ];
 
+// ─── Importance des compétitions (sélection automatique "match le plus important") ──
+// Utilisé par auto-broadcast quand l'équipe favorite ne joue pas ce jour-là :
+// parmi les compétitions suivies, on retient le match de la compétition la
+// plus "importante" (proxy statique, faute de vraie mesure de popularité).
+// Score par défaut pour toute compétition non listée : 10.
+export const COMPETITION_IMPORTANCE: Record<string, number> = {
+  '4429': 100, // Coupe du Monde FIFA
+  '4480': 90,  // Champions League
+  '4328': 80,  // Premier League
+  '4335': 78,  // La Liga
+  '4332': 75,  // Serie A
+  '4331': 75,  // Bundesliga
+  '4334': 72,  // Ligue 1
+  '4481': 65,  // Europa League
+  '4344': 55,  // Primeira Liga
+  '4337': 50,  // Eredivisie
+  '4329': 45,  // Championship
+  '4351': 40,  // Brasileirao
+  '4350': 35,  // Liga MX
+  '4406': 35,  // Liga Argentina
+  '4346': 30,  // MLS
+  '4339': 25,  // Turkish Super Lig
+  '4359': 20,  // Chinese Super League
+  '4330': 20,  // Scottish Premiership
+  '4355': 15,  // Russian Premier League
+  '4356': 15,  // Australian A-League
+};
+
 // ─── Prompt système ────────────────────────────────────────────────────────────
 export const SYSTEM_PROMPT = `Tu es l'assistant d'Editbot, un bot Telegram de scores de football en direct.
 

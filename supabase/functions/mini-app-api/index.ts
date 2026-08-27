@@ -15,12 +15,16 @@
  *   GET   /facebook          → liste pages connectées
  *   POST  /facebook/manual   → connecter une Page via un jeton apporté par l'utilisateur
  *   DELETE /facebook/:id     → déconnecter une page
+ *   GET   /preferences       → équipe favorite + compétitions suivies + mode auto
+ *   POST  /preferences       → enregistrer les préférences "Set & Forget"
+ *   GET   /teams/search      → rechercher une équipe (pour choisir l'équipe favorite)
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { LEAGUES } from '../_shared/config.ts';
 import { formatAnnonceFacebook, buildFacebookPost } from '../_shared/templates.ts';
 import { validerJetonPage } from '../_shared/facebook.ts';
+import { rechercherEquipe } from '../_shared/thesportsdb.ts';
 import {
   normalisePageIds,
   publishToBroadcastPages,
@@ -127,7 +131,7 @@ async function handleProfile(chatId: number): Promise<Response> {
   const [{ data: profil }, { data: fbPages }, { count: activeBroadcasts }] = await Promise.all([
     supabase
       .from('user_profiles')
-      .select('competition_suivie, competition_suivie_id')
+      .select('competition_suivie, competition_suivie_id, favorite_team_id, favorite_team_name, auto_broadcast_enabled, preferences_onboarded')
       .eq('telegram_user_id', chatId)
       .maybeSingle(),
     supabase
@@ -144,12 +148,89 @@ async function handleProfile(chatId: number): Promise<Response> {
   ]);
 
   return json({
-    competition:      profil?.competition_suivie      ?? null,
-    competitionId:    profil?.competition_suivie_id   ?? null,
+    competition:          profil?.competition_suivie      ?? null,
+    competitionId:        profil?.competition_suivie_id   ?? null,
+    favoriteTeamId:        profil?.favorite_team_id         ?? null,
+    favoriteTeamName:      profil?.favorite_team_name       ?? null,
+    autoBroadcastEnabled: profil?.auto_broadcast_enabled   ?? false,
+    preferencesOnboarded: profil?.preferences_onboarded    ?? false,
     leagues:          LEAGUES,
     fbPages:          fbPages ?? [],
     activeBroadcasts: activeBroadcasts ?? 0,
   });
+}
+
+// ─── Préférences "Set & Forget" (équipe favorite + compétitions suivies) ───────
+
+async function handlePreferencesGet(chatId: number): Promise<Response> {
+  const [{ data: profil }, { data: competitions }] = await Promise.all([
+    supabase
+      .from('user_profiles')
+      .select('favorite_team_id, favorite_team_name, auto_broadcast_enabled, preferences_onboarded')
+      .eq('telegram_user_id', chatId)
+      .maybeSingle(),
+    supabase
+      .from('user_competitions')
+      .select('competition')
+      .eq('telegram_user_id', chatId)
+      .eq('active', true),
+  ]);
+
+  return json({
+    favoriteTeamId:        profil?.favorite_team_id         ?? null,
+    favoriteTeamName:      profil?.favorite_team_name       ?? null,
+    autoBroadcastEnabled: profil?.auto_broadcast_enabled   ?? false,
+    preferencesOnboarded: profil?.preferences_onboarded    ?? false,
+    followedCompetitionIds: (competitions ?? []).map((c) => c.competition),
+    leagues: LEAGUES,
+  });
+}
+
+async function handlePreferencesPost(req: Request, chatId: number): Promise<Response> {
+  const body = await req.json().catch(() => ({})) as {
+    favoriteTeamId?: string | null;
+    favoriteTeamName?: string | null;
+    autoBroadcastEnabled?: boolean;
+    competitionIds?: string[];
+  };
+
+  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if ('favoriteTeamId' in body)        updates.favorite_team_id       = body.favoriteTeamId || null;
+  if ('favoriteTeamName' in body)      updates.favorite_team_name     = body.favoriteTeamName || null;
+  if ('autoBroadcastEnabled' in body)  updates.auto_broadcast_enabled = !!body.autoBroadcastEnabled;
+  updates.preferences_onboarded = true;
+
+  const { error: profileErr } = await supabase
+    .from('user_profiles')
+    .update(updates)
+    .eq('telegram_user_id', chatId);
+  if (profileErr) {
+    console.error('[mini-app-api] Erreur sauvegarde préférences:', profileErr);
+    return json({ error: 'Impossible d’enregistrer les préférences.' }, 500);
+  }
+
+  if (Array.isArray(body.competitionIds)) {
+    const ids = body.competitionIds.filter((id) => LEAGUES.some((l) => l.tsdb_id === id));
+
+    // Remplacement complet : on désactive tout puis on réactive/insère les IDs reçus.
+    await supabase.from('user_competitions').update({ active: false }).eq('telegram_user_id', chatId);
+    for (const tsdbId of ids) {
+      await supabase.from('user_competitions').upsert({
+        telegram_user_id: chatId,
+        competition:       tsdbId,
+        active:            true,
+      }, { onConflict: 'telegram_user_id,competition' });
+    }
+  }
+
+  return json({ ok: true });
+}
+
+async function handleTeamsSearch(url: URL): Promise<Response> {
+  const q = (url.searchParams.get('q') ?? '').trim();
+  if (q.length < 2) return json({ teams: [] });
+  const teams = await rechercherEquipe(q);
+  return json({ teams: teams.slice(0, 15) });
 }
 
 async function handleUpdateCompetition(req: Request, chatId: number): Promise<Response> {
@@ -535,6 +616,9 @@ Deno.serve(async (req: Request) => {
     if (route === 'manual' && parentRoute === 'facebook' && req.method === 'POST') return handleFacebookManualConnect(req, chatId);
     if (parentRoute === 'account' && parts[parts.length - 3] === 'facebook' && req.method === 'DELETE') return handleFacebookAccountDelete(chatId, route);
     if (parentRoute === 'facebook' && route !== 'account' && req.method === 'DELETE') return handleFacebookDelete(chatId, route);
+    if (route === 'preferences' && req.method === 'GET')  return handlePreferencesGet(chatId);
+    if (route === 'preferences' && req.method === 'POST') return handlePreferencesPost(req, chatId);
+    if (route === 'search' && parentRoute === 'teams' && req.method === 'GET') return handleTeamsSearch(url);
 
     return json({ error: 'Route inconnue' }, 404);
   } catch (err) {

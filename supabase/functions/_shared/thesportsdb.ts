@@ -150,6 +150,25 @@ export function estTermine(strStatus: string): boolean {
   return ['FT', 'AET', 'ABAN', 'ABD'].includes((strStatus ?? '').toUpperCase());
 }
 
+// ─── V1 : Recherche d'équipe par nom (pour choisir une équipe favorite) ──────
+
+export interface TsdbTeam {
+  id:    string;
+  name:  string;
+  badge: string | null;
+  sport: string | null;
+}
+
+export async function rechercherEquipe(nom: string): Promise<TsdbTeam[]> {
+  const data = await tsdbGet('searchteams.php', { t: nom });
+  const teams = (data?.teams ?? []) as Array<{
+    idTeam: string; strTeam: string; strTeamBadge: string | null; strSport: string | null;
+  }>;
+  return teams
+    .filter(t => (t.strSport ?? '').toLowerCase() === 'soccer' || !t.strSport)
+    .map(t => ({ id: t.idTeam, name: t.strTeam, badge: t.strTeamBadge ?? null, sport: t.strSport ?? null }));
+}
+
 export function filtrerProchains(matchs: TsdbMatch[], joursMax = 14): TsdbMatch[] {
   const now    = Date.now();
   const limite = now + joursMax * 24 * 3600 * 1000;
