@@ -309,7 +309,7 @@ async function handleBroadcast(req: Request, chatId: number): Promise<Response> 
     const requestedPageIds = normalisePageIds(pageIds);
     const { data: allFbPages, error: pagesError } = await supabase
       .from('facebook_connections')
-      .select('fb_page_id, fb_page_name, fb_page_access_token')
+      .select('id, fb_page_id, fb_page_name, fb_page_access_token')
       .eq('telegram_user_id', chatId)
       .eq('is_active', true);
 
@@ -318,6 +318,9 @@ async function handleBroadcast(req: Request, chatId: number): Promise<Response> 
       return json({ error: 'Impossible de charger les Pages Facebook.' }, 500);
     }
 
+    const connIdByPageId = new Map<string, number>(
+      (allFbPages ?? []).map((p: any) => [String(p.fb_page_id).trim(), p.id]),
+    );
     const pages = (allFbPages ?? []) as FacebookPageForBroadcast[];
     const pagesToPost = selectBroadcastPages(pages, requestedPageIds);
     if (pages.length === 0) return json({ error: 'Aucune Page Facebook active pour ce compte.' }, 400);
@@ -362,8 +365,12 @@ async function handleBroadcast(req: Request, chatId: number): Promise<Response> 
           ? formatAnnonceFacebook({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, matchDate: m.match_date })
           : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: (m as any).events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null });
         pageResults = await publishToBroadcastPages(pagesToPost, fbMsg);
-        // Mettre à jour last_post_at pour les pages qui ont réussi
+        // Mettre à jour last_post_at pour les pages qui ont réussi, et enregistrer
+        // le post initial dans facebook_posts_log — sinon facebook-post ne le
+        // retrouve pas et republie un nouveau post au lieu d'éditer celui-ci
+        // à chaque changement de score.
         const now2 = new Date().toISOString();
+        const today = now2.slice(0, 10);
         for (const result of pageResults) {
           if (result.success) {
             console.log(`[broadcast] ✓ ${result.pageName}`);
@@ -371,6 +378,18 @@ async function handleBroadcast(req: Request, chatId: number): Promise<Response> 
               .update({ last_post_at: now2 })
               .eq('telegram_user_id', chatId)
               .eq('fb_page_id', result.fb_page_id);
+
+            const connId = connIdByPageId.get(String(result.fb_page_id).trim());
+            if (connId && result.postId) {
+              await supabase.from('facebook_posts_log').upsert({
+                connection_id: connId,
+                match_id:      matchId,
+                post_date:     today,
+                fb_post_id:    result.postId,
+                status:        'success',
+                events_log:    '',
+              }, { onConflict: 'connection_id,match_id,post_date' });
+            }
           } else {
             console.log(`[broadcast] ✗ ${result.pageName}: ${result.error}`);
           }

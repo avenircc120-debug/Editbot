@@ -133,14 +133,6 @@ async function indexerMatch(ev: TsdbMatch, competition: string): Promise<{ match
     matchMinute     = idx?.match_minute ?? null;
   }
 
-  // ── Désactivation automatique du broadcast à la fin du match ─────────────
-  if (finMatch) {
-    await supabase
-      .from('broadcast_selections')
-      .update({ is_active: false })
-      .eq('match_id', ev.idEvent);
-  }
-
   // ── Décision de diffusion ─────────────────────────────────────────────────
   const evenementSignificatif = ['goal', 'kickoff', 'halftime', 'fulltime'].includes(eventType);
   const scoresDispo = homeScore !== null && awayScore !== null;
@@ -228,14 +220,6 @@ async function indexerMatchOdds(ev: OddsMatchRow): Promise<{ changed: boolean; r
   else if (coupEnvoi) eventType = 'kickoff';
   else if (finMatch)  eventType = 'fulltime';
 
-  // ── Désactivation automatique du broadcast à la fin du match ─────────────
-  if (finMatch) {
-    await supabase
-      .from('broadcast_selections')
-      .update({ is_active: false })
-      .eq('match_id', ev.match_id);
-  }
-
   const evenementSignificatif = ['goal', 'kickoff', 'fulltime'].includes(eventType);
   const enDirectOuTermine = ev.status === 'inprogress' || ev.status === 'finished';
 
@@ -286,6 +270,19 @@ async function diffuserSurFacebook(matches: any[]) {
   } catch (e) {
     console.error('[fetch-matches] Erreur appel facebook-post:', e);
   }
+}
+
+/** Désactive les diffusions des matchs terminés — appelé APRÈS diffuserSurFacebook
+ *  pour que le dernier post (score final) soit bien envoyé avant que
+ *  broadcast_selections.is_active passe à false (sinon facebook-post ne
+ *  trouve plus la sélection et le score final n'est jamais publié). */
+async function desactiverMatchsTermines(matches: any[]) {
+  const matchIds = matches.filter((m) => m.eventType === 'fulltime').map((m) => m.matchId);
+  if (!matchIds.length) return;
+  await supabase
+    .from('broadcast_selections')
+    .update({ is_active: false })
+    .in('match_id', matchIds);
 }
 
 // ─── Handler principal ────────────────────────────────────────────────────────
@@ -368,6 +365,7 @@ Deno.serve(async (req) => {
   }
 
   await diffuserSurFacebook(matchsAModifier);
+  await desactiverMatchsTermines(matchsAModifier);
   stats.diffuses = matchsAModifier.length;
 
   const quotas = await lireQuotas(supabase);
