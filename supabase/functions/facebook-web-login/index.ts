@@ -3,10 +3,11 @@
  *
  * GET  ?init=1   → génère un nonce, redirige vers fb-connect-web.html
  * POST {token, nonce} → valide nonce, échange token FB, retourne web_access_token
+ * POST {pageAccessToken} → connexion/inscription via jeton de Page (sans Telegram)
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { prolongerToken, recupererFbUserId, recupererNomUtilisateur, recupererPages } from '../_shared/facebook.ts';
+import { prolongerToken, recupererFbUserId, recupererNomUtilisateur, recupererPages, validerJetonPage } from '../_shared/facebook.ts';
 
 const SUPABASE_URL    = Deno.env.get('SUPABASE_URL')              ?? '';
 const SUPABASE_KEY    = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -101,9 +102,84 @@ Deno.serve(async (req: Request) => {
   }
 
   // ── POST {token, nonce} → échange token, retourne web_access_token ────────
+  // ── POST {pageAccessToken} → connexion/inscription via jeton de Page (sans Telegram) ──
   if (req.method === 'POST') {
     try {
-      const body = await req.json().catch(() => ({})) as { token?: string; nonce?: string };
+      const body = await req.json().catch(() => ({})) as {
+        token?: string; nonce?: string; pageAccessToken?: string;
+      };
+
+      // ── Jeton de Page apporté par l'utilisateur : crée le compte s'il n'existe pas ──
+      if (typeof body.pageAccessToken === 'string') {
+        const pageAccessToken = body.pageAccessToken.trim();
+        if (!pageAccessToken) return json({ error: 'Le jeton d’accès de Page est requis.' }, 400);
+
+        const result = await validerJetonPage(pageAccessToken);
+        if ('error' in result) return json({ error: `Jeton refusé par Facebook : ${result.error}` }, 400);
+        if (!result.category) {
+          return json({
+            error: 'Ce jeton correspond à un profil personnel, pas à une Page Facebook. ' +
+              'Génère un jeton d’accès de PAGE (pas d’utilisateur) depuis ton App Meta.',
+          }, 400);
+        }
+
+        const pageId = result.id;
+
+        // Retrouver le compte Editbot déjà lié à cette Page, sinon en créer un nouveau
+        // (identifiant synthétique négatif, réservé aux comptes web sans Telegram —
+        //  les identifiants Telegram réels sont toujours positifs).
+        const { data: existingConn } = await supabase
+          .from('facebook_connections')
+          .select('telegram_user_id')
+          .eq('fb_page_id', pageId)
+          .limit(1)
+          .maybeSingle();
+
+        const userId = existingConn ? BigInt(existingConn.telegram_user_id) : -BigInt(pageId);
+
+        if (!existingConn) {
+          const { error: profileErr } = await supabase
+            .from('user_profiles')
+            .upsert({ telegram_user_id: userId.toString() }, { onConflict: 'telegram_user_id', ignoreDuplicates: true });
+          if (profileErr) {
+            console.error('[facebook-web-login] Erreur création profil web:', profileErr);
+            return json({ error: 'Impossible de créer le compte.' }, 500);
+          }
+        }
+
+        const { error: upsertErr } = await supabase.from('facebook_connections').upsert({
+          telegram_user_id:     userId.toString(),
+          fb_user_id:           pageId,
+          fb_page_id:           pageId,
+          fb_page_name:         result.name,
+          fb_page_access_token: pageAccessToken,
+          is_active:            true,
+          updated_at:           new Date().toISOString(),
+        }, { onConflict: 'telegram_user_id,fb_page_id' });
+
+        if (upsertErr) {
+          console.error('[facebook-web-login] Erreur upsert page (jeton manuel):', upsertErr);
+          return json({ error: 'Impossible d’enregistrer la Page Facebook.' }, 500);
+        }
+
+        const { data: profile } = await supabase
+          .from('user_profiles')
+          .select('web_access_token')
+          .eq('telegram_user_id', userId.toString())
+          .maybeSingle();
+
+        if (!profile?.web_access_token) {
+          return json({ error: 'Profil utilisateur introuvable.' }, 404);
+        }
+
+        console.log('[facebook-web-login] ✅ connexion web (jeton manuel) réussie pour', userId.toString());
+        return json({
+          ok:    true,
+          page:  { fb_page_id: pageId, fb_page_name: result.name },
+          token: profile.web_access_token,
+        });
+      }
+
       const { token: shortToken, nonce } = body;
 
       if (!shortToken || !nonce) {
@@ -149,6 +225,7 @@ Deno.serve(async (req: Request) => {
       const telegramUserId = existing.telegram_user_id;
 
       // Mettre à jour les tokens de Pages Facebook
+      const savedPageIds: string[] = [];
       for (const page of pages) {
         const { error: upsertErr } = await supabase
           .from('facebook_connections')
@@ -160,10 +237,39 @@ Deno.serve(async (req: Request) => {
             fb_page_access_token: page.access_token,
             fb_user_name:         fbUserName ?? null,
             is_active:            true,
+            updated_at:           new Date().toISOString(),
           }, { onConflict: 'telegram_user_id,fb_page_id' });
 
         if (upsertErr) {
           console.error('[facebook-web-login] Erreur upsert page', page.id, upsertErr);
+        } else {
+          savedPageIds.push(page.id);
+        }
+      }
+
+      // ── Désactiver les pages de CE compte FB qui ne sont plus retournées ────────
+      // L'utilisateur a pu ne sélectionner qu'un sous-ensemble de Pages dans le
+      // sélecteur Facebook (ou révoqué l'accès à certaines) : on ne garde actives
+      // que celles réellement couvertes par ce jeton, pour ce même compte Facebook.
+      if (savedPageIds.length > 0) {
+        const { data: staleRows, error: staleErr } = await supabase
+          .from('facebook_connections')
+          .select('id, fb_page_id, fb_page_name')
+          .eq('telegram_user_id', telegramUserId)
+          .eq('fb_user_id', fbUserId)
+          .eq('is_active', true)
+          .not('fb_page_id', 'in', `(${savedPageIds.join(',')})`);
+
+        if (staleErr) {
+          console.warn('[facebook-web-login] Impossible de vérifier les pages obsolètes:', staleErr);
+        } else if (staleRows && staleRows.length > 0) {
+          const staleIds = staleRows.map((r: any) => r.id);
+          const staleNames = staleRows.map((r: any) => r.fb_page_name ?? r.fb_page_id).join(', ');
+          console.log(`[facebook-web-login] Désactivation de ${staleIds.length} page(s) obsolète(s): ${staleNames}`);
+          await supabase
+            .from('facebook_connections')
+            .update({ is_active: false, updated_at: new Date().toISOString() })
+            .in('id', staleIds);
         }
       }
 
