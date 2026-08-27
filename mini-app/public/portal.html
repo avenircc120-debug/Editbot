@@ -496,6 +496,18 @@
       Continuer avec Facebook
     </button>
 
+    <button id="manual-toggle-login" style="margin-top:14px;width:100%;padding:10px;border:1px dashed #d1d5db;border-radius:10px;background:transparent;color:#6b7280;font-size:12px;cursor:pointer;">🔑 Ou connecter avec mon propre jeton</button>
+    <div id="manual-login-form" style="display:none;margin-top:10px;">
+      <p style="font-size:11px;color:#9ca3af;line-height:1.6;margin:0 0 8px;">
+        Si "Continuer avec Facebook" ne fonctionne pas, crée ta propre application sur
+        <b>developers.facebook.com</b>, génère un <b>jeton d'accès de Page</b> (pas un jeton utilisateur), puis colle-le ici.
+      </p>
+      <textarea id="manual-login-input" rows="3" placeholder="Colle ton jeton d'accès de Page ici…"
+        style="width:100%;box-sizing:border-box;padding:10px;border-radius:10px;border:1px solid #e5e7eb;background:#f9fafb;color:#111;font-size:12px;font-family:monospace;"></textarea>
+      <div id="manual-login-error" style="color:#dc2626;font-size:12px;margin-top:6px;"></div>
+      <button id="manual-login-submit" style="margin-top:8px;width:100%;padding:12px;border:none;border-radius:10px;background:#16a34a;color:#fff;font-weight:600;font-size:14px;cursor:pointer;">Connecter</button>
+    </div>
+
     <div class="sheet-legal">
       En continuant, tu acceptes notre
       <a href="/privacy-policy.html">Politique de confidentialité</a>
@@ -677,6 +689,28 @@ function showLogin(msg){
     btn.classList.add('loading');
     btn.innerHTML='<div class="fb-spinner"></div> Connexion en cours…';
     window.location.href=SUPABASE_URL+'/functions/v1/facebook-web-login?init=1';
+  };
+
+  var mToggle=q('manual-toggle-login'), mForm=q('manual-login-form');
+  mToggle.onclick=function(){ mForm.style.display = mForm.style.display==='none' ? 'block' : 'none'; };
+
+  var mInput=q('manual-login-input'), mErr=q('manual-login-error'), mSubmit=q('manual-login-submit');
+  mSubmit.onclick=function(){
+    var val=mInput.value.trim();
+    mErr.textContent='';
+    if(!val) return;
+    mSubmit.disabled=true;mSubmit.textContent='Vérification…';
+    fetch(SUPABASE_URL+'/functions/v1/facebook-web-login',{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pageAccessToken:val})
+    })
+      .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return {ok:r.ok,d:d};});})
+      .then(function(res){
+        if(!res.ok||!res.d.token){mErr.textContent=res.d.error||'Erreur.';mSubmit.disabled=false;mSubmit.textContent='Connecter';return;}
+        state.token=res.d.token;
+        localStorage.setItem('editbot_web_token', res.d.token);
+        mInput.value='';
+        launchApp();
+      }).catch(function(){mErr.textContent='Erreur réseau.';mSubmit.disabled=false;mSubmit.textContent='Connecter';});
   };
 }
 
