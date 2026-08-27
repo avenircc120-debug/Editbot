@@ -247,8 +247,11 @@ export async function validerJetonPage(
       `${FB_API}/me?fields=id,name,category&access_token=${encodeURIComponent(pageAccessToken)}`,
     );
     const data = await safeJson(res);
+    // Vérifier data.error EN PREMIER : Facebook renvoie un code HTTP non-2xx
+    // (401/400) avec un corps JSON qui explique la vraie raison (jeton expiré,
+    // révoqué, invalide…) — ne jamais l'écraser par un message générique.
+    if (data?.error) return { error: data.error.message ?? 'Jeton Facebook invalide.' };
     if (!res.ok || !data) return { error: `Impossible de contacter Facebook (HTTP ${res.status}).` };
-    if (data.error) return { error: data.error.message ?? 'Jeton Facebook invalide.' };
     if (!data.id || !data.name) return { error: 'Réponse Facebook incomplète.' };
     return { id: data.id, name: data.name, category: data.category ?? null };
   } catch (err) {
