@@ -514,18 +514,19 @@
     <button class="avatar-btn" id="profile-btn">👤</button>
   </header>
   <div class="current-league" id="current-league-label"></div>
-  <div class="filters">
+  <div class="filters" id="filters-row">
     <div class="filter-chip active" data-filter="all">Tous</div>
     <div class="filter-chip" data-filter="live">En direct</div>
     <div class="filter-chip" data-filter="today">Aujourd'hui</div>
   </div>
   <div class="matches" id="matches"><div class="loading">Chargement des matchs…</div></div>
+  <div class="matches" id="competitions-view" style="display:none"></div>
 </div>
 
 <div class="overlay" id="overlay-left"></div>
 <div class="drawer" id="drawer-left">
-  <div class="drawer-header">Compétitions</div>
-  <div id="leagues-list"></div>
+  <div class="drawer-header">Menu</div>
+  <div class="league-item" id="menu-competitions-item">🏆  Compétition</div>
 </div>
 <div class="overlay" id="overlay-right"></div>
 <div class="profile-drawer" id="drawer-right">
@@ -685,7 +686,30 @@ function launchApp(){
   q('screen-onboard').style.display='none';
   q('screen-login').style.display='none';
   q('app-screen').style.display='block';
-  renderLeagues();bindFilters();bindDrawers();loadProfile();loadMatches();loadLeagueCounts();
+  q('competitions-view').style.display='none';
+  q('current-league-label').style.display='block';
+  q('filters-row').style.display='flex';
+  q('matches').style.display='flex';
+  renderLeagues();bindFilters();bindDrawers();loadProfile();loadMatches();
+}
+
+function showCompetitionsView(){
+  q('current-league-label').style.display='none';
+  q('filters-row').style.display='none';
+  q('matches').style.display='none';
+  var view=q('competitions-view');
+  view.style.display='flex';
+  view.innerHTML='<div class="loading">Chargement…</div>';
+  loadLeagueCounts();
+}
+
+function backToMatches(){
+  q('competitions-view').style.display='none';
+  q('current-league-label').style.display='block';
+  q('filters-row').style.display='flex';
+  q('matches').style.display='flex';
+  renderLeagues();
+  loadMatches();
 }
 
 function loadLeagueCounts(){
@@ -696,13 +720,30 @@ function loadLeagueCounts(){
       LEAGUES.forEach(function(l){
         state.counts[l.id]=(live[l.id]||0)+(sched[l.id]||0);
       });
-      renderLeagues();
-    }).catch(function(){});
+      renderCompetitionsList();
+    }).catch(function(){
+      q('competitions-view').innerHTML='<div class="empty">Erreur de chargement.</div>';
+    });
+}
+
+function renderCompetitionsList(){
+  var el=q('competitions-view');el.innerHTML='';
+  LEAGUES.forEach(function(l){
+    var item=document.createElement('div');item.className='league-item'+(l.id===state.league?' active':'');
+    var cnt=state.counts[l.id];
+    item.innerHTML='<span>'+l.flag+'  '+l.name+'</span>'+(cnt!=null?'<span class="league-count">'+cnt+'</span>':'');
+    item.onclick=function(){ state.league=l.id; backToMatches(); };
+    el.appendChild(item);
+  });
 }
 
 function bindDrawers(){
-  q('menu-btn').onclick=function(){q('drawer-left').classList.add('open');q('overlay-left').classList.add('open');loadLeagueCounts();};
+  q('menu-btn').onclick=function(){q('drawer-left').classList.add('open');q('overlay-left').classList.add('open');};
   q('overlay-left').onclick=function(){q('drawer-left').classList.remove('open');q('overlay-left').classList.remove('open');};
+  q('menu-competitions-item').onclick=function(){
+    q('drawer-left').classList.remove('open');q('overlay-left').classList.remove('open');
+    showCompetitionsView();
+  };
   q('profile-btn').onclick=function(){q('drawer-right').classList.add('open');q('overlay-right').classList.add('open');};
   q('overlay-right').onclick=function(){q('drawer-right').classList.remove('open');q('overlay-right').classList.remove('open');};
   q('logout-btn').onclick=function(){
@@ -720,14 +761,6 @@ function bindDrawers(){
 function renderLeagues(){
   var cur=LEAGUES.find(function(l){return l.id===state.league;});
   q('current-league-label').textContent=cur.flag+' '+cur.name;
-  var el=q('leagues-list');el.innerHTML='';
-  LEAGUES.forEach(function(l){
-    var item=document.createElement('div');item.className='league-item'+(l.id===state.league?' active':'');
-    var cnt=state.counts[l.id];
-    item.innerHTML='<span>'+l.flag+'  '+l.name+'</span>'+(cnt!=null?'<span class="league-count">'+cnt+'</span>':'');
-    item.onclick=function(){state.league=l.id;renderLeagues();loadMatches();q('drawer-left').classList.remove('open');q('overlay-left').classList.remove('open');};
-    el.appendChild(item);
-  });
 }
 
 function bindFilters(){
