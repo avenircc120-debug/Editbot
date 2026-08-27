@@ -511,7 +511,6 @@
   <header>
     <div class="hamburger" id="menu-btn"><span></span><span></span><span></span></div>
     <h1>⚽ Editbot</h1>
-    <button class="avatar-btn" id="profile-btn">👤</button>
   </header>
   <div class="current-league" id="current-league-label"></div>
   <div class="filters" id="filters-row">
@@ -526,17 +525,16 @@
 <div class="overlay" id="overlay-left"></div>
 <div class="drawer" id="drawer-left">
   <div class="drawer-header">Menu</div>
-  <div class="league-item" id="menu-competitions-item">🏆  Compétition</div>
-</div>
-<div class="overlay" id="overlay-right"></div>
-<div class="profile-drawer" id="drawer-right">
   <div class="profile-header">
     <div class="profile-avatar">👤</div>
     <div class="profile-name" id="profile-name">Compte Facebook</div>
     <div class="profile-status">● Connecté</div>
   </div>
+  <div class="league-item" id="menu-competitions-item">🏆  Compétition</div>
   <div class="profile-body">
     <div id="pages-list"></div>
+  </div>
+  <div style="padding:0 16px 16px;">
     <button class="btn-logout" id="logout-btn">Se déconnecter</button>
   </div>
 </div>
@@ -744,12 +742,9 @@ function bindDrawers(){
     q('drawer-left').classList.remove('open');q('overlay-left').classList.remove('open');
     showCompetitionsView();
   };
-  q('profile-btn').onclick=function(){q('drawer-right').classList.add('open');q('overlay-right').classList.add('open');};
-  q('overlay-right').onclick=function(){q('drawer-right').classList.remove('open');q('overlay-right').classList.remove('open');};
   q('logout-btn').onclick=function(){
     localStorage.removeItem('editbot_web_token');state.token=null;
     state.fbPages=[];
-    q('drawer-right').classList.remove('open');q('overlay-right').classList.remove('open');
     q('drawer-left').classList.remove('open');q('overlay-left').classList.remove('open');
     q('app-screen').style.display='none';
     q('screen-login').style.display='none';
@@ -823,7 +818,7 @@ function showPagePicker(matchId, isOn, match, previousPageIds){
         if(d.error){showLogin(d.error||'Session expirée.');return;}
         state.fbPages=d.fbPages||[];
         if(!state.fbPages.length){
-          q('drawer-right').classList.add('open');q('overlay-right').classList.add('open');
+          q('drawer-left').classList.add('open');q('overlay-left').classList.add('open');
         } else {
           showPagePicker(matchId, isOn, match, previousPageIds);
         }
