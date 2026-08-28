@@ -135,21 +135,33 @@
     const now   = new Date();
     const stats = { matchsLive: 0, matchsMisAJour: 0, apiCalls: 0, source: '', skipped: false };
 
-    // ── Étape 1 : Identifier les matchs en direct ou imminents (DB only) ─────────
-    // Fenêtre : -180 min (matchs qui auraient dû commencer — large pour rattraper
-    // un match resté bloqué sur "scheduled" après une panne du cron) à +3h (FT tardifs)
-    const debutFenetre = new Date(now.getTime() - 180 * 60 * 1000).toISOString();
-    const finFenetre   = new Date(now.getTime() + 180 * 60 * 1000).toISOString();
+    // ── Étape 1 : Identifier les matchs réellement diffusés (broadcast actif) ────
+    // On ne suit QUE les matchs qu'un utilisateur a sélectionnés pour diffusion
+    // Facebook (broadcast_selections.is_active = true) — pas tous les matchs de
+    // la planète dans une fenêtre horaire, ce qui faisait exploser le nombre
+    // d'appels API (jusqu'à 280 par exécution) et vidait le quota TheSportsDB
+    // en quelques minutes.
+    const { data: selectionsActives } = await supabase
+      .from('broadcast_selections')
+      .select('match_id')
+      .eq('is_active', true);
+
+    const idsDiffuses = [...new Set((selectionsActives ?? []).map((s) => s.match_id))];
+
+    if (!idsDiffuses.length) {
+      stats.skipped = true;
+      return new Response(
+        JSON.stringify({ success: true, message: 'Aucune diffusion active — aucun appel API.', ...stats }),
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+    }
 
     const { data: matchsAttendus } = await supabase
       .from('matchs_index')
       .select('match_id, status, id_thesportsdb, competition, home_team, away_team, home_score, away_score')
+      .in('match_id', idsDiffuses)
       .neq('status', 'postponed')
-      .neq('status', 'finished')
-      .or(
-        'status.eq.inprogress,' +
-        `and(status.eq.scheduled,match_date.gte.${debutFenetre},match_date.lte.${finFenetre})`
-      );
+      .neq('status', 'finished');
 
     if (!matchsAttendus?.length) {
       stats.skipped = true;
