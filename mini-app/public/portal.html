@@ -711,10 +711,20 @@ function attemptSilentReconnect(onFail){
   })
     .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return {ok:r.ok,d:d};});})
     .then(function(res){
-      if(!res.ok||!res.d.token){ localStorage.removeItem('editbot_fb_page_token'); onFail(); return; }
-      state.token=res.d.token;
-      localStorage.setItem('editbot_web_token', res.d.token);
-      launchApp();
+      if(res.ok&&res.d.token){
+        state.token=res.d.token;
+        localStorage.setItem('editbot_web_token', res.d.token);
+        launchApp();
+        return;
+      }
+      /* Ne jamais oublier le jeton mémorisé à cause d'une erreur réseau ou
+         serveur passagère — seulement quand Facebook l'a explicitement
+         refusé (jeton expiré/révoqué), sinon on le retentera la prochaine fois. */
+      var errMsg=(res.d&&res.d.error)||'';
+      if(errMsg.indexOf('Jeton refusé par Facebook')!==-1){
+        localStorage.removeItem('editbot_fb_page_token');
+      }
+      onFail();
     }).catch(function(){ onFail(); });
 }
 
