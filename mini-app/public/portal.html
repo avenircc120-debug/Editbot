@@ -506,6 +506,8 @@
 
     <div class="sheet-desc" id="login-msg" style="display:none;"></div>
 
+    <button class="btn-simple primary" id="reconnect-btn" style="display:none;background:#111;margin-bottom:8px;">🔄  Reconnecter</button>
+
     <button class="btn-simple primary" id="login-btn">
       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="white">
         <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
@@ -760,6 +762,25 @@ function showLogin(msg){
   var btn=q('login-btn');
   btn.style.display='flex';
   q('manual-login-form').style.display='none';
+
+  var rBtn=q('reconnect-btn');
+  if(localStorage.getItem('editbot_fb_page_token')){
+    rBtn.style.display='flex';
+    rBtn.disabled=false;
+    rBtn.innerHTML='🔄  Reconnecter';
+    rBtn.onclick=function(){
+      rBtn.disabled=true;
+      rBtn.innerHTML='<div class="fb-spinner"></div> Reconnexion…';
+      attemptSilentReconnect(function(){
+        rBtn.disabled=false;
+        rBtn.innerHTML='🔄  Reconnecter';
+        q('login-msg').textContent='Reconnexion impossible, colle ton jeton ci-dessous.';
+        q('login-msg').style.display='block';
+      });
+    };
+  } else {
+    rBtn.style.display='none';
+  }
   btn.onclick=function(){
     btn.classList.add('loading');
     btn.innerHTML='<div class="fb-spinner"></div> Connexion en cours…';
@@ -998,15 +1019,14 @@ function bindDrawers(){
     chevron.classList.toggle('open',opening);
   };
   q('logout-btn').onclick=function(){
+    /* On ne supprime pas le jeton de Page mémorisé : ça permet d'afficher
+       le bouton "Reconnecter" (reconnexion en un tap, sans recoller le jeton). */
     localStorage.removeItem('editbot_web_token');
-    localStorage.removeItem('editbot_fb_page_token');
     state.token=null;
     state.fbPages=[];
     q('drawer-left').classList.remove('open');q('overlay-left').classList.remove('open');
     q('app-screen').style.display='none';
-    q('screen-login').style.display='none';
-    q('screen-onboard').style.display='flex';
-    q('btn-continue').onclick=function(){q('screen-onboard').style.display='none';showLogin('Reconnecte-toi pour continuer.');};
+    showLogin();
   };
 }
 
