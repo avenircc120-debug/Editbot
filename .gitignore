@@ -1,1 +1,5 @@
 supabase/.temp/
+mini-app/node_modules/
+mini-app/dist/
+mini-app/public/icons/
+mini-app/package-lock.json
