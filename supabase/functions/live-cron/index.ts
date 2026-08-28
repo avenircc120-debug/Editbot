@@ -131,8 +131,9 @@
     const stats = { matchsLive: 0, matchsMisAJour: 0, apiCalls: 0, source: '', skipped: false };
 
     // ── Étape 1 : Identifier les matchs en direct ou imminents (DB only) ─────────
-    // Fenêtre : -15 min (matchs qui auraient dû commencer) à +3h (FT tardifs)
-    const debutFenetre = new Date(now.getTime() -  15 * 60 * 1000).toISOString();
+    // Fenêtre : -180 min (matchs qui auraient dû commencer — large pour rattraper
+    // un match resté bloqué sur "scheduled" après une panne du cron) à +3h (FT tardifs)
+    const debutFenetre = new Date(now.getTime() - 180 * 60 * 1000).toISOString();
     const finFenetre   = new Date(now.getTime() + 180 * 60 * 1000).toISOString();
 
     const { data: matchsAttendus } = await supabase
