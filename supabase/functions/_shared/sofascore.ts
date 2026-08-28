@@ -24,9 +24,15 @@ async function sofaGet(path: string): Promise<any | null> {
   try {
     const res = await fetch(`${BASE_URL}${path}`, {
       headers: {
-        'Accept': 'application/json',
-        // SofaScore rejette parfois les requêtes sans User-Agent de navigateur.
-        'User-Agent': 'Mozilla/5.0 (compatible; Editbot/1.0; +https://editbot.vercel.app)',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        // SofaScore renvoie un 403 aux requêtes qui n'ont pas l'air de venir
+        // d'un navigateur sur sofascore.com (Referer/Origin absents, UA non
+        // reconnu). On imite un vrai onglet ouvert sur le site.
+        'Referer': 'https://www.sofascore.com/',
+        'Origin':  'https://www.sofascore.com',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+          + '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       },
     });
     if (!res.ok) { console.warn(`[sofascore] HTTP ${res.status} — ${path}`); return null; }
