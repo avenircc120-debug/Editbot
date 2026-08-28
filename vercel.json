@@ -1,6 +1,24 @@
 {
   "buildCommand": "npm install && npm run build",
   "outputDirectory": "dist",
+  "headers": [
+    {
+      "source": "/manifest.json",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache, must-revalidate" }]
+    },
+    {
+      "source": "/sw.js",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache, must-revalidate" }]
+    },
+    {
+      "source": "/icons/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache, must-revalidate" }]
+    },
+    {
+      "source": "/portal.html",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache, must-revalidate" }]
+    }
+  ],
   "rewrites": [
     {
       "source": "/(.*)",
