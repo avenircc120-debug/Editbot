@@ -23,6 +23,11 @@
     estTermine,
     type TsdbMatch,
     } from '../_shared/thesportsdb.ts';
+    import {
+    getLiveEventsSofascore,
+    trouverEvenementSofascore,
+    statutSofaVersInterne,
+    } from '../_shared/sofascore.ts';
 
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL')              ?? '';
     const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -138,7 +143,7 @@
 
     const { data: matchsAttendus } = await supabase
       .from('matchs_index')
-      .select('match_id, status, id_thesportsdb, competition, home_team, away_team')
+      .select('match_id, status, id_thesportsdb, competition, home_team, away_team, home_score, away_score')
       .neq('status', 'postponed')
       .neq('status', 'finished')
       .or(
@@ -196,6 +201,54 @@
           console.log(`[live-cron] ${idEvent} terminé (FT)`);
         }
       }
+    }
+
+    // ── Étape 2.5 : SofaScore (secours universel, sans clé ni quota) ───────────
+    // Comble les trous laissés par TheSportsDB (quota épuisé) et les matchs sans
+    // id_thesportsdb (ex : importés via Odds API, qui ne donne pas de détails
+    // live) — 1 seul appel couvre tout le football mondial en direct, donc
+    // aucun souci de quota à surveiller ici.
+    try {
+      const dejaTraites = new Set(matchsModifies.map(m => m.matchId));
+      const restants = matchsAttendus.filter(m => !dejaTraites.has(m.match_id));
+
+      if (restants.length > 0) {
+        const sofaEvents = await getLiveEventsSofascore();
+        for (const match of restants) {
+          const found = trouverEvenementSofascore(sofaEvents, match.home_team, match.away_team);
+          if (!found) continue;
+
+          const status     = statutSofaVersInterne(found.status?.type ?? '');
+          const homeScore  = found.homeScore?.current ?? 0;
+          const awayScore  = found.awayScore?.current ?? 0;
+          const changed    = match.status !== status
+            || match.home_score !== homeScore
+            || match.away_score !== awayScore;
+
+          if (!changed) continue;
+
+          const { error } = await supabase.from('matchs_index').update({
+            status,
+            raw_status: found.status?.description ?? null,
+            home_score: homeScore,
+            away_score: awayScore,
+            updated_at: new Date().toISOString(),
+          }).eq('match_id', match.match_id);
+
+          if (error) { console.warn('[live-cron][sofascore] update', match.match_id, error.message); continue; }
+
+          matchsModifies.push({
+            matchId: match.match_id,
+            competition: match.competition,
+            homeTeam: match.home_team, awayTeam: match.away_team,
+            homeScore, awayScore, status,
+            rawStatus: found.status?.description ?? '',
+            minute: null,
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('[live-cron] Erreur SofaScore:', e);
     }
 
     stats.matchsMisAJour = matchsModifies.length;
