@@ -698,18 +698,45 @@ function authHeaders(){
   return {'Content-Type':'application/json','Authorization':'Bearer '+state.token};
 }
 
+/* ─── Reconnexion silencieuse via le jeton de Page mémorisé ─────────────── */
+/* Une fois qu'un jeton d'accès de Page a marché une fois, on le garde en
+   mémoire sur ce téléphone pour ne plus jamais avoir à le recoller — même
+   si la session expire ou que l'app redémarre. Seule une déconnexion
+   volontaire (bouton "Se déconnecter") l'efface. */
+function attemptSilentReconnect(onFail){
+  var saved=localStorage.getItem('editbot_fb_page_token');
+  if(!saved){ onFail(); return; }
+  fetch(SUPABASE_URL+'/functions/v1/facebook-web-login',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pageAccessToken:saved})
+  })
+    .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return {ok:r.ok,d:d};});})
+    .then(function(res){
+      if(!res.ok||!res.d.token){ localStorage.removeItem('editbot_fb_page_token'); onFail(); return; }
+      state.token=res.d.token;
+      localStorage.setItem('editbot_web_token', res.d.token);
+      launchApp();
+    }).catch(function(){ onFail(); });
+}
+
+function handleSessionExpired(msg){
+  localStorage.removeItem('editbot_web_token');
+  attemptSilentReconnect(function(){ showLogin(msg); });
+}
+
 function init(){
   var urlToken=getUrlToken();
   if(urlToken){localStorage.setItem('editbot_web_token',urlToken);window.history.replaceState({},'',window.location.pathname);}
   state.token=localStorage.getItem('editbot_web_token');
   if(!state.token){
-    q('screen-onboard').style.display='flex';
-    q('screen-login').style.display='none';
-    q('app-screen').style.display='none';
-    q('btn-continue').onclick=function(){
-      q('screen-onboard').style.display='none';
-      showLogin();
-    };
+    attemptSilentReconnect(function(){
+      q('screen-onboard').style.display='flex';
+      q('screen-login').style.display='none';
+      q('app-screen').style.display='none';
+      q('btn-continue').onclick=function(){
+        q('screen-onboard').style.display='none';
+        showLogin();
+      };
+    });
     return;
   }
   launchApp();
@@ -750,6 +777,7 @@ function showLogin(msg){
         if(!res.ok||!res.d.token){mErr.textContent=res.d.error||'Erreur.';mSubmit.disabled=false;mSubmit.textContent='Connecter';return;}
         state.token=res.d.token;
         localStorage.setItem('editbot_web_token', res.d.token);
+        localStorage.setItem('editbot_fb_page_token', val);
         mInput.value='';
         launchApp();
       }).catch(function(){mErr.textContent='Erreur réseau.';mSubmit.disabled=false;mSubmit.textContent='Connecter';});
@@ -799,7 +827,7 @@ function showPreferencesView(){
   fetch(API_BASE+'/preferences',{headers:authHeaders()})
     .then(function(r){return r.json();})
     .then(function(d){
-      if(d.error){showLogin(d.error||'Session expirée.');return;}
+      if(d.error){handleSessionExpired(d.error||'Session expirée.');return;}
       renderPreferencesForm(d);
     }).catch(function(){view.innerHTML='<div class="empty">Erreur de chargement.</div>';});
 }
@@ -960,7 +988,9 @@ function bindDrawers(){
     chevron.classList.toggle('open',opening);
   };
   q('logout-btn').onclick=function(){
-    localStorage.removeItem('editbot_web_token');state.token=null;
+    localStorage.removeItem('editbot_web_token');
+    localStorage.removeItem('editbot_fb_page_token');
+    state.token=null;
     state.fbPages=[];
     q('drawer-left').classList.remove('open');q('overlay-left').classList.remove('open');
     q('app-screen').style.display='none';
@@ -1032,7 +1062,7 @@ function showPagePicker(matchId, isOn, match, previousPageIds){
     fetch(API_BASE+'/profile',{headers:authHeaders()})
       .then(function(r){return r.json();})
       .then(function(d){
-        if(d.error){showLogin(d.error||'Session expirée.');return;}
+        if(d.error){handleSessionExpired(d.error||'Session expirée.');return;}
         state.fbPages=d.fbPages||[];
         if(!state.fbPages.length){
           q('drawer-left').classList.add('open');q('overlay-left').classList.add('open');
@@ -1130,7 +1160,7 @@ function loadProfile(){
   fetch(API_BASE+'/profile',{headers:authHeaders()})
     .then(function(r){return r.json();})
     .then(function(d){
-      if(d.error){showLogin(d.error||'Session expirée.');localStorage.removeItem('editbot_web_token');return;}
+      if(d.error){handleSessionExpired(d.error||'Session expirée.');return;}
       var pages=d.fbPages||[];
       state.fbPages=pages;
       q('profile-name').textContent=pages.length?pages[0].fb_page_name||'Compte Facebook':'Aucune Page';
@@ -1159,7 +1189,7 @@ function loadMatches(){
     {headers:authHeaders()}
   ).then(function(r){return r.json();})
    .then(function(d){
-      if(d.error){showLogin(d.error||'Session expirée.');localStorage.removeItem('editbot_web_token');return;}
+      if(d.error){handleSessionExpired(d.error||'Session expirée.');return;}
       var matches=d.matches||[];
       state.counts[state.league]=matches.length;
       renderLeagues();
