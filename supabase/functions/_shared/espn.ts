@@ -77,10 +77,16 @@ export function normaliserNomEquipe(nom: string): string {
  *  de son point de vue et disparaître du programme par défaut (constaté en
  *  production : Tijuana–Pumas, coup d'envoi 03:10 UTC, absent sans ce
  *  paramètre). On précise donc explicitement les dates UTC couvertes par
- *  notre fenêtre -4h/+15min (au plus 2 jours civils UTC). */
+ *  notre fenêtre -4h/+15min (au plus 2 jours civils UTC).
+ *
+ *  "Hier" n'est utile que tôt le matin UTC (un match commencé juste après
+ *  minuit UTC peut encore tomber sur "hier" côté ESPN) : l'inclure toute la
+ *  journée doublait inutilement le nombre d'appels ZenRows (donc le risque
+ *  de 429), pour un cas qui ne se produit que quelques heures par jour. */
 function datesUtcCouvertes(): string[] {
   const fmt = (d: Date) => d.toISOString().slice(0, 10).replace(/-/g, '');
   const now = new Date();
+  if (now.getUTCHours() >= 4) return [fmt(now)];
   const hier = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   return [...new Set([fmt(hier), fmt(now)])];
 }
@@ -119,17 +125,59 @@ async function espnGet(slug: string, dateStr: string): Promise<EspnEvent[]> {
   }
 }
 
+/** Exécute des tâches asynchrones avec au plus `limite` en vol simultanément
+ *  — nécessaire car le plan ZenRows utilisé ici plafonne à 5 requêtes
+ *  concurrentes : un `Promise.all` sans limite dépasse ce plafond dès que
+ *  plusieurs compétitions jouent en même temps (typique un samedi
+ *  après-midi), et ZenRows répond alors 429 à tout le surplus. */
+async function executerAvecConcurrenceLimitee<T>(
+  taches: Array<() => Promise<T>>,
+  limite: number,
+): Promise<T[]> {
+  const resultats: T[] = new Array(taches.length);
+  let curseur = 0;
+  async function travailleur() {
+    while (curseur < taches.length) {
+      const i = curseur++;
+      resultats[i] = await taches[i]();
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limite, taches.length) }, travailleur));
+  return resultats;
+}
+
 /** Récupère le programme (avec statut live) des compétitions demandées, pour
  *  les 2 jours civils UTC couverts par la fenêtre de live-cron, en ne
- *  gardant que celles qu'on sait mapper vers un slug ESPN. */
-export async function getEspnEvents(tournamentIds: string[]): Promise<EspnEvent[]> {
+ *  gardant que celles qu'on sait mapper vers un slug ESPN.
+ *
+ *  `failedSlugs` liste les slugs pour lesquels AU MOINS une requête a
+ *  échoué (429 ZenRows, timeout, etc.) — donc `events` est potentiellement
+ *  incomplet pour ces compétitions. Indispensable pour ne jamais confondre
+ *  "ESPN dit que ce match n'existe pas aujourd'hui" (vraie absence) avec
+ *  "on n'a pas réussi à demander à ESPN" (silence, pas une absence) —
+ *  confondre les deux a déjà déclenché une clôture en masse de matchs
+ *  encore en direct lors d'un pic de 429 ZenRows. */
+export async function getEspnEvents(
+  tournamentIds: string[],
+): Promise<{ events: EspnEvent[]; failedSlugs: Set<string> }> {
   lastFetchDiagnostics = [];
   const slugs = [...new Set(tournamentIds.map(id => ESPN_LEAGUE_SLUGS[id]).filter(Boolean))];
-  if (!slugs.length) return [];
+  if (!slugs.length) return { events: [], failedSlugs: new Set() };
   const dates = datesUtcCouvertes();
-  const appels = slugs.flatMap(slug => dates.map(date => espnGet(slug, date)));
-  const results = await Promise.all(appels);
-  return results.flat();
+  const taches = slugs.flatMap(slug => dates.map(date => () => espnGet(slug, date).then(events => ({ slug, events }))));
+  // Plafond à 4 (< 5) pour garder une marge : cette fonction Edge peut
+  // tourner en parallèle d'un autre appel (ex: un retry manuel) sur le
+  // même compte ZenRows.
+  const results = await executerAvecConcurrenceLimitee(taches, 4);
+
+  const failedSlugs = new Set<string>();
+  const diagBySlug = new Map<string, boolean>(); // slug -> a-au-moins-un-echec
+  for (const diag of lastFetchDiagnostics) {
+    if (diag.statut !== 'ok') diagBySlug.set(diag.slug, true);
+  }
+  for (const slug of slugs) if (diagBySlug.get(slug)) failedSlugs.add(slug);
+
+  return { events: results.flatMap(r => r.events), failedSlugs };
 }
 
 /** Convertit un état ESPN ('pre' | 'in' | 'post') vers le statut interne Editbot. */

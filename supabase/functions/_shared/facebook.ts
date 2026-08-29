@@ -11,9 +11,6 @@ const FB_APP_ID     = Deno.env.get('FACEBOOK_APP_ID')     ?? '';
 const FB_APP_SECRET = Deno.env.get('FACEBOOK_APP_SECRET') ?? '';
 const FB_API        = 'https://graph.facebook.com/v22.0';
 
-// ─── Utilitaire ─────────────────────────────────────────────────────────────
-
-/** Parse JSON sans jamais lancer d'exception. Retourne null si échec. */
 async function safeJson(res: Response): Promise<any | null> {
   try {
     return await res.json();
@@ -24,9 +21,6 @@ async function safeJson(res: Response): Promise<any | null> {
   }
 }
 
-// ─── OAuth ──────────────────────────────────────────────────────────────────
-
-/** Valide un nonce anti-CSRF à usage unique et renvoie le telegram_user_id associé. */
 export async function validerNonce(nonce: string, supabase: SupabaseClient): Promise<number | null> {
   const { data, error } = await supabase
     .from('facebook_oauth_states')
@@ -48,22 +42,16 @@ export async function validerNonce(nonce: string, supabase: SupabaseClient): Pro
     return null;
   }
 
-  // Usage unique : suppression immédiate
   await supabase.from('facebook_oauth_states').delete().eq('nonce', nonce);
   return Number(data.telegram_user_id);
 }
 
-/** Échange le code d'autorisation contre un token de courte durée. */
 export async function echangerCode(code: string, redirectUri: string): Promise<string | null> {
   const url = `${FB_API}/oauth/access_token` +
     `?client_id=${FB_APP_ID}` +
     `&client_secret=${FB_APP_SECRET}` +
     `&redirect_uri=${encodeURIComponent(redirectUri)}` +
     `&code=${encodeURIComponent(code)}`;
-
-  console.log('[echangerCode] App ID utilisé:', FB_APP_ID ? FB_APP_ID.slice(0, 6) + '…' : 'MANQUANT');
-  console.log('[echangerCode] App Secret présent:', !!FB_APP_SECRET);
-  console.log('[echangerCode] redirect_uri:', redirectUri);
 
   let res: Response;
   try {
@@ -81,11 +69,9 @@ export async function echangerCode(code: string, redirectUri: string): Promise<s
     return null;
   }
 
-  console.log('[echangerCode] Token obtenu avec succès');
   return data.access_token ?? null;
 }
 
-/** Échange un token courte durée contre un token longue durée (~60 jours). */
 export async function prolongerToken(shortToken: string): Promise<string> {
   const url = `${FB_API}/oauth/access_token` +
     `?grant_type=fb_exchange_token` +
@@ -98,9 +84,8 @@ export async function prolongerToken(shortToken: string): Promise<string> {
     const data = await safeJson(res);
     if (!res.ok || !data || data.error) {
       console.error('[prolongerToken] Erreur:', JSON.stringify(data?.error ?? data));
-      return shortToken; // fallback : on utilise le token court
+      return shortToken;
     }
-    console.log('[prolongerToken] Token prolongé avec succès');
     return data.access_token ?? shortToken;
   } catch (err) {
     console.error('[prolongerToken] Exception:', err);
@@ -108,7 +93,6 @@ export async function prolongerToken(shortToken: string): Promise<string> {
   }
 }
 
-/** Récupère l'ID Facebook de l'utilisateur connecté. */
 export async function recupererFbUserId(token: string): Promise<string> {
   try {
     const res = await fetch(`${FB_API}/me?access_token=${encodeURIComponent(token)}`);
@@ -130,19 +114,12 @@ export interface FbPage {
   access_token: string;
 }
 
-/** Liste les Pages Facebook administrées par l'utilisateur.
- *
- * Gère la pagination et demande explicitement le champ `access_token`
- * pour éviter que Facebook l'omette sur certaines pages.
- * Filtre les pages sans token (permission pages_manage_posts manquante).
- */
 export async function recupererPages(token: string): Promise<FbPage[]> {
   const pages: FbPage[] = [];
-  // Demander explicitement access_token — Facebook peut l'omettre sans fields=
   let nextUrl: string | null =
     `${FB_API}/me/accounts?fields=id,name,access_token&limit=100&access_token=${encodeURIComponent(token)}`;
 
-  let iterations = 0; // garde-fou anti-boucle infinie
+  let iterations = 0;
   while (nextUrl && iterations < 10) {
     iterations++;
     try {
@@ -155,15 +132,12 @@ export async function recupererPages(token: string): Promise<FbPage[]> {
 
       for (const p of (data.data ?? [])) {
         if (!p.access_token) {
-          // La page existe mais le token est absent (permission insuffisante ou
-          // page non gérée en mode Pages Manager). On la saute et on le signale.
           console.warn('[recupererPages] Page sans access_token ignorée:', p.id, p.name);
           continue;
         }
         pages.push({ id: p.id, name: p.name, access_token: p.access_token });
       }
 
-      // Pagination : suivre le curseur "next" si présent
       nextUrl = data.paging?.next ?? null;
     } catch (err) {
       console.error('[recupererPages] Exception page', iterations, ':', err);
@@ -175,9 +149,6 @@ export async function recupererPages(token: string): Promise<FbPage[]> {
   return pages;
 }
 
-// ─── Publication ────────────────────────────────────────────────────────────
-
-/** Publie un message texte sur une Page Facebook. */
 export async function posterSurPage(
   pageId: string,
   pageAccessToken: string,
@@ -190,11 +161,16 @@ export async function posterSurPage(
       body:    JSON.stringify({ message, access_token: pageAccessToken }),
     });
     const data = await safeJson(res);
-    if (!res.ok || !data) {
-      return { success: false, error: data?.error?.message ?? `HTTP ${res.status}` };
-    }
-    if (data.error) {
+    // Vérifier data.error EN PREMIER : les erreurs de jeton (révoqué, expiré,
+    // session terminée...) arrivent avec un HTTP non-2xx (400/401), et le
+    // corps JSON contient quand même le code numérique dont estErreurToken()
+    // a besoin pour détecter la révocation — l'écraser par un message
+    // générique "HTTP 401" a déjà empêché cette détection en production.
+    if (data?.error) {
       return { success: false, error: `#${data.error.code} ${data.error.message}` };
+    }
+    if (!res.ok || !data) {
+      return { success: false, error: `HTTP ${res.status}` };
     }
     return { success: true, postId: data.id };
   } catch (e) {
@@ -202,7 +178,6 @@ export async function posterSurPage(
   }
 }
 
-/** Modifie le texte d'un post existant sur une Page Facebook. */
 export async function editerPost(
   postId: string,
   pageAccessToken: string,
@@ -215,11 +190,13 @@ export async function editerPost(
       body:    JSON.stringify({ message, access_token: pageAccessToken }),
     });
     const data = await safeJson(res);
-    if (!res.ok || !data) {
-      return { success: false, error: data?.error?.message ?? `HTTP ${res.status}` };
-    }
-    if (data.error) {
+    // Cf. posterSurPage : ne jamais écraser le code d'erreur par un message
+    // HTTP générique, sinon estErreurToken() ne détecte jamais la révocation.
+    if (data?.error) {
       return { success: false, error: `#${data.error.code} ${data.error.message}` };
+    }
+    if (!res.ok || !data) {
+      return { success: false, error: `HTTP ${res.status}` };
     }
     return { success: true };
   } catch (e) {
@@ -227,18 +204,6 @@ export async function editerPost(
   }
 }
 
-// ─── Jeton apporté par l'utilisateur (sa propre App Meta) ─────────────────────
-
-/**
- * Valide un jeton d'accès de Page collé par l'utilisateur et identifie la Page.
- *
- * Contrairement au flux OAuth (qui utilise NOTRE App Meta et nécessite
- * l'App Review pour `pages_manage_posts`), ici l'utilisateur a créé sa
- * propre App Meta et généré lui-même un jeton d'accès de Page. On ne fait
- * aucune hypothèse sur son origine : on vérifie juste qu'il fonctionne et
- * on identifie la Page qu'il représente via `/me` (un jeton de Page renvoie
- * la Page elle-même sur cet endpoint, jamais un profil personnel).
- */
 export async function validerJetonPage(
   pageAccessToken: string,
 ): Promise<{ id: string; name: string; category: string | null } | { error: string }> {
@@ -259,7 +224,6 @@ export async function validerJetonPage(
   }
 }
 
-/** Récupère le nom affiché du compte Facebook connecté (ex: "Jean Dupont"). */
 export async function recupererNomUtilisateur(token: string): Promise<string> {
   try {
     const res = await fetch(`${FB_API}/me?fields=id,name&access_token=${encodeURIComponent(token)}`);

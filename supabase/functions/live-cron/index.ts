@@ -113,10 +113,11 @@
 
     // ── Étape 2 : ESPN — 1 appel par compétition concernée ────────────────
     const tournamentIds = [...new Set(matchsAttendus.map(m => m.tournament_id).filter(Boolean))] as string[];
-    const espnEvents = await getEspnEvents(tournamentIds);
+    const { events: espnEvents, failedSlugs } = await getEspnEvents(tournamentIds);
     stats.espnCount = espnEvents.length;
     stats.competitionsInterrogees = tournamentIds.filter(id => ESPN_LEAGUE_SLUGS[id]).length;
     (stats as any).espnDiag = lastFetchDiagnostics;
+    (stats as any).espnFailedSlugs = [...failedSlugs];
 
     for (const match of matchsAttendus) {
       const found = trouverEvenementEspn(espnEvents, match.home_team, match.away_team);
@@ -153,10 +154,16 @@
       }
 
       // Pas trouvé dans le programme du jour de sa compétition (qu'on a bien
-      // interrogée) : un match qu'on avait en 'inprogress' et qui en a disparu
-      // est très probablement terminé → on le clôture pour ne pas le laisser
-      // bloqué indéfiniment dans l'onglet "En direct".
-      const competitionInterrogee = match.tournament_id && ESPN_LEAGUE_SLUGS[match.tournament_id];
+      // interrogée AVEC SUCCÈS — cf. failedSlugs) : un match qu'on avait en
+      // 'inprogress' et qui en a disparu est très probablement terminé → on
+      // le clôture pour ne pas le laisser bloqué indéfiniment dans l'onglet
+      // "En direct". Un slug dans failedSlugs (429 ZenRows, timeout...) veut
+      // dire qu'on n'a PAS de réponse fiable pour cette compétition ce
+      // cycle-ci : "absent" n'est alors pas un vrai signal, juste un silence
+      // — le confondre avec "terminé" a déjà clôturé en masse des matchs
+      // encore bien en direct lors d'un pic de 429.
+      const slug = match.tournament_id ? ESPN_LEAGUE_SLUGS[match.tournament_id] : undefined;
+      const competitionInterrogee = Boolean(slug) && !failedSlugs.has(slug!);
       if (competitionInterrogee && match.status === 'inprogress') {
         const { error } = await supabase.from('matchs_index').update({
           status: 'finished',
