@@ -32,6 +32,7 @@
     statutEspnVersInterne,
     scoreEspn,
     ESPN_LEAGUE_SLUGS,
+    lastFetchDiagnostics,
     } from '../_shared/espn.ts';
 
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL')              ?? '';
@@ -115,6 +116,7 @@
     const espnEvents = await getEspnEvents(tournamentIds);
     stats.espnCount = espnEvents.length;
     stats.competitionsInterrogees = tournamentIds.filter(id => ESPN_LEAGUE_SLUGS[id]).length;
+    (stats as any).espnDiag = lastFetchDiagnostics;
 
     for (const match of matchsAttendus) {
       const found = trouverEvenementEspn(espnEvents, match.home_team, match.away_team);

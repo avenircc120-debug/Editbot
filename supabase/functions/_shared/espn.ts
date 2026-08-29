@@ -64,27 +64,59 @@ export function normaliserNomEquipe(nom: string): string {
     .trim();
 }
 
-async function espnGet(slug: string): Promise<EspnEvent[]> {
+/** Sans paramètre `dates`, ESPN se cale sur "aujourd'hui" dans son propre
+ *  fuseau (pas UTC) : un match de notre fenêtre peut donc tomber sur "hier"
+ *  de son point de vue et disparaître du programme par défaut (constaté en
+ *  production : Tijuana–Pumas, coup d'envoi 03:10 UTC, absent sans ce
+ *  paramètre). On précise donc explicitement les dates UTC couvertes par
+ *  notre fenêtre -4h/+15min (au plus 2 jours civils UTC). */
+function datesUtcCouvertes(): string[] {
+  const fmt = (d: Date) => d.toISOString().slice(0, 10).replace(/-/g, '');
+  const now = new Date();
+  const hier = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  return [...new Set([fmt(hier), fmt(now)])];
+}
+
+/** Diagnostic du dernier appel getEspnEvents() — un {slug, date, statut,
+ *  count} par requête, pour déboguer sans dépendre des logs plateforme. */
+export let lastFetchDiagnostics: Array<{ slug: string; date: string; statut: string; count: number }> = [];
+
+async function espnGet(slug: string, dateStr: string): Promise<EspnEvent[]> {
   try {
     const res = await fetch(
-      `https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/scoreboard`,
+      `https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/scoreboard?dates=${dateStr}`,
       { headers: { 'Accept': 'application/json' } },
     );
-    if (!res.ok) { console.warn(`[espn] HTTP ${res.status} — ${slug}`); return []; }
+    if (!res.ok) {
+      lastFetchDiagnostics.push({ slug, date: dateStr, statut: `HTTP ${res.status}`, count: 0 });
+      console.warn(`[espn] HTTP ${res.status} — ${slug} (${dateStr})`);
+      return [];
+    }
     const data = await res.json();
-    return (data?.events ?? []) as EspnEvent[];
+    const events = (data?.events ?? []) as EspnEvent[];
+    lastFetchDiagnostics.push({ slug, date: dateStr, statut: 'ok', count: events.length });
+    return events;
   } catch (e) {
-    console.warn(`[espn] Erreur réseau — ${slug}:`, e);
+    lastFetchDiagnostics.push({
+      slug, date: dateStr,
+      statut: `exception: ${e instanceof Error ? e.message : String(e)}`,
+      count: 0,
+    });
+    console.warn(`[espn] Erreur réseau — ${slug} (${dateStr}):`, e);
     return [];
   }
 }
 
-/** Récupère le programme du jour (avec statut live) des compétitions demandées,
- *  en ne gardant que celles qu'on sait mapper vers un slug ESPN. */
+/** Récupère le programme (avec statut live) des compétitions demandées, pour
+ *  les 2 jours civils UTC couverts par la fenêtre de live-cron, en ne
+ *  gardant que celles qu'on sait mapper vers un slug ESPN. */
 export async function getEspnEvents(tournamentIds: string[]): Promise<EspnEvent[]> {
+  lastFetchDiagnostics = [];
   const slugs = [...new Set(tournamentIds.map(id => ESPN_LEAGUE_SLUGS[id]).filter(Boolean))];
   if (!slugs.length) return [];
-  const results = await Promise.all(slugs.map(espnGet));
+  const dates = datesUtcCouvertes();
+  const appels = slugs.flatMap(slug => dates.map(date => espnGet(slug, date)));
+  const results = await Promise.all(appels);
   return results.flat();
 }
 
