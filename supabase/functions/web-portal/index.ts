@@ -239,7 +239,7 @@ async function handlePost(token, req) {
         const mst = m.status ?? 'scheduled';
         const fbMsg = (mst !== 'inprogress' && mst !== 'finished')
           ? formatAnnonceFacebook({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, matchDate: m.match_date })
-          : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: (m as any).events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null, liveClock: mst === 'inprogress' && m.raw_status && /^\d+(\+\d+)?'$|^HT$/.test(m.raw_status) ? m.raw_status : null });
+          : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: (m as any).events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null, liveClock: mst === 'inprogress' && m.raw_status && /^\d+'(\+\d+'?)?$|^HT$/.test(m.raw_status) ? m.raw_status : null });
 
         pageResults = await publishToBroadcastPages(pagesToPost, fbMsg);
 

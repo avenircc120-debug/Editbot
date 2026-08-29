@@ -278,7 +278,6 @@ async function handleMatches(chatId: number, url: URL): Promise<Response> {
 
   const { data: matchs } = await q;
 
-  // Broadcast actifs de l'utilisateur (avec pages choisies par match)
   const { data: selections } = await supabase
     .from('broadcast_selections')
     .select('match_id, fb_page_ids')
@@ -362,7 +361,7 @@ async function handleBroadcast(req: Request, chatId: number): Promise<Response> 
         const mst = m.status ?? 'scheduled';
         const fbMsg = (mst !== 'inprogress' && mst !== 'finished')
           ? formatAnnonceFacebook({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, matchDate: m.match_date })
-          : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: (m as any).events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null, liveClock: mst === 'inprogress' && m.raw_status && /^\d+(\+\d+)?'$|^HT$/.test(m.raw_status) ? m.raw_status : null });
+          : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: (m as any).events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null, liveClock: mst === 'inprogress' && m.raw_status && /^\d+'(\+\d+'?)?$|^HT$/.test(m.raw_status) ? m.raw_status : null });
         pageResults = await publishToBroadcastPages(pagesToPost, fbMsg);
         // Mettre à jour last_post_at pour les pages qui ont réussi, et enregistrer
         // le post initial dans facebook_posts_log — sinon facebook-post ne le

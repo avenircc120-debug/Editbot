@@ -40,12 +40,15 @@ interface LiveMatch {
   minute?:          number | null;
 }
 
-/** true si `s` a la forme du chrono ESPN ("34'", "45+2'", "HT") — sert à ne
+/** true si `s` a la forme du chrono ESPN ("34'", "45'+2'", "HT") — sert à ne
  *  jamais afficher un code brut TheSportsDB ("1H", "2H"...) comme s'il
  *  s'agissait d'un chrono, vu que raw_status est alimenté par les deux
- *  pipelines (live-cron/ESPN et fetch-matches/TheSportsDB). */
+ *  pipelines (live-cron/ESPN et fetch-matches/TheSportsDB).
+ *  ESPN écrit le temps additionnel avec une apostrophe après CHAQUE partie
+ *  ("45'+2'", pas "45+2'") — un ancien motif ne couvrant que ce second
+ *  format faisait disparaître le chrono en fin de mi-temps. */
 function estChronoEspn(s: string): boolean {
-  return /^\d+(\+\d+)?'$/.test(s) || s === 'HT';
+  return /^\d+'(\+\d+'?)?$/.test(s) || s === 'HT';
 }
 
 async function notifierUtilisateur(telegramUserId: number, texte: string): Promise<void> {
