@@ -9,6 +9,8 @@
     statutEspnVersInterne,
     scoreEspn,
     clockEspn,
+    idEquipeEspn,
+    buteursEquipe,
     ESPN_LEAGUE_SLUGS,
     lastFetchDiagnostics,
     } from '../_shared/espn.ts';
@@ -23,6 +25,9 @@
     homeTeam: string; awayTeam: string;
     homeScore: number; awayScore: number;
     status: string; rawStatus: string; minute: number | null;
+    eventType?: string | null;
+    homeGoalDetails?: string | null;
+    awayGoalDetails?: string | null;
     }
 
     async function diffuserSurFacebook(matchsModifies: MatchChange[]): Promise<void> {
@@ -82,14 +87,8 @@
     (stats as any).espnDiag = lastFetchDiagnostics;
     (stats as any).espnFailedSlugs = [...failedSlugs];
 
-    let diagLogged = false;
     for (const match of matchsAttendus) {
       const found = trouverEvenementEspn(espnEvents, match.home_team, match.away_team);
-
-      if (found && !diagLogged) {
-        diagLogged = true;
-        console.log('[live-cron][diag] raw event sample:', JSON.stringify(found).slice(0, 4000));
-      }
 
       if (found) {
         const status     = statutEspnVersInterne(found.status?.type?.state ?? '');
@@ -102,6 +101,16 @@
           || (status === 'inprogress' && match.raw_status !== liveClock);
 
         if (!changed) continue;
+
+        // But marqué : ESPN fournit déjà le(s) buteur(s) dans
+        // competitions[0].details (même réponse que le score/chrono, aucun
+        // appel supplémentaire) — bien plus fiable que d'attendre TheSportsDB,
+        // qui ne fournit d'ailleurs cette donnée sur aucun de ses endpoints
+        // gratuits (vérifié : absente même de lookupevent.php).
+        const butMarque = status === 'inprogress'
+          && (homeScore > (match.home_score ?? 0) || awayScore > (match.away_score ?? 0));
+        const homeGoalDetails = buteursEquipe(found, idEquipeEspn(found, 'home'));
+        const awayGoalDetails = buteursEquipe(found, idEquipeEspn(found, 'away'));
 
         const { error } = await supabase.from('matchs_index').update({
           status,
@@ -120,6 +129,9 @@
           homeScore, awayScore, status,
           rawStatus: liveClock ?? found.status?.type?.description ?? '',
           minute: null,
+          eventType: butMarque ? 'goal' : null,
+          homeGoalDetails: homeGoalDetails || null,
+          awayGoalDetails: awayGoalDetails || null,
         });
         continue;
       }

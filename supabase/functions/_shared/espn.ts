@@ -22,7 +22,7 @@ const ZENROWS_API_KEY = Deno.env.get('ZENROWS_API_KEY') ?? '';
 
 export interface EspnCompetitor {
   homeAway: 'home' | 'away';
-  team: { displayName: string; shortDisplayName?: string };
+  team: { id?: string; displayName: string; shortDisplayName?: string };
   score?: string;
 }
 
@@ -38,10 +38,26 @@ export interface EspnStatus {
   };
 }
 
+/** Un événement de match ESPN (but, carton...) — "scoringPlay" + équipe créditée
+ *  du but permettent de reconstituer qui a marqué, sans appel API supplémentaire :
+ *  cette donnée est déjà présente dans la même réponse que le score/chrono. */
+export interface EspnGoalDetail {
+  type: { text: string };
+  clock?: { value?: number; displayValue?: string };
+  team: { id?: string };
+  scoringPlay?: boolean;
+  ownGoal?: boolean;
+  athletesInvolved?: Array<{ displayName: string }>;
+}
+
 export interface EspnEvent {
   id: string;
   status: EspnStatus;
-  competitions: Array<{ competitors: EspnCompetitor[]; status?: EspnStatus }>;
+  competitions: Array<{
+    competitors: EspnCompetitor[];
+    status?: EspnStatus;
+    details?: EspnGoalDetail[];
+  }>;
 }
 
 /** tournament_id TheSportsDB (voir _shared/config.ts LEAGUES) → slug ESPN. */
@@ -227,4 +243,26 @@ export function clockEspn(ev: EspnEvent): string | null {
   return ev.status?.displayClock
     || ev.competitions?.[0]?.status?.displayClock
     || null;
+}
+
+/** Id ESPN de l'équipe (home ou away) pour un événement — sert à relier les
+ *  buts de `competitions[0].details` à la bonne équipe. */
+export function idEquipeEspn(ev: EspnEvent, homeAway: 'home' | 'away'): string | null {
+  return ev.competitions?.[0]?.competitors?.find(c => c.homeAway === homeAway)?.team?.id ?? null;
+}
+
+/** Liste (dans l'ordre chronologique, séparés par ';') des buteurs d'une équipe
+ *  pour ce match, tels que rapportés par ESPN dans `competitions[0].details`.
+ *  Les buts contre son camp sont exclus (le nom impliqué appartient à l'équipe
+ *  adverse dans le schéma ESPN — l'attribuer aurait été trompeur), auquel cas
+ *  le but reste affiché sans nom plutôt que mal attribué. */
+export function buteursEquipe(ev: EspnEvent, teamId: string | null): string {
+  if (!teamId) return '';
+  const details = ev.competitions?.[0]?.details ?? [];
+  return details
+    .filter(d => d.scoringPlay && !d.ownGoal && d.team?.id === teamId)
+    .sort((a, b) => (a.clock?.value ?? 0) - (b.clock?.value ?? 0))
+    .map(d => d.athletesInvolved?.[0]?.displayName)
+    .filter((nom): nom is string => Boolean(nom))
+    .join(';');
 }
