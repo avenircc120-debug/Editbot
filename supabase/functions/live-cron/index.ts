@@ -8,27 +8,31 @@
     *  1. Interroge Supabase pour identifier TOUS les matchs (toutes compétitions,
     *     tous utilisateurs confondus) actuellement en direct (status = 'inprogress')
     *     OU dont le coup d'envoi est proche/passé (match_date entre -4h et +15min) —
-    *     pas seulement ceux sélectionnés pour diffusion Facebook : SofaScore n'a
-    *     ni clé ni quota, on peut se permettre de suivre tout le monde.
+    *     pas seulement ceux sélectionnés pour diffusion Facebook.
     *  2. Si aucun match candidat → sortie immédiate, AUCUN appel API externe.
-    *  3. SofaScore (seule source, sans clé ni quota) → 1 seul appel couvre
-    *     tout le football mondial en direct.
+    *  3. ESPN (API cachée, sans clé ni quota connu) → 1 appel par compétition
+    *     concernée (pas d'endpoint "tout le monde" comme SofaScore, qui bloque
+    *     par réputation d'IP les appels depuis Supabase Edge — confirmé en
+    *     production, header spoofing inclus). On n'appelle que les compétitions
+    *     réellement présentes parmi les matchs candidats.
     *  4. Upsert DB + déclenche facebook-post (qui filtre lui-même par
     *     broadcast_selections.is_active) si score/statut changé.
-    *  5. Un match 'inprogress' introuvable dans le direct SofaScore est
-    *     considéré terminé (évite les matchs bloqués indéfiniment en direct).
+    *  5. Un match 'inprogress' dont la compétition a été interrogée mais qui
+    *     n'apparaît plus dans son programme du jour est considéré terminé
+    *     (évite les matchs bloqués indéfiniment en direct).
     *
-    * Fréquence cron recommandée : toutes les minutes (SofaScore : sans quota)
+    * Fréquence cron recommandée : toutes les minutes
     * Sécurité : header Authorization: Bearer {CRON_SECRET}
     */
 
     import { createClient } from 'npm:@supabase/supabase-js@2';
     import {
-    getLiveEventsSofascore,
-    trouverEvenementSofascore,
-    statutSofaVersInterne,
-    lastFetchDiagnostic,
-    } from '../_shared/sofascore.ts';
+    getEspnEvents,
+    trouverEvenementEspn,
+    statutEspnVersInterne,
+    scoreEspn,
+    ESPN_LEAGUE_SLUGS,
+    } from '../_shared/espn.ts';
 
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL')              ?? '';
     const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -66,7 +70,7 @@
     }
 
     const now   = new Date();
-    const stats = { matchsLive: 0, matchsMisAJour: 0, matchsClotures: 0, matchsPurges: 0, sofaCount: -1, sofaDiag: '', source: '', skipped: false };
+    const stats = { matchsLive: 0, matchsMisAJour: 0, matchsClotures: 0, matchsPurges: 0, espnCount: -1, competitionsInterrogees: 0, source: 'espn', skipped: false };
 
     // ── Étape 0 : Purge des matchs bloqués (aucun appel externe, coût nul) ────
     // Un match encore 'inprogress'/'scheduled' plus de 4h après son coup d'envoi
@@ -84,15 +88,13 @@
 
     // ── Étape 1 : Identifier tous les matchs en direct ou dont le coup d'envoi
     // est imminent/passé récemment ────────────────────────────────
-    // SofaScore couvre tout le football mondial en 1 seul appel, sans clé ni
-    // quota : pas besoin de restreindre aux matchs diffusés sur Facebook.
     // Fenêtre : -4h (durée max d'un match + arrêt de jeu) → +15min (imminents).
     const fenetreDebut = new Date(now.getTime() - 4 * 60 * 60 * 1000).toISOString();
     const fenetreFin   = new Date(now.getTime() + 15 * 60 * 1000).toISOString();
 
     const { data: matchsAttendus } = await supabase
       .from('matchs_index')
-      .select('match_id, status, id_thesportsdb, competition, home_team, away_team, home_score, away_score, match_date')
+      .select('match_id, status, tournament_id, competition, home_team, away_team, home_score, away_score, match_date')
       .in('status', ['inprogress', 'scheduled'])
       .gte('match_date', fenetreDebut)
       .lte('match_date', fenetreFin);
@@ -108,30 +110,19 @@
     stats.matchsLive = matchsAttendus.length;
     const matchsModifies: MatchChange[] = [];
 
-    // ── Étape 2 : SofaScore (seule source, sans clé ni quota) ──────────────
-    // 1 seul appel couvre tout le football mondial en direct.
-    stats.source = 'sofascore';
-    let sofaEvents: Awaited<ReturnType<typeof getLiveEventsSofascore>> = [];
-    try {
-      sofaEvents = await getLiveEventsSofascore();
-    } catch (e) {
-      console.warn('[live-cron] Erreur SofaScore:', e);
-    }
-    stats.sofaCount = sofaEvents.length;
-    stats.sofaDiag  = lastFetchDiagnostic;
-
-    // Garde-fou : si SofaScore renvoie une liste anormalement courte (panne API,
-    // 403, etc.), on ne déclare AUCUN match "terminé par déduction" pour éviter
-    // de clôturer massivement des matchs réellement en cours.
-    const sofaFiable = sofaEvents.length >= 10;
+    // ── Étape 2 : ESPN — 1 appel par compétition concernée ────────────────
+    const tournamentIds = [...new Set(matchsAttendus.map(m => m.tournament_id).filter(Boolean))] as string[];
+    const espnEvents = await getEspnEvents(tournamentIds);
+    stats.espnCount = espnEvents.length;
+    stats.competitionsInterrogees = tournamentIds.filter(id => ESPN_LEAGUE_SLUGS[id]).length;
 
     for (const match of matchsAttendus) {
-      const found = trouverEvenementSofascore(sofaEvents, match.home_team, match.away_team);
+      const found = trouverEvenementEspn(espnEvents, match.home_team, match.away_team);
 
       if (found) {
-        const status     = statutSofaVersInterne(found.status?.type ?? '');
-        const homeScore  = found.homeScore?.current ?? 0;
-        const awayScore  = found.awayScore?.current ?? 0;
+        const status     = statutEspnVersInterne(found.status?.type?.state ?? '');
+        const homeScore  = scoreEspn(found, 'home');
+        const awayScore  = scoreEspn(found, 'away');
         const changed    = match.status !== status
           || match.home_score !== homeScore
           || match.away_score !== awayScore;
@@ -140,29 +131,31 @@
 
         const { error } = await supabase.from('matchs_index').update({
           status,
-          raw_status: found.status?.description ?? null,
+          raw_status: found.status?.type?.description ?? null,
           home_score: homeScore,
           away_score: awayScore,
           updated_at: new Date().toISOString(),
         }).eq('match_id', match.match_id);
 
-        if (error) { console.warn('[live-cron][sofascore] update', match.match_id, error.message); continue; }
+        if (error) { console.warn('[live-cron][espn] update', match.match_id, error.message); continue; }
 
         matchsModifies.push({
           matchId: match.match_id,
           competition: match.competition,
           homeTeam: match.home_team, awayTeam: match.away_team,
           homeScore, awayScore, status,
-          rawStatus: found.status?.description ?? '',
+          rawStatus: found.status?.type?.description ?? '',
           minute: null,
         });
         continue;
       }
 
-      // Pas trouvé dans le direct SofaScore : un match qu'on avait en 'inprogress'
-      // et qui a disparu du flux est très probablement terminé → on le clôture
-      // pour ne pas le laisser bloqué indéfiniment dans l'onglet "En direct".
-      if (sofaFiable && match.status === 'inprogress') {
+      // Pas trouvé dans le programme du jour de sa compétition (qu'on a bien
+      // interrogée) : un match qu'on avait en 'inprogress' et qui en a disparu
+      // est très probablement terminé → on le clôture pour ne pas le laisser
+      // bloqué indéfiniment dans l'onglet "En direct".
+      const competitionInterrogee = match.tournament_id && ESPN_LEAGUE_SLUGS[match.tournament_id];
+      if (competitionInterrogee && match.status === 'inprogress') {
         const { error } = await supabase.from('matchs_index').update({
           status: 'finished',
           raw_status: 'FT (déduit)',
@@ -194,4 +187,3 @@
       { headers: { 'Content-Type': 'application/json' } }
     );
     });
-    
