@@ -10,7 +10,15 @@
  * n'a pas d'endpoint global : 1 appel = le programme du jour d'UNE
  * compétition (avec le statut de chaque match, live ou pas). On n'appelle
  * donc que les compétitions réellement concernées par les matchs suivis.
+ *
+ * ESPN bloque lui aussi par réputation d'IP les appels directs depuis
+ * Supabase Edge (403, confirmé en production). On relaie donc via ZenRows
+ * (ZENROWS_API_KEY), un service de scraping qui contourne ce type de
+ * blocage — quota gratuit limité (5000 crédits/mois), donc pas illimité,
+ * mais fonctionne réellement là où l'appel direct est bloqué.
  */
+
+const ZENROWS_API_KEY = Deno.env.get('ZENROWS_API_KEY') ?? '';
 
 export interface EspnCompetitor {
   homeAway: 'home' | 'away';
@@ -82,11 +90,15 @@ function datesUtcCouvertes(): string[] {
 export let lastFetchDiagnostics: Array<{ slug: string; date: string; statut: string; count: number }> = [];
 
 async function espnGet(slug: string, dateStr: string): Promise<EspnEvent[]> {
+  const cible = `https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/scoreboard?dates=${dateStr}`;
+  // Sans clé ZenRows configurée, on tente quand même l'appel direct (utile
+  // en local/dev, ou si ESPN débloque un jour cette IP) plutôt que d'échouer
+  // silencieusement.
+  const url = ZENROWS_API_KEY
+    ? `https://api.zenrows.com/v1/?apikey=${ZENROWS_API_KEY}&url=${encodeURIComponent(cible)}&mode=auto`
+    : cible;
   try {
-    const res = await fetch(
-      `https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/scoreboard?dates=${dateStr}`,
-      { headers: { 'Accept': 'application/json' } },
-    );
+    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
     if (!res.ok) {
       lastFetchDiagnostics.push({ slug, date: dateStr, statut: `HTTP ${res.status}`, count: 0 });
       console.warn(`[espn] HTTP ${res.status} — ${slug} (${dateStr})`);
