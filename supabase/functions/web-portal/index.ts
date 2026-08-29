@@ -209,8 +209,6 @@ async function handlePost(token, req) {
         return json({ error: 'Une ou plusieurs Pages Facebook sélectionnées ne sont plus disponibles.' }, 400);
       }
 
-      // Persist the exact allow-list. The empty-list fallback is only for
-      // legacy callers and is expanded to all currently active page IDs.
       const selectedPageIds = requestedPageIds.length > 0
         ? requestedPageIds
         : pages.map((page) => page.fb_page_id);
@@ -226,10 +224,9 @@ async function handlePost(token, req) {
         return json({ error: 'Impossible d’enregistrer la diffusion.' }, 500);
       }
 
-      // ── Post immédiat sur Facebook dès l'activation ────────────────────────
       const { data: matchRow, error: matchError } = await supabase
         .from('matchs_index')
-          .select('home_team, away_team, competition, status, match_date, home_score, away_score, home_goal_details, away_goal_details, match_minute')
+          .select('home_team, away_team, competition, status, match_date, home_score, away_score, home_goal_details, away_goal_details, match_minute, raw_status')
           .eq('match_id', matchId).maybeSingle();
       if (matchError) {
         console.error('[web-portal] Erreur lecture match:', matchError);
@@ -242,13 +239,10 @@ async function handlePost(token, req) {
         const mst = m.status ?? 'scheduled';
         const fbMsg = (mst !== 'inprogress' && mst !== 'finished')
           ? formatAnnonceFacebook({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, matchDate: m.match_date })
-          : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: (m as any).events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null });
+          : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: (m as any).events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null, liveClock: mst === 'inprogress' && m.raw_status && /^\d+(\+\d+)?'$|^HT$/.test(m.raw_status) ? m.raw_status : null });
 
         pageResults = await publishToBroadcastPages(pagesToPost, fbMsg);
 
-        // Enregistrer le post initial dans facebook_posts_log — sinon
-        // facebook-post ne le retrouve pas et republie un nouveau post au
-        // lieu d'éditer celui-ci à chaque changement de score.
         const todayLog = new Date().toISOString().slice(0, 10);
         for (const result of pageResults) {
           if (!result.success) continue;
@@ -265,7 +259,6 @@ async function handlePost(token, req) {
           }
         }
 
-        // ── Handle per-page failures ────────────────────────────────────────
         const tokenExpiredPages: string[] = [];
         const otherFailedPages:  string[] = [];
 
@@ -280,13 +273,11 @@ async function handlePost(token, req) {
 
           if (estErreurToken(errMsg)) {
             tokenExpiredPages.push(result.pageName);
-            // Mark token as expired in DB so facebook-post skips it too
             await supabase
               .from('facebook_connections')
               .update({ is_active: false, updated_at: new Date().toISOString() })
               .eq('telegram_user_id', chatId)
               .eq('fb_page_id', result.fb_page_id);
-            // Telegram notification (best-effort)
             await notifierUtilisateur(
               chatId,
               `⚠️ *Connexion Facebook expirée*\n\nTa Page *${result.pageName}* n'est plus accessible (token révoqué).\n\nOuvre le portail web pour reconnecter ta Page Facebook.`,
@@ -296,7 +287,6 @@ async function handlePost(token, req) {
           }
         }
 
-        // Build a human-readable warning if anything failed
         let warning: string | undefined;
         const parts: string[] = [];
         if (tokenExpiredPages.length) {

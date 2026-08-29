@@ -29,6 +29,7 @@ export interface EspnCompetitor {
 export interface EspnEvent {
   id: string;
   status: {
+    displayClock?: string;
     type: {
       state: 'pre' | 'in' | 'post';
       completed: boolean;
@@ -212,4 +213,10 @@ export function scoreEspn(ev: EspnEvent, homeAway: 'home' | 'away'): number {
   const competitors = ev.competitions?.[0]?.competitors ?? [];
   const c = competitors.find(c => c.homeAway === homeAway);
   return c?.score != null ? Number(c.score) : 0;
+}
+
+/** Chronomètre du match tel qu'affiché par ESPN (ex: "34'", "45+2'", "HT").
+ *  null si absent (match pas encore commencé, ou champ non fourni par ESPN). */
+export function clockEspn(ev: EspnEvent): string | null {
+  return ev.status?.displayClock || null;
 }

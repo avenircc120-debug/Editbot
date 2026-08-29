@@ -16,7 +16,7 @@
     *     production, header spoofing inclus). On n'appelle que les compétitions
     *     réellement présentes parmi les matchs candidats.
     *  4. Upsert DB + déclenche facebook-post (qui filtre lui-même par
-    *     broadcast_selections.is_active) si score/statut changé.
+    *     broadcast_selections.is_active) si score/statut/chrono changé.
     *  5. Un match 'inprogress' dont la compétition a été interrogée mais qui
     *     n'apparaît plus dans son programme du jour est considéré terminé
     *     (évite les matchs bloqués indéfiniment en direct).
@@ -31,6 +31,7 @@
     trouverEvenementEspn,
     statutEspnVersInterne,
     scoreEspn,
+    clockEspn,
     ESPN_LEAGUE_SLUGS,
     lastFetchDiagnostics,
     } from '../_shared/espn.ts';
@@ -95,7 +96,7 @@
 
     const { data: matchsAttendus } = await supabase
       .from('matchs_index')
-      .select('match_id, status, tournament_id, competition, home_team, away_team, home_score, away_score, match_date')
+      .select('match_id, status, tournament_id, competition, home_team, away_team, home_score, away_score, match_date, raw_status')
       .in('status', ['inprogress', 'scheduled'])
       .gte('match_date', fenetreDebut)
       .lte('match_date', fenetreFin);
@@ -126,15 +127,21 @@
         const status     = statutEspnVersInterne(found.status?.type?.state ?? '');
         const homeScore  = scoreEspn(found, 'home');
         const awayScore  = scoreEspn(found, 'away');
+        // Chrono ESPN (ex: "34'") — ne fait sens que pour un match en cours ;
+        // un simple tic du chrono (score et statut inchangés) doit quand même
+        // déclencher une mise à jour du post Facebook, sinon l'heure affichée
+        // reste figée sur la dernière minute d'un but/mi-temps.
+        const liveClock  = status === 'inprogress' ? clockEspn(found) : null;
         const changed    = match.status !== status
           || match.home_score !== homeScore
-          || match.away_score !== awayScore;
+          || match.away_score !== awayScore
+          || (status === 'inprogress' && match.raw_status !== liveClock);
 
         if (!changed) continue;
 
         const { error } = await supabase.from('matchs_index').update({
           status,
-          raw_status: found.status?.type?.description ?? null,
+          raw_status: liveClock ?? found.status?.type?.description ?? null,
           home_score: homeScore,
           away_score: awayScore,
           updated_at: new Date().toISOString(),
@@ -147,7 +154,7 @@
           competition: match.competition,
           homeTeam: match.home_team, awayTeam: match.away_team,
           homeScore, awayScore, status,
-          rawStatus: found.status?.type?.description ?? '',
+          rawStatus: liveClock ?? found.status?.type?.description ?? '',
           minute: null,
         });
         continue;

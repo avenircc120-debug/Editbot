@@ -51,7 +51,7 @@ function json(body: unknown, status = 200) {
   });
 }
 
-// ─── Auth Telegram initData ────────────────────────────────────────────────────
+// ─── Auth Telegram initData ────────────────────────────────────
 
 async function validateInitData(initData: string): Promise<number | null> {
   try {
@@ -112,7 +112,7 @@ async function getToken(chatId: number): Promise<string> {
   return data?.web_access_token ?? '';
 }
 
-// ─── Handlers ─────────────────────────────────────────────────────────────────
+// ─── Handlers ─────────────────────────────────────────────────────
 
 async function handleAuth(req: Request): Promise<Response> {
   const { initData } = await req.json().catch(() => ({}));
@@ -160,7 +160,7 @@ async function handleProfile(chatId: number): Promise<Response> {
   });
 }
 
-// ─── Préférences "Set & Forget" (équipe favorite + compétitions suivies) ───────
+// ─── Préférences "Set & Forget" (équipe favorite + compétitions suivies) ───
 
 async function handlePreferencesGet(chatId: number): Promise<Response> {
   const [{ data: profil }, { data: competitions }] = await Promise.all([
@@ -347,10 +347,9 @@ async function handleBroadcast(req: Request, chatId: number): Promise<Response> 
       return json({ error: 'Impossible d’enregistrer la diffusion.' }, 500);
     }
 
-      // ── Post immédiat sur Facebook dès l'activation ────────────────────────
       const { data: matchRow, error: matchError } = await supabase
         .from('matchs_index')
-          .select('home_team, away_team, competition, status, match_date, home_score, away_score, home_goal_details, away_goal_details, match_minute')
+          .select('home_team, away_team, competition, status, match_date, home_score, away_score, home_goal_details, away_goal_details, match_minute, raw_status')
            .eq('match_id', matchId).maybeSingle();
       if (matchError) {
         console.error('[mini-app-api] Erreur lecture match:', matchError);
@@ -363,7 +362,7 @@ async function handleBroadcast(req: Request, chatId: number): Promise<Response> 
         const mst = m.status ?? 'scheduled';
         const fbMsg = (mst !== 'inprogress' && mst !== 'finished')
           ? formatAnnonceFacebook({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, matchDate: m.match_date })
-          : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: (m as any).events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null });
+          : buildFacebookPost({ competition: m.competition, homeTeam: m.home_team, awayTeam: m.away_team, homeScore: m.home_score ?? 0, awayScore: m.away_score ?? 0, status: mst, eventsLog: (m as any).events_log ?? '', homeGoalDetails: m.home_goal_details ?? null, awayGoalDetails: m.away_goal_details ?? null, liveClock: mst === 'inprogress' && m.raw_status && /^\d+(\+\d+)?'$|^HT$/.test(m.raw_status) ? m.raw_status : null });
         pageResults = await publishToBroadcastPages(pagesToPost, fbMsg);
         // Mettre à jour last_post_at pour les pages qui ont réussi, et enregistrer
         // le post initial dans facebook_posts_log — sinon facebook-post ne le
@@ -596,7 +595,7 @@ async function handleLiveCounts(): Promise<Response> {
   return json({ liveCounts, scheduledCounts });
 }
 
-// ─── Router principal ─────────────────────────────────────────────────────────
+// ─── Router principal ─────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
@@ -609,10 +608,10 @@ Deno.serve(async (req: Request) => {
     const route       = parts[parts.length - 1];
     const parentRoute = parts[parts.length - 2];
 
-    // ── Route publique : auth ───────────────────────────────────────────────
+    // ── Route publique : auth ────────────────────────────────────
     if (route === 'auth' && req.method === 'POST') return handleAuth(req);
 
-    // ── Routes authentifiées ────────────────────────────────────────────────
+    // ── Routes authentifiées ─────────────────────────────────────────
     const authHeader = req.headers.get('Authorization') ?? '';
     const token      = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
     if (!token) return json({ error: 'Token requis' }, 401);

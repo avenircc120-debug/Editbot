@@ -15,14 +15,7 @@ export function formatAnnonceFacebook(data: { competition: string; homeTeam: str
   const heure = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
   const jour  = d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
   const tag   = data.competition.replace(/[\s\-()']/g, '');
-  return `📣 ${data.competition}
-
-⚽ ${data.homeTeam}  vs  ${data.awayTeam}
-🗓 ${jour.charAt(0).toUpperCase() + jour.slice(1)} à ${heure} UTC
-
-Restez connectés — scores et actions en direct sur cette page dès le coup d'envoi !
-
-#Football #${tag}`;
+  return `📣 ${data.competition}\n\n⚽ ${data.homeTeam}  vs  ${data.awayTeam}\n🗓 ${jour.charAt(0).toUpperCase() + jour.slice(1)} à ${heure} UTC\n\nRestez connectés — scores et actions en direct sur cette page dès le coup d'envoi !\n\n#Football #${tag}`;
 }
 
 // ─── Post cumulatif avec timeline des événements ────────────────────────────
@@ -107,22 +100,6 @@ export function buildEventMarkers(data: {
 
 /**
  * Construit le texte complet du post Facebook à partir du journal accumulé.
- *
- * Format final :
- *   🔴 En direct — Compétition           (ou ⏸ / 🏁)
- *
- *   Équipe A  2 - 1  Équipe B
- *
- *   ―――――――――――――――
- *   🟢 Coup d'envoi
- *   ⚽ Éverton Ribeiro 23' (Bahia)
- *   ⏸ Mi-temps : 1-0
- *   ⚽ Gabriel Barbosa 67' (Bahia)
- *   🏁 Résultat final
- *
- *   🏆 Victoire Bahia !
- *
- *   #Football #BrazilianSerieA
  */
 export function buildFacebookPost(data: {
   competition:      string;
@@ -135,29 +112,32 @@ export function buildFacebookPost(data: {
   eventsLog:        string;
   homeGoalDetails?: string | null;
   awayGoalDetails?: string | null;
+  /** Chrono du match tel qu'affiché par ESPN (ex: "34'", "45+2'") — affiché
+   *  dans l'en-tête et mis à jour à chaque cycle live-cron, même sans but. */
+  liveClock?:       string | null;
 }): string {
-  const { competition, homeTeam, awayTeam, status, eventType, eventsLog } = data;
+  const { competition, homeTeam, awayTeam, status, eventType, eventsLog, liveClock } = data;
   const hs  = data.homeScore ?? 0;
   const as_ = data.awayScore ?? 0;
   const tag = competition.replace(/[\s\-()']/g, '');
 
-  // ── En-tête ────────────────────────────────────────────────────────────────
+  // ── En-tête ───────────────────────────────────────────────────────────
   let header: string;
   if (eventType === 'halftime') {
     header = '⏸ Mi-temps';
   } else if (eventType === 'fulltime' || status === 'finished') {
     header = '🏁 Résultat final';
   } else if (eventType === 'goal') {
-    header = '🔴 En direct ⚽';
+    header = liveClock ? `🔴 En direct ${liveClock} ⚽` : '🔴 En direct ⚽';
   } else {
-    header = '🔴 En direct';
+    header = liveClock ? `🔴 En direct ${liveClock}` : '🔴 En direct';
   }
 
-  // ── Corps principal ────────────────────────────────────────────────────────
+  // ── Corps principal ───────────────────────────────────────────────────────
   let msg = `${header} — ${competition}\n\n`;
   msg    += `${homeTeam}  ${hs} - ${as_}  ${awayTeam}`;
 
-  // ── Timeline des événements ────────────────────────────────────────────────
+  // ── Timeline des événements ───────────────────────────────────────────────
   if (eventsLog) {
     const rendered = renderEventsLog(
       eventsLog, homeTeam, awayTeam,
@@ -169,7 +149,7 @@ export function buildFacebookPost(data: {
     }
   }
 
-  // ── Conclusion fin de match ────────────────────────────────────────────────
+  // ── Conclusion fin de match ─────────────────────────────────────────────────
   if (eventType === 'fulltime' || status === 'finished') {
     if (hs > as_)      msg += `\n\n🏆 Victoire ${homeTeam} !`;
     else if (as_ > hs) msg += `\n\n🏆 Victoire ${awayTeam} !`;

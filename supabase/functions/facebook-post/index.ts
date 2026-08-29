@@ -40,6 +40,14 @@ interface LiveMatch {
   minute?:          number | null;
 }
 
+/** true si `s` a la forme du chrono ESPN ("34'", "45+2'", "HT") — sert à ne
+ *  jamais afficher un code brut TheSportsDB ("1H", "2H"...) comme s'il
+ *  s'agissait d'un chrono, vu que raw_status est alimenté par les deux
+ *  pipelines (live-cron/ESPN et fetch-matches/TheSportsDB). */
+function estChronoEspn(s: string): boolean {
+  return /^\d+(\+\d+)?'$/.test(s) || s === 'HT';
+}
+
 async function notifierUtilisateur(telegramUserId: number, texte: string): Promise<void> {
   if (!TELEGRAM_TOKEN) return;
   await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
@@ -85,7 +93,7 @@ Deno.serve(async (req: Request) => {
       pageFilter.set(uid, ids);
     }
 
-    // ── Étape 2 : Pages Facebook actives de ces utilisateurs ─────────────────
+    // ── Étape 2 : Pages Facebook actives de ces utilisateurs ──────────────
     const { data: connexions } = await supabase
       .from('facebook_connections')
       .select('id, telegram_user_id, fb_page_id, fb_page_name, fb_page_access_token')
@@ -101,14 +109,14 @@ Deno.serve(async (req: Request) => {
     }>) ?? []) {
       const telegramId = Number(connexion.telegram_user_id);
 
-      // ── Filtre par pages sélectionnées ────────────────────────────────────
+      // ── Filtre par pages sélectionnées ─────────────────────────
       const pagesAutorisees = pageFilter.get(telegramId) ?? [];
       if (pagesAutorisees.length > 0 && !pagesAutorisees.includes(String(connexion.fb_page_id).trim())) {
         continue;
       }
 
       try {
-        // ── Récupérer le post existant (fb_post_id + events_log) ─────────
+        // ── Récupérer le post existant (fb_post_id + events_log) ─────
         const { data: existingLog } = await supabase
           .from('facebook_posts_log')
           .select('fb_post_id, events_log')
@@ -117,7 +125,7 @@ Deno.serve(async (req: Request) => {
           .eq('post_date', today)
           .maybeSingle();
 
-        // ── Construire le nouveau journal d'événements ────────────────────
+        // ── Construire le nouveau journal d'événements ──────────
         const prevLog  = existingLog?.events_log ?? '';
         const nouveauxMarqueurs = buildEventMarkers({
           eventType: match.eventType ?? null,
@@ -129,7 +137,7 @@ Deno.serve(async (req: Request) => {
           ? (nouveauxMarqueurs.length ? prevLog + '\n' + nouveauxMarqueurs.join('\n') : prevLog)
           : nouveauxMarqueurs.join('\n');
 
-        // ── Construire le message complet avec timeline ───────────────────
+        // ── Construire le message complet avec timeline ─────────
         const message = buildFacebookPost({
           competition:     match.competition,
           homeTeam:        match.homeTeam,
@@ -141,9 +149,12 @@ Deno.serve(async (req: Request) => {
           eventsLog:       newLog,
           homeGoalDetails: match.homeGoalDetails ?? null,
           awayGoalDetails: match.awayGoalDetails ?? null,
+          liveClock:       match.status === 'inprogress' && match.rawStatus && estChronoEspn(match.rawStatus)
+                             ? match.rawStatus
+                             : null,
         });
 
-        // ── Éditer le post existant ou en créer un nouveau ────────────────
+        // ── Éditer le post existant ou en créer un nouveau ─────────
         let result: { success: boolean; postId?: string; error?: string };
         if (existingLog?.fb_post_id) {
           const edit = await editerPost(existingLog.fb_post_id, connexion.fb_page_access_token, message);
@@ -152,7 +163,7 @@ Deno.serve(async (req: Request) => {
           result = await posterSurPage(connexion.fb_page_id, connexion.fb_page_access_token, message);
         }
 
-        // ── Sauvegarder (upsert) avec le journal mis à jour ───────────────
+        // ── Sauvegarder (upsert) avec le journal mis à jour ───────
         await supabase.from('facebook_posts_log').upsert({
           connection_id: connexion.id,
           match_id:      match.matchId,
