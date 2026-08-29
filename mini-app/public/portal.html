@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -996,7 +995,21 @@ function renderCompetitionsList(){
     var item=document.createElement('div');item.className='league-item'+(l.id===state.league?' active':'');
     var cnt=state.counts[l.id];
     item.innerHTML='<span>'+l.flag+'  '+l.name+'</span>'+(cnt!=null?'<span class="league-count">'+cnt+'</span>':'');
-    item.onclick=function(){ state.league=l.id; backToMatches(); };
+    item.onclick=function(){
+      if(item.classList.contains('saving')) return;
+      item.classList.add('saving');
+      fetch(API_BASE+'/competition',{
+        method:'PATCH', headers:authHeaders(),
+        body:JSON.stringify({tsdbId:l.id})
+      }).then(function(r){
+        if(!r.ok){ alert('Erreur lors du changement de compétition. Réessaie.'); item.classList.remove('saving'); return; }
+        state.league=l.id;
+        backToMatches();
+      }).catch(function(){
+        alert('Erreur réseau. Réessaie.');
+        item.classList.remove('saving');
+      });
+    };
     el.appendChild(item);
   });
 }
