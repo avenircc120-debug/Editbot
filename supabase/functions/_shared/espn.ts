@@ -26,17 +26,22 @@ export interface EspnCompetitor {
   score?: string;
 }
 
+export interface EspnStatus {
+  displayClock?: string;
+  clock?: number;
+  type: {
+    state: 'pre' | 'in' | 'post';
+    completed: boolean;
+    description: string;
+    detail?: string;
+    shortDetail?: string;
+  };
+}
+
 export interface EspnEvent {
   id: string;
-  status: {
-    displayClock?: string;
-    type: {
-      state: 'pre' | 'in' | 'post';
-      completed: boolean;
-      description: string;
-    };
-  };
-  competitions: Array<{ competitors: EspnCompetitor[] }>;
+  status: EspnStatus;
+  competitions: Array<{ competitors: EspnCompetitor[]; status?: EspnStatus }>;
 }
 
 /** tournament_id TheSportsDB (voir _shared/config.ts LEAGUES) → slug ESPN. */
@@ -215,8 +220,11 @@ export function scoreEspn(ev: EspnEvent, homeAway: 'home' | 'away'): number {
   return c?.score != null ? Number(c.score) : 0;
 }
 
-/** Chronomètre du match tel qu'affiché par ESPN (ex: "34'", "45+2'", "HT").
- *  null si absent (match pas encore commencé, ou champ non fourni par ESPN). */
+/** Chronomètre du match — ESPN place parfois displayClock au niveau de
+ *  l'event, parfois seulement dans competitions[0].status (selon endpoint/
+ *  sport). On essaie les deux emplacements avant d'abandonner. */
 export function clockEspn(ev: EspnEvent): string | null {
-  return ev.status?.displayClock || null;
+  return ev.status?.displayClock
+    || ev.competitions?.[0]?.status?.displayClock
+    || null;
 }
