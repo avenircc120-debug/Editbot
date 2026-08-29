@@ -27,6 +27,7 @@
     getLiveEventsSofascore,
     trouverEvenementSofascore,
     statutSofaVersInterne,
+    lastFetchDiagnostic,
     } from '../_shared/sofascore.ts';
 
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL')              ?? '';
@@ -65,7 +66,7 @@
     }
 
     const now   = new Date();
-    const stats = { matchsLive: 0, matchsMisAJour: 0, matchsClotures: 0, matchsPurges: 0, source: '', skipped: false };
+    const stats = { matchsLive: 0, matchsMisAJour: 0, matchsClotures: 0, matchsPurges: 0, sofaCount: -1, sofaDiag: '', source: '', skipped: false };
 
     // ── Étape 0 : Purge des matchs bloqués (aucun appel externe, coût nul) ────
     // Un match encore 'inprogress'/'scheduled' plus de 4h après son coup d'envoi
@@ -116,6 +117,8 @@
     } catch (e) {
       console.warn('[live-cron] Erreur SofaScore:', e);
     }
+    stats.sofaCount = sofaEvents.length;
+    stats.sofaDiag  = lastFetchDiagnostic;
 
     // Garde-fou : si SofaScore renvoie une liste anormalement courte (panne API,
     // 403, etc.), on ne déclare AUCUN match "terminé par déduction" pour éviter

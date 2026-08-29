@@ -20,24 +20,71 @@ export interface SofaEvent {
 
 const BASE_URL = 'https://api.sofascore.com/api/v1';
 
+const BROWSER_HEADERS = {
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Referer': 'https://www.sofascore.com/',
+  'Origin':  'https://www.sofascore.com',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    + '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+};
+
+/** Diagnostic du dernier appel — utilisé par live-cron pour exposer la cause
+ *  réelle d'un échec (403, timeout réseau, etc.) dans sa réponse JSON, le
+ *  temps de déboguer sans dépendre des logs de la plateforme. */
+export let lastFetchDiagnostic = 'jamais appelé';
+
+/** SofaScore bloque par réputation d'IP les datacenters (Supabase Edge inclus)
+ *  avec un 403, quels que soient les en-têtes envoyés — confirmé par
+ *  diagnostic. On relaie alors la requête via un proxy public en lecture
+ *  seule, qui fait l'appel depuis sa propre IP et renvoie le JSON brut. */
+async function sofaGetViaProxy(path: string): Promise<any | null> {
+  const target = encodeURIComponent(`${BASE_URL}${path}`);
+  // pg_cron/pg_net n'attend live-cron que 5s max côté appelant : un proxy
+  // public lent qui dépasserait ce délai ferait échouer TOUT le run (purge
+  // comprise) sans qu'on le sache. On coupe donc nous-mêmes avant, pour
+  // échouer proprement (sofaCount=0) plutôt que de laisser tout planter.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3500);
+  try {
+    const res = await fetch(`https://api.allorigins.win/raw?url=${target}`, {
+      headers: { 'Accept': 'application/json' },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      lastFetchDiagnostic = `proxy HTTP ${res.status} ${res.statusText}`;
+      console.warn(`[sofascore] proxy HTTP ${res.status} — ${path}`);
+      return null;
+    }
+    const body = await res.json();
+    lastFetchDiagnostic = 'ok (via proxy)';
+    return body;
+  } catch (e) {
+    lastFetchDiagnostic = controller.signal.aborted
+      ? 'proxy timeout (3.5s)'
+      : `proxy exception: ${e instanceof Error ? e.message : String(e)}`;
+    console.warn(`[sofascore] proxy erreur réseau — ${path}:`, e);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function sofaGet(path: string): Promise<any | null> {
   try {
-    const res = await fetch(`${BASE_URL}${path}`, {
-      headers: {
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        // SofaScore renvoie un 403 aux requêtes qui n'ont pas l'air de venir
-        // d'un navigateur sur sofascore.com (Referer/Origin absents, UA non
-        // reconnu). On imite un vrai onglet ouvert sur le site.
-        'Referer': 'https://www.sofascore.com/',
-        'Origin':  'https://www.sofascore.com',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-          + '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      },
-    });
-    if (!res.ok) { console.warn(`[sofascore] HTTP ${res.status} — ${path}`); return null; }
+    const res = await fetch(`${BASE_URL}${path}`, { headers: BROWSER_HEADERS });
+    if (!res.ok) {
+      lastFetchDiagnostic = `HTTP ${res.status} ${res.statusText}`;
+      console.warn(`[sofascore] HTTP ${res.status} — ${path}`);
+      // 403 = blocage par réputation d'IP (pas un problème d'en-têtes) →
+      // on retente via le proxy plutôt que d'abandonner.
+      if (res.status === 403) return await sofaGetViaProxy(path);
+      return null;
+    }
+    lastFetchDiagnostic = 'ok';
     return await res.json();
   } catch (e) {
+    lastFetchDiagnostic = `exception: ${e instanceof Error ? e.message : String(e)}`;
     console.warn(`[sofascore] Erreur réseau — ${path}:`, e);
     return null;
   }
