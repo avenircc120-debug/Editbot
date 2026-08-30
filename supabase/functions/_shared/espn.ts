@@ -7,7 +7,7 @@
  * réduire la pression sur la source sans retarder les scores en direct.
  */
 
-const ESPN_PROXY_URL = Deno.env.get('ESPN_PROXY_URL') ?? '';
+const ESPN_PROXY_URL = Deno.env.get('ESPN_PROXY_URL') ?? 'https://editbot-espn-proxy.avenircc120.workers.dev';
 const ESPN_PROXY_TOKEN = Deno.env.get('ESPN_PROXY_TOKEN') ?? '';
 export interface EspnCompetitor {
   homeAway: 'home' | 'away';
