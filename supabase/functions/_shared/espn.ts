@@ -1,25 +1,14 @@
 /**
- * espn.ts — Client API cachée ESPN (scores en direct)
+ * espn.ts — Client de l'API ESPN via notre proxy Cloudflare (scores en direct)
  *
- * Endpoint public non documenté (site.api.espn.com), sans clé et sans quota
- * connu — remplace SofaScore, qui bloque par réputation d'IP les appels
- * venant de Supabase Edge (403 systématique, confirmé en production, même
- * avec des en-têtes de navigateur).
- *
- * Contrairement à SofaScore (1 seul appel = tout le monde en direct), ESPN
- * n'a pas d'endpoint global : 1 appel = le programme du jour d'UNE
- * compétition (avec le statut de chaque match, live ou pas). On n'appelle
- * donc que les compétitions réellement concernées par les matchs suivis.
- *
- * ESPN bloque lui aussi par réputation d'IP les appels directs depuis
- * Supabase Edge (403, confirmé en production). On relaie donc via ZenRows
- * (ZENROWS_API_KEY), un service de scraping qui contourne ce type de
- * blocage — quota gratuit limité (5000 crédits/mois), donc pas illimité,
- * mais fonctionne réellement là où l'appel direct est bloqué.
+ * ESPN bloque les appels directs depuis Supabase Edge par réputation d'IP.
+ * Le proxy Cloudflare ajoute les en-têtes navigateur nécessaires, limite la
+ * cible à l'endpoint scoreboard ESPN et conserve un cache très court pour
+ * réduire la pression sur la source sans retarder les scores en direct.
  */
 
-const ZENROWS_API_KEY = Deno.env.get('ZENROWS_API_KEY') ?? '';
-
+const ESPN_PROXY_URL = Deno.env.get('ESPN_PROXY_URL') ?? '';
+const ESPN_PROXY_TOKEN = Deno.env.get('ESPN_PROXY_TOKEN') ?? '';
 export interface EspnCompetitor {
   homeAway: 'home' | 'away';
   team: { id?: string; displayName: string; shortDisplayName?: string };
@@ -103,7 +92,7 @@ export function normaliserNomEquipe(nom: string): string {
  *
  *  "Hier" n'est utile que tôt le matin UTC (un match commencé juste après
  *  minuit UTC peut encore tomber sur "hier" côté ESPN) : l'inclure toute la
- *  journée doublait inutilement le nombre d'appels ZenRows (donc le risque
+ *  journée doublait inutilement le nombre d'appels proxy Cloudflare (donc le risque
  *  de 429), pour un cas qui ne se produit que quelques heures par jour. */
 function datesUtcCouvertes(): string[] {
   const fmt = (d: Date) => d.toISOString().slice(0, 10).replace(/-/g, '');
@@ -119,14 +108,20 @@ export let lastFetchDiagnostics: Array<{ slug: string; date: string; statut: str
 
 async function espnGet(slug: string, dateStr: string): Promise<EspnEvent[]> {
   const cible = `https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/scoreboard?dates=${dateStr}`;
-  // Sans clé ZenRows configurée, on tente quand même l'appel direct (utile
+  // Sans clé proxy Cloudflare configurée, on tente quand même l'appel direct (utile
   // en local/dev, ou si ESPN débloque un jour cette IP) plutôt que d'échouer
   // silencieusement.
-  const url = ZENROWS_API_KEY
-    ? `https://api.zenrows.com/v1/?apikey=${ZENROWS_API_KEY}&url=${encodeURIComponent(cible)}&mode=auto`
+  const url = ESPN_PROXY_URL
+    ? (() => {
+        const proxyUrl = new URL(ESPN_PROXY_URL);
+        proxyUrl.searchParams.set('url', cible);
+        return proxyUrl.toString();
+      })()
     : cible;
+  const requestHeaders: Record<string, string> = { 'Accept': 'application/json' };
+  if (ESPN_PROXY_TOKEN) requestHeaders.Authorization = `Bearer ${ESPN_PROXY_TOKEN}`;
   try {
-    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    const res = await fetch(url, { headers: requestHeaders });
     if (!res.ok) {
       lastFetchDiagnostics.push({ slug, date: dateStr, statut: `HTTP ${res.status}`, count: 0 });
       console.warn(`[espn] HTTP ${res.status} — ${slug} (${dateStr})`);
@@ -148,10 +143,10 @@ async function espnGet(slug: string, dateStr: string): Promise<EspnEvent[]> {
 }
 
 /** Exécute des tâches asynchrones avec au plus `limite` en vol simultanément
- *  — nécessaire car le plan ZenRows utilisé ici plafonne à 5 requêtes
+ *  — nécessaire car le plan proxy Cloudflare utilisé ici plafonne à 5 requêtes
  *  concurrentes : un `Promise.all` sans limite dépasse ce plafond dès que
  *  plusieurs compétitions jouent en même temps (typique un samedi
- *  après-midi), et ZenRows répond alors 429 à tout le surplus. */
+ *  après-midi), et proxy Cloudflare répond alors 429 à tout le surplus. */
 async function executerAvecConcurrenceLimitee<T>(
   taches: Array<() => Promise<T>>,
   limite: number,
@@ -173,12 +168,12 @@ async function executerAvecConcurrenceLimitee<T>(
  *  gardant que celles qu'on sait mapper vers un slug ESPN.
  *
  *  `failedSlugs` liste les slugs pour lesquels AU MOINS une requête a
- *  échoué (429 ZenRows, timeout, etc.) — donc `events` est potentiellement
+ *  échoué (429 proxy Cloudflare, timeout, etc.) — donc `events` est potentiellement
  *  incomplet pour ces compétitions. Indispensable pour ne jamais confondre
  *  "ESPN dit que ce match n'existe pas aujourd'hui" (vraie absence) avec
  *  "on n'a pas réussi à demander à ESPN" (silence, pas une absence) —
  *  confondre les deux a déjà déclenché une clôture en masse de matchs
- *  encore en direct lors d'un pic de 429 ZenRows. */
+ *  encore en direct lors d'un pic de 429 proxy Cloudflare. */
 export async function getEspnEvents(
   tournamentIds: string[],
 ): Promise<{ events: EspnEvent[]; failedSlugs: Set<string> }> {
@@ -189,7 +184,7 @@ export async function getEspnEvents(
   const taches = slugs.flatMap(slug => dates.map(date => () => espnGet(slug, date).then(events => ({ slug, events }))));
   // Plafond à 4 (< 5) pour garder une marge : cette fonction Edge peut
   // tourner en parallèle d'un autre appel (ex: un retry manuel) sur le
-  // même compte ZenRows.
+  // même compte proxy Cloudflare.
   const results = await executerAvecConcurrenceLimitee(taches, 4);
 
   const failedSlugs = new Set<string>();
