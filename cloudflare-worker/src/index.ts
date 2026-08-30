@@ -2,7 +2,8 @@ export interface Env {
   WORKER_AUTH_TOKEN?: string;
 }
 
-const ESPN_HOST = 'site.api.espn.com';
+const ESPN_REQUEST_HOST = 'site.api.espn.com';
+const ESPN_UPSTREAM_HOST = 'site.web.api.espn.com';
 const ESPN_PATH_PREFIX = '/apis/site/v2/sports/soccer/';
 
 function json(body: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
@@ -17,7 +18,8 @@ function parseAllowedTarget(rawTarget: string): URL | null {
   try {
     const target = new URL(rawTarget);
     const allowedPath = target.pathname.startsWith(ESPN_PATH_PREFIX) && target.pathname.endsWith('/scoreboard');
-    if (target.protocol !== 'https:' || target.hostname !== ESPN_HOST || !allowedPath) return null;
+    if (target.protocol !== 'https:' || target.hostname !== ESPN_REQUEST_HOST || !allowedPath) return null;
+    target.hostname = ESPN_UPSTREAM_HOST;
     return target;
   } catch {
     return null;
