@@ -1,5 +1,5 @@
 export interface Env {
-  WORKER_AUTH_TOKEN: string;
+  WORKER_AUTH_TOKEN?: string;
 }
 
 const ESPN_HOST = 'site.api.espn.com';
@@ -36,12 +36,11 @@ export default {
       return json({ error: 'Method not allowed' }, 405, { Allow: 'GET' });
     }
 
-    if (!env.WORKER_AUTH_TOKEN) {
-      return json({ error: 'Worker secret is not configured' }, 503);
-    }
-
+    // Le secret est optionnel : la cible est déjà strictement limitée à ESPN.
+    // Si WORKER_AUTH_TOKEN est configuré, toutes les requêtes doivent le fournir.
+    const workerToken = env.WORKER_AUTH_TOKEN?.trim();
     const authorization = request.headers.get('Authorization') ?? '';
-    if (authorization !== `Bearer ${env.WORKER_AUTH_TOKEN}`) {
+    if (workerToken && authorization !== `Bearer ${workerToken}`) {
       return json({ error: 'Unauthorized' }, 401, { 'WWW-Authenticate': 'Bearer' });
     }
 
