@@ -6,6 +6,12 @@ const ESPN_REQUEST_HOST = 'site.api.espn.com';
 const ESPN_UPSTREAM_HOST = 'site.web.api.espn.com';
 const ESPN_PATH_PREFIX = '/apis/site/v2/sports/soccer/';
 
+// scoreboard : matchs d'une date donnee (dates=YYYYMMDD en query, deja
+// transparent via l'URL passee telle quelle).
+// standings  : classement de la competition — ajoute pour couvrir
+// "classements" en plus des scores, meme host/prefixe deja verifie sur.
+const ESPN_ALLOWED_SUFFIXES = ['/scoreboard', '/standings'];
+
 function json(body: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
   const headers = new Headers({
     'Content-Type': 'application/json; charset=utf-8',
@@ -17,7 +23,8 @@ function json(body: unknown, status = 200, extraHeaders: Record<string, string> 
 function parseAllowedTarget(rawTarget: string): URL | null {
   try {
     const target = new URL(rawTarget);
-    const allowedPath = target.pathname.startsWith(ESPN_PATH_PREFIX) && target.pathname.endsWith('/scoreboard');
+    const allowedPath = target.pathname.startsWith(ESPN_PATH_PREFIX)
+      && ESPN_ALLOWED_SUFFIXES.some((suffix) => target.pathname.endsWith(suffix));
     if (target.protocol !== 'https:' || target.hostname !== ESPN_REQUEST_HOST || !allowedPath) return null;
     target.hostname = ESPN_UPSTREAM_HOST;
     return target;
@@ -48,7 +55,7 @@ export default {
 
     const target = parseAllowedTarget(requestUrl.searchParams.get('url') ?? '');
     if (!target) {
-      return json({ error: 'Only HTTPS ESPN soccer scoreboard URLs are allowed' }, 400);
+      return json({ error: 'Only HTTPS ESPN soccer scoreboard/standings URLs are allowed' }, 400);
     }
 
     try {

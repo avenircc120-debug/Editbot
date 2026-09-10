@@ -261,3 +261,94 @@ export function buteursEquipe(ev: EspnEvent, teamId: string | null): string {
     .filter((nom): nom is string => Boolean(nom))
     .join(';');
 }
+
+export interface EspnStandingsEntry {
+  team: string;
+  rank: number | null;
+  played: number | null;
+  wins: number | null;
+  draws: number | null;
+  losses: number | null;
+  points: number | null;
+}
+
+async function espnGetStandings(slug: string): Promise<any> {
+  const cible = `https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/standings`;
+  const url = ESPN_PROXY_URL
+    ? (() => {
+        const proxyUrl = new URL(ESPN_PROXY_URL);
+        proxyUrl.searchParams.set('url', cible);
+        return proxyUrl.toString();
+      })()
+    : cible;
+  const requestHeaders: Record<string, string> = { Accept: 'application/json' };
+  if (ESPN_PROXY_TOKEN) requestHeaders.Authorization = `Bearer ${ESPN_PROXY_TOKEN}`;
+  try {
+    const res = await fetch(url, { headers: requestHeaders });
+    if (!res.ok) {
+      console.warn(`[espn] standings HTTP ${res.status} — ${slug}`);
+      return null;
+    }
+    return await res.json();
+  } catch (e) {
+    console.warn(`[espn] standings erreur réseau — ${slug}:`, e instanceof Error ? e.message : String(e));
+    return null;
+  }
+}
+
+/**
+ * Classement d'une compétition déjà connue (ESPN_LEAGUE_SLUGS) — nécessite
+ * que le proxy Cloudflare autorise le chemin /standings en plus de
+ * /scoreboard (voir cloudflare-worker/src/index.ts, à redéployer).
+ *
+ * IMPORTANT : la forme exacte de la réponse ESPN /standings n'a pas pu être
+ * vérifiée empiriquement (aucun accès réseau direct à ESPN ni au proxy
+ * Cloudflare depuis l'environnement qui a écrit cette fonction — confirmé
+ * en testant via pg_net depuis Supabase, bloqué 403 comme pour l'Edge).
+ * Le parsing ci-dessous suit la forme documentée publiquement (entries au
+ * niveau racine OU regroupées par conférence dans `children[]`, stats
+ * identifiées par nom plutôt que par position) mais reste à confirmer avec
+ * une vraie réponse une fois le proxy redéployé — en cas de forme
+ * différente, retourne simplement un tableau vide (fail-open) plutôt que
+ * de planter.
+ */
+export async function getEspnStandings(tournamentId: string): Promise<EspnStandingsEntry[]> {
+  const slug = ESPN_LEAGUE_SLUGS[tournamentId];
+  if (!slug) return [];
+
+  const data = await espnGetStandings(slug);
+  if (!data) return [];
+
+  try {
+    const groupes: any[] = data?.children?.length
+      ? data.children
+      : data?.standings
+        ? [{ standings: data.standings }]
+        : [];
+
+    const entries = groupes.flatMap((g: any) => g?.standings?.entries ?? []);
+
+    return entries.map((e: any): EspnStandingsEntry => {
+      const statParNom = (...noms: string[]): number | null => {
+        for (const nom of noms) {
+          const stat = (e.stats ?? []).find((s: any) => s?.name === nom || s?.abbreviation === nom);
+          if (stat?.value != null) return Number(stat.value);
+        }
+        return null;
+      };
+
+      return {
+        team:   e.team?.displayName ?? e.team?.shortDisplayName ?? '?',
+        rank:   statParNom('rank'),
+        played: statParNom('gamesPlayed'),
+        wins:   statParNom('wins'),
+        draws:  statParNom('ties', 'draws'),
+        losses: statParNom('losses'),
+        points: statParNom('points'),
+      };
+    });
+  } catch (e) {
+    console.warn('[espn] standings: forme de réponse inattendue —', e instanceof Error ? e.message : String(e));
+    return [];
+  }
+}

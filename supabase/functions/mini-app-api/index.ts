@@ -6,6 +6,7 @@
  *   GET   /profile           → compétition + pages FB + ligues
  *   PATCH /competition       → changer de compétition
  *   GET   /matches           → liste matchs (live, today, all)
+ *   GET   /standings          → classement d'une compétition (ESPN, si mappée)
  *   POST  /broadcast         → activer/désactiver diffusion d'un match
  *   GET   /wallet            → solde + transactions
  *   POST  /wallet            → demande dépôt/retrait
@@ -22,6 +23,7 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { LEAGUES, getAvailableLeagues } from '../_shared/config.ts';
+import { getEspnStandings } from '../_shared/espn.ts';
 import { formatAnnonceFacebook, buildFacebookPost } from '../_shared/templates.ts';
 import { validerJetonPage } from '../_shared/facebook.ts';
 import { rechercherEquipe } from '../_shared/thesportsdb.ts';
@@ -227,6 +229,17 @@ async function handlePreferencesPost(req: Request, chatId: number): Promise<Resp
   }
 
   return json({ ok: true });
+}
+
+/** Classement d'une compétition — uniquement celles mappées dans
+ *  ESPN_LEAGUE_SLUGS (voir _shared/espn.ts). Renvoie un tableau vide si la
+ *  compétition n'est pas couverte ou si la requête ESPN échoue (pas une
+ *  erreur 500 : l'onglet Matchs doit rester utilisable sans classement). */
+async function handleStandings(url: URL): Promise<Response> {
+  const competitionId = url.searchParams.get('competitionId') ?? '';
+  if (!competitionId) return json({ error: 'competitionId requis' }, 400);
+  const standings = await getEspnStandings(competitionId);
+  return json({ competitionId, standings });
 }
 
 async function handleTeamsSearch(url: URL): Promise<Response> {
@@ -637,6 +650,7 @@ Deno.serve(async (req: Request) => {
     if (route === 'live-counts'  && req.method === 'GET')   return handleLiveCounts();
     if (route === 'competition' && req.method === 'PATCH') return handleUpdateCompetition(req, chatId);
     if (route === 'matches'     && req.method === 'GET')   return handleMatches(chatId, url);
+    if (route === 'standings'   && req.method === 'GET')   return handleStandings(url);
     if (route === 'broadcast'   && req.method === 'POST')  return handleBroadcast(req, chatId);
     if (route === 'wallet'      && req.method === 'GET')   return handleWalletGet(chatId);
     if (route === 'wallet'      && req.method === 'POST')  return handleWalletPost(req, chatId);
