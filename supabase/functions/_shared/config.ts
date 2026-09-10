@@ -1,5 +1,7 @@
 // Configuration partagée — Editbot (Live Scores)
 
+import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
 // ─── TheSportsDB ──────────────────────────────────────────────────────────────
 export const THESPORTSDB = {
   BASE_URL: 'https://www.thesportsdb.com/api/v1/json',
@@ -38,6 +40,59 @@ export const LEAGUES: Array<{ tsdb_id: string; name: string; flag: string }> = [
   { tsdb_id: '4355', name: 'Russian Premier League',    flag: '🇷🇺' },
   { tsdb_id: '4356', name: 'Australian A-League',       flag: '🇦🇺' },
 ];
+
+// ─── Liste dynamique des compétitions disponibles ──────────────────────────────
+// fetch-matches ingère déjà TOUS les matchs du monde (eventsday.php, non filtré
+// par LEAGUES) dans matchs_index — LEAGUES ne servait donc qu'à *restreindre*
+// artificiellement ce que l'utilisateur pouvait choisir de suivre, bien en deçà
+// de ce qui est réellement disponible. getAvailableLeagues() dérive la liste
+// affichée à l'utilisateur directement des compétitions ayant des matchs
+// récents/à venir dans matchs_index — sans plafond arbitraire. LEAGUES reste
+// utile comme table de correspondance pour les drapeaux (emoji) des
+// compétitions les plus suivies, et comme filet de sécurité si la requête
+// échoue (fail-open, même logique que consommerQuota dans quota.ts).
+const LEAGUE_FLAGS: Record<string, string> = Object.fromEntries(
+  LEAGUES.map((l) => [l.tsdb_id, l.flag]),
+);
+const DEFAULT_FLAG = '⚽';
+
+export interface AvailableLeague {
+  tsdb_id: string;
+  name: string;
+  flag: string;
+}
+
+export async function getAvailableLeagues(supabase: SupabaseClient): Promise<AvailableLeague[]> {
+  const now = new Date();
+  const debut = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString();
+  const fin   = new Date(now.getTime() + 21 * 24 * 60 * 60 * 1000).toISOString();
+
+  const { data, error } = await supabase
+    .from('matchs_index')
+    .select('tournament_id, competition')
+    .not('tournament_id', 'is', null)
+    .gte('match_date', debut)
+    .lte('match_date', fin)
+    .limit(5000);
+
+  if (error || !data) {
+    console.warn('[config] getAvailableLeagues: requête échouée, repli sur LEAGUES statique', error?.message);
+    return LEAGUES;
+  }
+
+  const parCompetition = new Map<string, string>();
+  for (const row of data as Array<{ tournament_id: string | null; competition: string | null }>) {
+    if (row.tournament_id && row.competition && !parCompetition.has(row.tournament_id)) {
+      parCompetition.set(row.tournament_id, row.competition);
+    }
+  }
+
+  if (parCompetition.size === 0) return LEAGUES;
+
+  return Array.from(parCompetition.entries())
+    .map(([tsdb_id, name]) => ({ tsdb_id, name, flag: LEAGUE_FLAGS[tsdb_id] ?? DEFAULT_FLAG }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
 
 // ─── Importance des compétitions (sélection automatique "match le plus important") ──
 // Utilisé par auto-broadcast quand l'équipe favorite ne joue pas ce jour-là :

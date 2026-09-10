@@ -21,7 +21,7 @@
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { LEAGUES } from '../_shared/config.ts';
+import { LEAGUES, getAvailableLeagues } from '../_shared/config.ts';
 import { formatAnnonceFacebook, buildFacebookPost } from '../_shared/templates.ts';
 import { validerJetonPage } from '../_shared/facebook.ts';
 import { rechercherEquipe } from '../_shared/thesportsdb.ts';
@@ -128,7 +128,7 @@ async function handleAuth(req: Request): Promise<Response> {
 }
 
 async function handleProfile(chatId: number): Promise<Response> {
-  const [{ data: profil }, { data: fbPages }, { count: activeBroadcasts }] = await Promise.all([
+  const [{ data: profil }, { data: fbPages }, { count: activeBroadcasts }, leagues] = await Promise.all([
     supabase
       .from('user_profiles')
       .select('competition_suivie, competition_suivie_id, favorite_team_id, favorite_team_name, auto_broadcast_enabled, preferences_onboarded')
@@ -145,6 +145,7 @@ async function handleProfile(chatId: number): Promise<Response> {
       .eq('telegram_user_id', chatId)
       .eq('is_active', true)
       .then(r => r),
+    getAvailableLeagues(supabase),
   ]);
 
   return json({
@@ -154,7 +155,7 @@ async function handleProfile(chatId: number): Promise<Response> {
     favoriteTeamName:      profil?.favorite_team_name       ?? null,
     autoBroadcastEnabled: profil?.auto_broadcast_enabled   ?? false,
     preferencesOnboarded: profil?.preferences_onboarded    ?? false,
-    leagues:          LEAGUES,
+    leagues:          leagues,
     fbPages:          fbPages ?? [],
     activeBroadcasts: activeBroadcasts ?? 0,
   });
@@ -163,7 +164,7 @@ async function handleProfile(chatId: number): Promise<Response> {
 // ─── Préférences "Set & Forget" (équipe favorite + compétitions suivies) ───
 
 async function handlePreferencesGet(chatId: number): Promise<Response> {
-  const [{ data: profil }, { data: competitions }] = await Promise.all([
+  const [{ data: profil }, { data: competitions }, leagues] = await Promise.all([
     supabase
       .from('user_profiles')
       .select('favorite_team_id, favorite_team_name, auto_broadcast_enabled, preferences_onboarded')
@@ -174,6 +175,7 @@ async function handlePreferencesGet(chatId: number): Promise<Response> {
       .select('competition')
       .eq('telegram_user_id', chatId)
       .eq('active', true),
+    getAvailableLeagues(supabase),
   ]);
 
   return json({
@@ -182,7 +184,7 @@ async function handlePreferencesGet(chatId: number): Promise<Response> {
     autoBroadcastEnabled: profil?.auto_broadcast_enabled   ?? false,
     preferencesOnboarded: profil?.preferences_onboarded    ?? false,
     followedCompetitionIds: (competitions ?? []).map((c) => c.competition),
-    leagues: LEAGUES,
+    leagues,
   });
 }
 
@@ -210,7 +212,8 @@ async function handlePreferencesPost(req: Request, chatId: number): Promise<Resp
   }
 
   if (Array.isArray(body.competitionIds)) {
-    const ids = body.competitionIds.filter((id) => LEAGUES.some((l) => l.tsdb_id === id));
+    const disponibles = await getAvailableLeagues(supabase);
+    const ids = body.competitionIds.filter((id) => disponibles.some((l) => l.tsdb_id === id));
 
     // Remplacement complet : on désactive tout puis on réactive/insère les IDs reçus.
     await supabase.from('user_competitions').update({ active: false }).eq('telegram_user_id', chatId);
@@ -235,19 +238,31 @@ async function handleTeamsSearch(url: URL): Promise<Response> {
 
 async function handleUpdateCompetition(req: Request, chatId: number): Promise<Response> {
   const { tsdbId } = await req.json().catch(() => ({}));
-  const ligue = LEAGUES.find(l => l.tsdb_id === tsdbId);
-  if (!ligue) return json({ error: 'Compétition inconnue' }, 400);
+  if (!tsdbId) return json({ error: 'Compétition inconnue' }, 400);
+
+  // Compétition réellement présente dans matchs_index (tout ce qu'ingère
+  // fetch-matches, pas seulement les 20 curées dans LEAGUES) — LEAGUES ne
+  // sert plus que de repli si la requête échoue.
+  const { data: row } = await supabase
+    .from('matchs_index')
+    .select('competition')
+    .eq('tournament_id', tsdbId)
+    .limit(1)
+    .maybeSingle();
+
+  const nom = row?.competition ?? LEAGUES.find(l => l.tsdb_id === tsdbId)?.name;
+  if (!nom) return json({ error: 'Compétition inconnue' }, 400);
 
   await supabase
     .from('user_profiles')
     .update({
-      competition_suivie:    ligue.name,
-      competition_suivie_id: ligue.tsdb_id,
+      competition_suivie:    nom,
+      competition_suivie_id: tsdbId,
       updated_at:            new Date().toISOString(),
     })
     .eq('telegram_user_id', chatId);
 
-  return json({ ok: true, competition: ligue.name, competitionId: ligue.tsdb_id });
+  return json({ ok: true, competition: nom, competitionId: tsdbId });
 }
 
 async function handleMatches(chatId: number, url: URL): Promise<Response> {
