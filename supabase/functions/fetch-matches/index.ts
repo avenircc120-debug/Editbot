@@ -10,7 +10,17 @@
  * et de la complexité. Les matchs en direct restent couverts rapidement par
  * ESPN via live-cron (voir supabase/functions/live-cron/index.ts).
  *
- * Fréquence cron : toutes les 4 minutes.
+ * Fréquence cron : toutes les 15 minutes (pg_cron, job id 6 — voir
+ * cron.job dans la base). Auparavant toutes les 4 minutes : avec l'appel
+ * "aujourd'hui" a chaque run (360/jour) + le rattrapage horaire (8 jours,
+ * 192/jour) + les jobs quotidiens d'historique/programme etendu (46/jour),
+ * la demande theorique atteignait ~598 appels/jour pour un budget de 480 —
+ * le quota etait donc epuise TOUS les jours (verifie : 480/480 quatre jours
+ * de suite), coupant l'ingestion en cours de journee et empechant les jobs
+ * de rattrapage/historique de finir, quelle que soit la liste de
+ * competitions concernee. A 15 minutes, la demande theorique tombe a
+ * ~334 appels/jour, largement sous le budget.
+ *
  * Sécurité       : header Authorization: Bearer {CRON_SECRET}
  */
 
