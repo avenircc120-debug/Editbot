@@ -10,29 +10,34 @@
  *      limite de nombre.
  *   2. Parmi les compétitions suivies (user_competitions), TOUS les matchs
  *      actuellement EN DIRECT (status = 'inprogress') sont candidats — pas
- *      un seul par jour comme avant. S'il y en a plus que
- *      MAX_MATCHS_COMPETITIONS_SIMULTANES en même temps, seuls les plus
- *      importants (COMPETITION_IMPORTANCE) sont retenus pour ce cycle ; les
- *      autres seront repris à un cycle suivant si une place se libère
- *      (match terminé → désactivé par fetch-matches).
+ *      un seul par jour. S'il y en a plus que MAX_MATCHS_COMPETITIONS_SIMULTANES
+ *      en même temps, seuls les plus importants (COMPETITION_IMPORTANCE) sont
+ *      retenus pour ce cycle ; les autres seront repris à un cycle suivant si
+ *      une place se libère (match terminé → désactivé par fetch-matches).
  *
- * Le(s) match(s) retenu(s) sont activés dans broadcast_selections —
- * exactement comme une sélection manuelle depuis la Mini App. La diffusion
- * elle-même reste gérée par le pipeline existant (fetch-matches détecte le
- * changement de score → appelle facebook-post) : aucune logique de
- * publication n'est dupliquée ici. La désactivation en fin de match est
- * également déjà gérée par fetch-matches (désactiverMatchsTermines) : cette
- * fonction n'a donc qu'à ACTIVER, jamais à désactiver.
+ * Publication Facebook : dès qu'un match est sélectionné pour la PREMIÈRE
+ * fois (jamais actif avant ce cycle), un post est publié tout de suite —
+ * pas seulement au coup d'envoi :
+ *   - Si le match n'a pas encore commencé : annonce (date, heure) + classement
+ *     actuel de la compétition (formatAnnonceFacebook + formatStandingsBlock).
+ *   - Si le match est déjà en direct au moment de la sélection : score en
+ *     direct (buildFacebookPost), comme pour une sélection manuelle tardive.
+ * Ce même post est ensuite mis à jour EN PLACE par facebook-post (fetch-matches
+ * détecte kickoff/but/mi-temps/fin → appelle facebook-post → editerPost) grâce
+ * au fb_post_id enregistré ici dans facebook_posts_log : un seul post par
+ * match, qui évolue de "annonce + classement" à "score en direct".
  *
- * Contrairement à l'ancienne version, il n'y a plus de décision "figée"
- * une fois par jour (auto_broadcast_log ne sert plus qu'à la traçabilité,
- * plus à l'idempotence) : chaque cycle réévalue simplement l'état courant,
- * ce qui est sans risque car l'activation d'un match déjà actif est un
- * no-op (upsert sur telegram_user_id+match_id).
+ * Marche identiquement pour les utilisateurs du bot Telegram et ceux du
+ * portail web autonome (portal.html, connexion Facebook sans Telegram) :
+ * les deux partagent les mêmes tables (user_profiles, facebook_connections,
+ * etc.), aucune logique ici n'est spécifique à Telegram.
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { COMPETITION_IMPORTANCE } from '../_shared/config.ts';
+import { getEspnStandings } from '../_shared/espn.ts';
+import { formatAnnonceFacebook, formatStandingsBlock, buildFacebookPost } from '../_shared/templates.ts';
+import { posterSurPage } from '../_shared/facebook.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -57,6 +62,13 @@ interface MatchRow {
   status:        string;
 }
 
+interface FbConnection {
+  id:                   number;
+  fb_page_id:           string;
+  fb_page_name:         string;
+  fb_page_access_token: string;
+}
+
 const MATCH_COLUMNS =
   'match_id, competition, tournament_id, home_team, away_team, home_team_id, away_team_id, match_date, status';
 
@@ -78,7 +90,8 @@ function trierParImportance(matchs: MatchRow[]): MatchRow[] {
   });
 }
 
-async function activerMatch(uid: number, m: MatchRow): Promise<void> {
+/** Marque le match comme diffusé pour cet utilisateur (idempotent). */
+async function activerSelection(uid: number, m: MatchRow): Promise<void> {
   const { error } = await supabase.from('broadcast_selections').upsert({
     telegram_user_id: uid,
     match_id:         m.match_id,
@@ -91,6 +104,54 @@ async function activerMatch(uid: number, m: MatchRow): Promise<void> {
   if (error) throw error;
 }
 
+/**
+ * Publie le premier post pour un match qui vient d'être sélectionné (jamais
+ * actif avant ce cycle) sur toutes les Pages Facebook actives de
+ * l'utilisateur, et enregistre le fb_post_id dans facebook_posts_log pour
+ * que facebook-post puisse ensuite l'éditer en place au fil du match.
+ */
+async function annoncerNouveauMatch(m: MatchRow, connexions: FbConnection[]): Promise<void> {
+  if (!connexions.length) return;
+
+  let message: string;
+  if (m.status === 'inprogress') {
+    message = buildFacebookPost({
+      competition: m.competition ?? '', homeTeam: m.home_team, awayTeam: m.away_team,
+      homeScore: 0, awayScore: 0, status: m.status, eventsLog: '',
+    });
+  } else {
+    const standings = m.tournament_id ? await getEspnStandings(m.tournament_id) : [];
+    const standingsBlock = formatStandingsBlock(standings, [m.home_team, m.away_team]);
+    message = formatAnnonceFacebook({
+      competition: m.competition ?? '', homeTeam: m.home_team, awayTeam: m.away_team,
+      matchDate: m.match_date, standingsBlock,
+    });
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  for (const connexion of connexions) {
+    try {
+      const result = await posterSurPage(connexion.fb_page_id, connexion.fb_page_access_token, message);
+      await supabase.from('facebook_posts_log').upsert({
+        connection_id: connexion.id,
+        match_id:      m.match_id,
+        post_date:     today,
+        fb_post_id:    result.postId ?? null,
+        status:        result.success ? 'success' : 'error',
+        error_message: result.error ?? null,
+        events_log:    '',
+      }, { onConflict: 'connection_id,match_id,post_date' });
+      if (result.success) {
+        await supabase.from('facebook_connections').update({ last_post_at: new Date().toISOString() }).eq('id', connexion.id);
+      } else {
+        console.warn('[auto-broadcast] échec annonce', m.match_id, connexion.fb_page_name, result.error);
+      }
+    } catch (e) {
+      console.error('[auto-broadcast] exception annonce', m.match_id, connexion.fb_page_name, e);
+    }
+  }
+}
+
 Deno.serve(async (req: Request) => {
   const auth = req.headers.get('Authorization') ?? '';
   if (CRON_SECRET && auth !== `Bearer ${CRON_SECRET}`) {
@@ -100,7 +161,7 @@ Deno.serve(async (req: Request) => {
   const { debut, fin, jour } = fenetreJourUTC();
 
   const rapport = {
-    utilisateursTraites: 0, favoriTeamActives: 0, competitionsMatchsActives: 0, erreurs: 0,
+    utilisateursTraites: 0, favoriTeamActives: 0, competitionsMatchsActives: 0, annoncesPubliees: 0, erreurs: 0,
   };
 
   const { data: utilisateurs, error: errUsers } = await supabase
@@ -115,19 +176,18 @@ Deno.serve(async (req: Request) => {
   for (const user of utilisateurs ?? []) {
     const uid = Number(user.telegram_user_id);
     try {
-      // ── Doit avoir au moins une Page Facebook active pour être traité ────
-      const { count: nbPages } = await supabase
+      const { data: connexionsData } = await supabase
         .from('facebook_connections')
-        .select('*', { count: 'exact', head: true })
+        .select('id, fb_page_id, fb_page_name, fb_page_access_token')
         .eq('telegram_user_id', uid)
         .eq('is_active', true);
-      if (!nbPages) continue;
+      const connexions = (connexionsData ?? []) as FbConnection[];
+      if (!connexions.length) continue;
 
       rapport.utilisateursTraites++;
 
+      // ── Rassembler les matchs candidats de ce cycle ──────────────────────
       let matchFavori: MatchRow | null = null;
-
-      // ── Équipe favorite : programmée ou en direct aujourd'hui, sans limite ──
       if (user.favorite_team_id) {
         const { data: matchsFavori } = await supabase
           .from('matchs_index')
@@ -138,59 +198,58 @@ Deno.serve(async (req: Request) => {
           .or(`home_team_id.eq.${user.favorite_team_id},away_team_id.eq.${user.favorite_team_id}`)
           .order('match_date', { ascending: true })
           .limit(1);
-
-        if (matchsFavori?.length) {
-          matchFavori = matchsFavori[0] as unknown as MatchRow;
-          await activerMatch(uid, matchFavori);
-          rapport.favoriTeamActives++;
-        }
+        if (matchsFavori?.length) matchFavori = matchsFavori[0] as unknown as MatchRow;
       }
 
-      // ── Compétitions suivies : TOUS les matchs actuellement en direct ────
       const { data: competitionsSuivies } = await supabase
         .from('user_competitions')
         .select('competition')
         .eq('telegram_user_id', uid)
         .eq('active', true);
-
       const tournamentIds = (competitionsSuivies ?? []).map((c) => c.competition);
-      if (!tournamentIds.length) continue;
 
-      const { data: matchsEnDirect } = await supabase
-        .from('matchs_index')
-        .select(MATCH_COLUMNS)
-        .eq('status', 'inprogress')
-        .in('tournament_id', tournamentIds);
-
-      const candidats = ((matchsEnDirect ?? []) as unknown as MatchRow[])
-        .filter((m) => m.match_id !== matchFavori?.match_id);
-      if (!candidats.length) continue;
-
-      // Combien de matchs de compétitions suivies sont déjà actifs pour cet
-      // utilisateur ? On ne compte que des places disponibles pour ce cycle
-      // — un match déjà actif garde sa place même s'il sort du top N ici
-      // (il sera désactivé par fetch-matches à la fin du match, pas ici).
-      const idsEnDirect = candidats.map((m) => m.match_id);
-      const { data: dejaActifs } = await supabase
-        .from('broadcast_selections')
-        .select('match_id')
-        .eq('telegram_user_id', uid)
-        .eq('is_active', true)
-        .in('match_id', idsEnDirect);
-
-      const dejaActifsIds = new Set((dejaActifs ?? []).map((r) => r.match_id));
-      for (const id of dejaActifsIds) {
-        const m = candidats.find((c) => c.match_id === id);
-        if (m) { await activerMatch(uid, m); rapport.competitionsMatchsActives++; }
+      let candidatsCompet: MatchRow[] = [];
+      if (tournamentIds.length) {
+        const { data: matchsEnDirect } = await supabase
+          .from('matchs_index')
+          .select(MATCH_COLUMNS)
+          .eq('status', 'inprogress')
+          .in('tournament_id', tournamentIds);
+        candidatsCompet = ((matchsEnDirect ?? []) as unknown as MatchRow[])
+          .filter((m) => m.match_id !== matchFavori?.match_id);
       }
 
-      const placesRestantes = MAX_MATCHS_COMPETITIONS_SIMULTANES - dejaActifsIds.size;
-      if (placesRestantes > 0) {
-        const nouveaux = trierParImportance(candidats.filter((m) => !dejaActifsIds.has(m.match_id)))
-          .slice(0, placesRestantes);
-        for (const m of nouveaux) {
-          await activerMatch(uid, m);
-          rapport.competitionsMatchsActives++;
+      // ── Déterminer, AVANT toute écriture, quels matchs étaient déjà actifs ──
+      const idsACandidater = [
+        ...(matchFavori ? [matchFavori.match_id] : []),
+        ...candidatsCompet.map((m) => m.match_id),
+      ];
+      const { data: dejaActifsRows } = idsACandidater.length
+        ? await supabase.from('broadcast_selections').select('match_id')
+            .eq('telegram_user_id', uid).eq('is_active', true).in('match_id', idsACandidater)
+        : { data: [] as Array<{ match_id: string }> };
+      const dejaActifsIds = new Set((dejaActifsRows ?? []).map((r) => r.match_id));
+
+      // ── Choisir les matchs de compétitions suivies retenus ce cycle ──────
+      const dejaActifsCompet = candidatsCompet.filter((m) => dejaActifsIds.has(m.match_id));
+      const placesRestantes = MAX_MATCHS_COMPETITIONS_SIMULTANES - dejaActifsCompet.length;
+      const nouveauxCompet = placesRestantes > 0
+        ? trierParImportance(candidatsCompet.filter((m) => !dejaActifsIds.has(m.match_id))).slice(0, placesRestantes)
+        : [];
+      const matchsCompetRetenus = [...dejaActifsCompet, ...nouveauxCompet];
+
+      // ── Activer en base, puis annoncer UNIQUEMENT les toutes nouvelles sélections ──
+      const toutLesMatchs = [
+        ...(matchFavori ? [matchFavori] : []),
+        ...matchsCompetRetenus,
+      ];
+      for (const m of toutLesMatchs) {
+        await activerSelection(uid, m);
+        if (m === matchFavori) rapport.favoriTeamActives++; else rapport.competitionsMatchsActives++;
+
+        if (!dejaActifsIds.has(m.match_id)) {
+          await annoncerNouveauMatch(m, connexions);
+          rapport.annoncesPubliees++;
         }
       }
     } catch (err) {

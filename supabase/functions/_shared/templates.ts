@@ -9,13 +9,47 @@ export function messageReveilMatinal(competition: string, matchs: Array<{ home_t
   return `📅 *${competition}* — Matchs d'aujourd'hui\n\n${lignes.join('\n')}\n\nLes scores seront publiés en direct sur ta Page Facebook dès le coup d'envoi.`;
 }
 
-/** Annonce immédiate quand l'utilisateur active la diffusion d'un match à venir */
-export function formatAnnonceFacebook(data: { competition: string; homeTeam: string; awayTeam: string; matchDate: string }): string {
+/** Annonce immédiate quand l'utilisateur active la diffusion d'un match à venir.
+ *  `standingsBlock` (optionnel) insère le classement de la compétition — voir
+ *  formatStandingsBlock() — juste avant le message de clôture. Ce même post
+ *  est ensuite édité en place par facebook-post dès le coup d'envoi (voir
+ *  editerPost dans _shared/facebook.ts) : un seul post par match, qui passe
+ *  de "annonce + classement" à "score en direct". */
+export function formatAnnonceFacebook(data: { competition: string; homeTeam: string; awayTeam: string; matchDate: string; standingsBlock?: string }): string {
   const d     = new Date(data.matchDate);
   const heure = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
   const jour  = d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
   const tag   = data.competition.replace(/[\s\-()']/g, '');
-  return `📣 ${data.competition}\n\n⚽ ${data.homeTeam}  vs  ${data.awayTeam}\n🗓 ${jour.charAt(0).toUpperCase() + jour.slice(1)} à ${heure} UTC\n\nRestez connectés — scores et actions en direct sur cette page dès le coup d'envoi !\n\n#Football #${tag}`;
+  let msg = `📣 ${data.competition}\n\n⚽ ${data.homeTeam}  vs  ${data.awayTeam}\n🗓 ${jour.charAt(0).toUpperCase() + jour.slice(1)} à ${heure} UTC\n\n`;
+  if (data.standingsBlock) msg += `${data.standingsBlock}\n\n`;
+  msg += `Restez connectés — scores et actions en direct sur cette page dès le coup d'envoi !\n\n#Football #${tag}`;
+  return msg;
+}
+
+/**
+ * Classement d'une compétition, formaté pour un post Facebook — les deux
+ * équipes du match sont préfixées par ▶ pour ressortir dans la liste. Les
+ * noms d'équipes viennent tous deux d'ESPN (standings et matchs_index), donc
+ * une comparaison exacte suffit — pas besoin de normaliser les accents/sigles.
+ */
+export function formatStandingsBlock(
+  entries: Array<{ team: string; rank: number | null; points: number | null; wins: number | null; draws: number | null; losses: number | null }>,
+  matchTeams: string[] = [],
+  limit = 10,
+): string {
+  const classes = entries
+    .filter((e) => e.rank != null)
+    .sort((a, b) => (a.rank as number) - (b.rank as number))
+    .slice(0, limit);
+  if (!classes.length) return '';
+
+  const lignes = classes.map((e) => {
+    const marque = matchTeams.includes(e.team) ? '▶ ' : '';
+    const pts    = e.points != null ? `${e.points} pts` : '';
+    const forme  = (e.wins != null && e.draws != null && e.losses != null) ? ` (${e.wins}V ${e.draws}N ${e.losses}D)` : '';
+    return `${marque}${e.rank}. ${e.team} — ${pts}${forme}`;
+  });
+  return `📊 Classement actuel :\n${lignes.join('\n')}`;
 }
 
 // ─── Post cumulatif avec timeline des événements ────────────────────────────
