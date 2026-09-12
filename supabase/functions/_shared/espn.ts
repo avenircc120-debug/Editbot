@@ -301,7 +301,11 @@ export interface EspnStandingsEntry {
 }
 
 async function espnGetStandings(slug: string): Promise<any> {
-  const cible = `https://site.api.espn.com/apis/site/v2/sports/soccer/${slug}/standings`;
+  // Le chemin "/apis/site/v2/..." (utilisé pour scoreboard) renvoie `{}` pour
+  // les classements — vérifié empiriquement le 12/09/2026. Le chemin correct,
+  // sans le segment "site", est documenté par la communauté (voir
+  // https://github.com/pseudo-r/Public-ESPN-API/blob/main/docs/sports/soccer.md).
+  const cible = `https://site.api.espn.com/apis/v2/sports/soccer/${slug}/standings`;
   const url = ESPN_PROXY_URL
     ? (() => {
         const proxyUrl = new URL(ESPN_PROXY_URL);
@@ -325,20 +329,7 @@ async function espnGetStandings(slug: string): Promise<any> {
 }
 
 /**
- * Classement d'une compétition déjà connue (ESPN_LEAGUE_SLUGS) — nécessite
- * que le proxy Cloudflare autorise le chemin /standings en plus de
- * /scoreboard (voir cloudflare-worker/src/index.ts, à redéployer).
- *
- * IMPORTANT : la forme exacte de la réponse ESPN /standings n'a pas pu être
- * vérifiée empiriquement (aucun accès réseau direct à ESPN ni au proxy
- * Cloudflare depuis l'environnement qui a écrit cette fonction — confirmé
- * en testant via pg_net depuis Supabase, bloqué 403 comme pour l'Edge).
- * Le parsing ci-dessous suit la forme documentée publiquement (entries au
- * niveau racine OU regroupées par conférence dans `children[]`, stats
- * identifiées par nom plutôt que par position) mais reste à confirmer avec
- * une vraie réponse une fois le proxy redéployé — en cas de forme
- * différente, retourne simplement un tableau vide (fail-open) plutôt que
- * de planter.
+ * Classement d'une compétition déjà connue (ESPN_LEAGUE_SLUGS).
  */
 export async function getEspnStandings(tournamentId: string): Promise<EspnStandingsEntry[]> {
   const slug = ESPN_LEAGUE_SLUGS[tournamentId];

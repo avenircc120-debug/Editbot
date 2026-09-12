@@ -4,13 +4,17 @@ export interface Env {
 
 const ESPN_REQUEST_HOST = 'site.api.espn.com';
 const ESPN_UPSTREAM_HOST = 'site.web.api.espn.com';
-const ESPN_PATH_PREFIX = '/apis/site/v2/sports/soccer/';
 
 // scoreboard : matchs d'une date donnee (dates=YYYYMMDD en query, deja
 // transparent via l'URL passee telle quelle).
-// standings  : classement de la competition — ajoute pour couvrir
-// "classements" en plus des scores, meme host/prefixe deja verifie sur.
-const ESPN_ALLOWED_SUFFIXES = ['/scoreboard', '/standings'];
+const ESPN_SCOREBOARD_PREFIX = '/apis/site/v2/sports/soccer/';
+
+// standings : le chemin "/apis/site/v2/..." renvoie systematiquement `{}`
+// pour les classements (verifie empiriquement) — ESPN expose les classements
+// sous un chemin different, sans le segment "site" (confirme via la doc
+// communautaire pseudo-r/Public-ESPN-API : "/apis/site/v2/ returns an empty
+// {} for soccer standings", variante correcte "/apis/v2/...").
+const ESPN_STANDINGS_PREFIX = '/apis/v2/sports/soccer/';
 
 function json(body: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
   const headers = new Headers({
@@ -23,9 +27,9 @@ function json(body: unknown, status = 200, extraHeaders: Record<string, string> 
 function parseAllowedTarget(rawTarget: string): URL | null {
   try {
     const target = new URL(rawTarget);
-    const allowedPath = target.pathname.startsWith(ESPN_PATH_PREFIX)
-      && ESPN_ALLOWED_SUFFIXES.some((suffix) => target.pathname.endsWith(suffix));
-    if (target.protocol !== 'https:' || target.hostname !== ESPN_REQUEST_HOST || !allowedPath) return null;
+    const isScoreboard = target.pathname.startsWith(ESPN_SCOREBOARD_PREFIX) && target.pathname.endsWith('/scoreboard');
+    const isStandings = target.pathname.startsWith(ESPN_STANDINGS_PREFIX) && target.pathname.endsWith('/standings');
+    if (target.protocol !== 'https:' || target.hostname !== ESPN_REQUEST_HOST || !(isScoreboard || isStandings)) return null;
     target.hostname = ESPN_UPSTREAM_HOST;
     return target;
   } catch {
