@@ -330,6 +330,13 @@ async function espnGetStandings(slug: string): Promise<any> {
 
 /**
  * Classement d'une compétition déjà connue (ESPN_LEAGUE_SLUGS).
+ *
+ * Vérifié empiriquement le 12/09/2026 via pg_net + proxy Cloudflare : la
+ * réponse groupe les entrées sous `children[0].standings.entries[]`, avec
+ * des stats identifiées par nom (`rank`, `gamesPlayed`, `wins`, `ties`,
+ * `losses`, `points`) — confirmé sur eng.1 (Manchester City en tête, 3/3/0/0,
+ * 9 pts). Retourne un tableau vide en cas de forme inattendue plutôt que de
+ * planter (fail-open) : l'onglet Matchs doit rester utilisable sans classement.
  */
 export async function getEspnStandings(tournamentId: string): Promise<EspnStandingsEntry[]> {
   const slug = ESPN_LEAGUE_SLUGS[tournamentId];
