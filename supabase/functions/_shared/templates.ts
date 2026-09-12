@@ -37,11 +37,18 @@ export function formatStandingsBlock(
   matchTeams: string[] = [],
   limit = 10,
 ): string {
-  const classes = entries
+  const classement = entries
     .filter((e) => e.rank != null)
-    .sort((a, b) => (a.rank as number) - (b.rank as number))
-    .slice(0, limit);
-  if (!classes.length) return '';
+    .sort((a, b) => (a.rank as number) - (b.rank as number));
+  if (!classement.length) return '';
+
+  const top = classement.slice(0, limit);
+  // Une des deux équipes du match peut être hors du top N (ex: équipe reléguée
+  // qui joue contre le leader) — sans ça elle disparaîtrait complètement du
+  // classement envoyé, ce qui n'a pas de sens pour l'annonce D'UN MATCH précis.
+  const topIds = new Set(top.map((e) => e.team));
+  const manquantes = classement.filter((e) => matchTeams.includes(e.team) && !topIds.has(e.team));
+  const classes = [...top, ...manquantes];
 
   const lignes = classes.map((e) => {
     const marque = matchTeams.includes(e.team) ? '▶ ' : '';
