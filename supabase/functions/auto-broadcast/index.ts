@@ -8,12 +8,18 @@
  *   1. Équipe favorite (favorite_team_id) joue aujourd'hui (programmé ou en
  *      direct) ? → ce match est toujours activé, en plus du reste, sans
  *      limite de nombre.
- *   2. Parmi les compétitions suivies (user_competitions), TOUS les matchs
- *      actuellement EN DIRECT (status = 'inprogress') sont candidats — pas
- *      un seul par jour. S'il y en a plus que MAX_MATCHS_COMPETITIONS_SIMULTANES
- *      en même temps, seuls les plus importants (COMPETITION_IMPORTANCE) sont
- *      retenus pour ce cycle ; les autres seront repris à un cycle suivant si
- *      une place se libère (match terminé → désactivé par fetch-matches).
+ *   2. Parmi les compétitions suivies (user_competitions) :
+ *      a. Les matchs PROGRAMMÉS aujourd'hui (status = 'scheduled') sont
+ *         annoncés à l'avance (date/heure + classement) dès qu'ils
+ *         apparaissent — plafonnés à MAX_MATCHS_COMPETITIONS_SIMULTANES
+ *         nouvelles annonces par cycle pour étaler la publication sur une
+ *         journée chargée plutôt que tout envoyer d'un coup.
+ *      b. TOUS les matchs actuellement EN DIRECT (status = 'inprogress')
+ *         sont candidats — pas un seul par jour. S'il y en a plus que
+ *         MAX_MATCHS_COMPETITIONS_SIMULTANES en même temps, seuls les plus
+ *         importants (COMPETITION_IMPORTANCE) sont retenus pour ce cycle ;
+ *         les autres seront repris à un cycle suivant si une place se
+ *         libère (match terminé → désactivé par fetch-matches).
  *
  * Publication Facebook : dès qu'un match est sélectionné pour la PREMIÈRE
  * fois (jamais actif avant ce cycle), un post est publié tout de suite —
@@ -208,21 +214,27 @@ Deno.serve(async (req: Request) => {
         .eq('active', true);
       const tournamentIds = (competitionsSuivies ?? []).map((c) => c.competition);
 
-      let candidatsCompet: MatchRow[] = [];
+      let enDirect: MatchRow[] = [];
+      let programmes: MatchRow[] = [];
       if (tournamentIds.length) {
-        const { data: matchsEnDirect } = await supabase
+        const { data: matchsCompet } = await supabase
           .from('matchs_index')
           .select(MATCH_COLUMNS)
-          .eq('status', 'inprogress')
-          .in('tournament_id', tournamentIds);
-        candidatsCompet = ((matchsEnDirect ?? []) as unknown as MatchRow[])
+          .in('status', ['scheduled', 'inprogress'])
+          .in('tournament_id', tournamentIds)
+          .gte('match_date', debut)
+          .lte('match_date', fin);
+        const candidatsCompet = ((matchsCompet ?? []) as unknown as MatchRow[])
           .filter((m) => m.match_id !== matchFavori?.match_id);
+        enDirect   = candidatsCompet.filter((m) => m.status === 'inprogress');
+        programmes = candidatsCompet.filter((m) => m.status === 'scheduled');
       }
 
       // ── Déterminer, AVANT toute écriture, quels matchs étaient déjà actifs ──
       const idsACandidater = [
         ...(matchFavori ? [matchFavori.match_id] : []),
-        ...candidatsCompet.map((m) => m.match_id),
+        ...enDirect.map((m) => m.match_id),
+        ...programmes.map((m) => m.match_id),
       ];
       const { data: dejaActifsRows } = idsACandidater.length
         ? await supabase.from('broadcast_selections').select('match_id')
@@ -230,13 +242,18 @@ Deno.serve(async (req: Request) => {
         : { data: [] as Array<{ match_id: string }> };
       const dejaActifsIds = new Set((dejaActifsRows ?? []).map((r) => r.match_id));
 
-      // ── Choisir les matchs de compétitions suivies retenus ce cycle ──────
-      const dejaActifsCompet = candidatsCompet.filter((m) => dejaActifsIds.has(m.match_id));
-      const placesRestantes = MAX_MATCHS_COMPETITIONS_SIMULTANES - dejaActifsCompet.length;
-      const nouveauxCompet = placesRestantes > 0
-        ? trierParImportance(candidatsCompet.filter((m) => !dejaActifsIds.has(m.match_id))).slice(0, placesRestantes)
+      // ── Matchs en direct : plafond de diffusions simultanées ─────────────
+      const dejaActifsEnDirect = enDirect.filter((m) => dejaActifsIds.has(m.match_id));
+      const placesRestantes = MAX_MATCHS_COMPETITIONS_SIMULTANES - dejaActifsEnDirect.length;
+      const nouveauxEnDirect = placesRestantes > 0
+        ? trierParImportance(enDirect.filter((m) => !dejaActifsIds.has(m.match_id))).slice(0, placesRestantes)
         : [];
-      const matchsCompetRetenus = [...dejaActifsCompet, ...nouveauxCompet];
+
+      // ── Matchs programmés : annonces à l'avance, étalées par cycle ───────
+      const nouveauxProgrammes = trierParImportance(programmes.filter((m) => !dejaActifsIds.has(m.match_id)))
+        .slice(0, MAX_MATCHS_COMPETITIONS_SIMULTANES);
+
+      const matchsCompetRetenus = [...dejaActifsEnDirect, ...nouveauxEnDirect, ...nouveauxProgrammes];
 
       // ── Activer en base, puis annoncer UNIQUEMENT les toutes nouvelles sélections ──
       const toutLesMatchs = [
