@@ -41,6 +41,7 @@ export interface EspnGoalDetail {
 
 export interface EspnEvent {
   id: string;
+  date?: string;
   status: EspnStatus;
   competitions: Array<{
     competitors: EspnCompetitor[];
@@ -195,6 +196,33 @@ export async function getEspnEvents(
   for (const slug of slugs) if (diagBySlug.get(slug)) failedSlugs.add(slug);
 
   return { events: results.flatMap(r => r.events), failedSlugs };
+}
+
+export interface EspnMatchForIngestion {
+  tsdbId: string;
+  slug: string;
+  event: EspnEvent;
+}
+
+/**
+ * Récupère TOUTES les compétitions connues (ESPN_LEAGUE_SLUGS) pour une date
+ * donnée — contrairement à getEspnEvents() qui ne va chercher que les
+ * compétitions déjà représentées par des matchs existants dans matchs_index.
+ * Sert à ALIMENTER matchs_index directement depuis ESPN (voir
+ * fetch-matches-espn), pas seulement à mettre à jour des matchs déjà connus
+ * — nécessaire car la clé TheSportsDB de test ("123") ne renvoie qu'un
+ * échantillon très limité et rate la plupart des matchs des grandes
+ * compétitions.
+ */
+export async function getEspnMatchesForIngestion(dateStr: string): Promise<EspnMatchForIngestion[]> {
+  const entries = Object.entries(ESPN_LEAGUE_SLUGS);
+  const taches = entries.map(([tsdbId, slug]) => async () => {
+    const events = await espnGet(slug, dateStr);
+    return events.map((event) => ({ tsdbId, slug, event }));
+  });
+  // Meme plafond que getEspnEvents (4 < 5, limite du plan proxy Cloudflare).
+  const results = await executerAvecConcurrenceLimitee(taches, 4);
+  return results.flat();
 }
 
 /** Convertit un état ESPN ('pre' | 'in' | 'post') vers le statut interne Editbot. */
