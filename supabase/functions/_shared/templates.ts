@@ -35,7 +35,7 @@ export function formatAnnonceFacebook(data: { competition: string; homeTeam: str
 export function formatStandingsBlock(
   entries: Array<{ team: string; rank: number | null; points: number | null; wins: number | null; draws: number | null; losses: number | null }>,
   matchTeams: string[] = [],
-  limit = 10,
+  limit = 5,
 ): string {
   const classement = entries
     .filter((e) => e.rank != null)
@@ -50,13 +50,16 @@ export function formatStandingsBlock(
   const manquantes = classement.filter((e) => matchTeams.includes(e.team) && !topIds.has(e.team));
   const classes = [...top, ...manquantes];
 
+  // Format compact (sans V/N/D) pour rester le plus court possible — Facebook
+  // tronque tout post de plus de quelques lignes avec "Voir plus" dans le fil
+  // (comportement de l'appli, pas quelque chose que l'API peut désactiver) ;
+  // ceci ne l'évite pas totalement mais réduit la longueur au maximum.
   const lignes = classes.map((e) => {
     const marque = matchTeams.includes(e.team) ? '▶ ' : '';
     const pts    = e.points != null ? `${e.points} pts` : '';
-    const forme  = (e.wins != null && e.draws != null && e.losses != null) ? ` (${e.wins}V ${e.draws}N ${e.losses}D)` : '';
-    return `${marque}${e.rank}. ${e.team} — ${pts}${forme}`;
+    return `${marque}${e.rank}. ${e.team} — ${pts}`;
   });
-  return `📊 Classement actuel :\n${lignes.join('\n')}`;
+  return `📊 Classement :\n${lignes.join('\n')}`;
 }
 
 // ─── Post cumulatif avec timeline des événements ────────────────────────────
