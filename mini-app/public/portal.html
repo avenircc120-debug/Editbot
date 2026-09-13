@@ -880,6 +880,8 @@ function renderPreferencesForm(data){
   var selectedTeam=data.favoriteTeamId?{id:data.favoriteTeamId,name:data.favoriteTeamName}:null;
   var selectedComps=new Set(data.followedCompetitionIds||[]);
   var autoEnabled=!!data.autoBroadcastEnabled;
+  var fbPages=data.fbPages||[];
+  var autoPageIds=new Set(fbPages.filter(function(p){return p.autoBroadcastEnabled;}).map(function(p){return p.id;}));
 
   function render(){
     view.innerHTML=
@@ -889,6 +891,17 @@ function renderPreferencesForm(data){
           '<div><div class="pref-toggle-label">Mode automatique</div><div class="pref-toggle-desc">Diffuse tous les matchs en direct de tes compétitions suivies, sans intervention</div></div>'+
           '<div class="switch'+(autoEnabled?' on':'')+'" id="pref-auto-switch"><div class="knob"></div></div>'+
         '</div>'+
+        (fbPages.length?(
+        '<div class="pref-section">'+
+          '<div class="pref-section-title">📘 Pages pour le mode automatique</div>'+
+          '<div class="comp-list">'+
+            fbPages.map(function(p){
+              var checked=autoPageIds.has(p.id)?'checked':'';
+              return '<label class="comp-item"><input type="checkbox" '+checked+' data-fbpage="'+p.id+'"><span>'+(p.name||'Page Facebook')+'</span></label>';
+            }).join('')+
+          '</div>'+
+        '</div>'
+        ):'')+
         '<div class="pref-section">'+
           '<div class="pref-section-title">⭐ Équipe favorite</div>'+
           (selectedTeam
@@ -947,9 +960,16 @@ function renderPreferencesForm(data){
       };
     }
 
-    view.querySelectorAll('.comp-item input').forEach(function(cb){
+    view.querySelectorAll('.comp-item input[data-comp]').forEach(function(cb){
       cb.onchange=function(){
         if(cb.checked) selectedComps.add(cb.dataset.comp); else selectedComps.delete(cb.dataset.comp);
+      };
+    });
+
+    view.querySelectorAll('.comp-item input[data-fbpage]').forEach(function(cb){
+      cb.onchange=function(){
+        var id=Number(cb.dataset.fbpage);
+        if(cb.checked) autoPageIds.add(id); else autoPageIds.delete(id);
       };
     });
 
@@ -962,7 +982,8 @@ function renderPreferencesForm(data){
           favoriteTeamId:       selectedTeam?selectedTeam.id:null,
           favoriteTeamName:     selectedTeam?selectedTeam.name:null,
           autoBroadcastEnabled: autoEnabled,
-          competitionIds:       [...selectedComps]
+          competitionIds:       [...selectedComps],
+          autoBroadcastPageIds: [...autoPageIds]
         })
       }).then(function(r){return r.json().catch(function(){return {};}).then(function(d){return {ok:r.ok,d:d};});})
         .then(function(res){
