@@ -96,8 +96,12 @@ function trierParImportance(matchs: MatchRow[]): MatchRow[] {
   });
 }
 
-/** Marque le match comme diffusé pour cet utilisateur (idempotent). */
-async function activerSelection(uid: number, m: MatchRow): Promise<void> {
+/** Marque le match comme diffusé pour cet utilisateur (idempotent).
+ *  `fbPageIds` restreint la diffusion (annonce + mises à jour suivantes via
+ *  facebook-post) aux seules Pages ayant "diffusion automatique" activée
+ *  (voir /preferences côté mini-app-api) — recalculé à chaque cycle, donc un
+ *  changement de préférence de page prend effet au cycle suivant. */
+async function activerSelection(uid: number, m: MatchRow, fbPageIds: string[]): Promise<void> {
   const { error } = await supabase.from('broadcast_selections').upsert({
     telegram_user_id: uid,
     match_id:         m.match_id,
@@ -105,7 +109,7 @@ async function activerSelection(uid: number, m: MatchRow): Promise<void> {
     home_team:        m.home_team,
     away_team:        m.away_team,
     is_active:        true,
-    fb_page_ids:      [],
+    fb_page_ids:      fbPageIds,
   }, { onConflict: 'telegram_user_id,match_id' });
   if (error) throw error;
 }
@@ -182,13 +186,18 @@ Deno.serve(async (req: Request) => {
   for (const user of utilisateurs ?? []) {
     const uid = Number(user.telegram_user_id);
     try {
+      // Seules les Pages avec "diffusion automatique" activée (réglage
+      // séparé du choix de page en diffusion manuelle) sont candidates ici.
       const { data: connexionsData } = await supabase
         .from('facebook_connections')
         .select('id, fb_page_id, fb_page_name, fb_page_access_token')
         .eq('telegram_user_id', uid)
-        .eq('is_active', true);
+        .eq('is_active', true)
+        .eq('auto_broadcast_enabled', true);
       const connexions = (connexionsData ?? []) as FbConnection[];
       if (!connexions.length) continue;
+
+      const fbPageIds = connexions.map((c) => c.fb_page_id);
 
       rapport.utilisateursTraites++;
 
@@ -261,7 +270,7 @@ Deno.serve(async (req: Request) => {
         ...matchsCompetRetenus,
       ];
       for (const m of toutLesMatchs) {
-        await activerSelection(uid, m);
+        await activerSelection(uid, m, fbPageIds);
         if (m === matchFavori) rapport.favoriTeamActives++; else rapport.competitionsMatchsActives++;
 
         if (!dejaActifsIds.has(m.match_id)) {
