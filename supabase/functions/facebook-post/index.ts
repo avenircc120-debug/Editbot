@@ -15,8 +15,9 @@
  */
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { editerPost, posterSurPage } from '../_shared/facebook.ts';
-import { buildFacebookPost, buildEventMarkers } from '../_shared/templates.ts';
+import { editerPost, posterSurPage, posterPhotoSurPage } from '../_shared/facebook.ts';
+import { buildFacebookPost, buildEventMarkers, parseGoalDetails, buildGoalPhotoCaption, type ButeurDetail } from '../_shared/templates.ts';
+import { espnHeadshotUrl } from '../_shared/espn.ts';
 import { normalisePageIds, selectBroadcastPages, estErreurToken, type FacebookPageForBroadcast } from '../_shared/broadcast.ts';
 
 const SUPABASE_URL   = Deno.env.get('SUPABASE_URL')              ?? '';
@@ -51,6 +52,36 @@ function estChronoEspn(s: string): boolean {
   return /^\d+'(\+\d+'?)?$/.test(s) || s === 'HT';
 }
 
+/** Parmi les marqueurs GOAL_HOME/GOAL_AWAY ajoutés CE cycle (nouveauxMarqueurs,
+ *  déjà calculés par buildEventMarkers), retrouve le buteur correspondant en
+ *  reprenant le même comptage que renderEventsLog : le nombre de buts déjà
+ *  loggés avant ce cycle donne l'index de départ dans homeGoalDetails/
+ *  awayGoalDetails (qui listent TOUS les buts du match, dans l'ordre). */
+function buteursNouveaux(
+  nouveauxMarqueurs: string[],
+  prevLog: string,
+  homeGoalDetails: string | null,
+  awayGoalDetails: string | null,
+): Array<{ team: 'home' | 'away'; buteur: ButeurDetail }> {
+  const homeGoals = parseGoalDetails(homeGoalDetails);
+  const awayGoals = parseGoalDetails(awayGoalDetails);
+  let homeIdx = (prevLog.match(/^GOAL_HOME$/gm) ?? []).length;
+  let awayIdx = (prevLog.match(/^GOAL_AWAY$/gm) ?? []).length;
+  const resultats: Array<{ team: 'home' | 'away'; buteur: ButeurDetail }> = [];
+
+  for (const marqueur of nouveauxMarqueurs) {
+    if (marqueur === 'GOAL_HOME') {
+      const buteur = homeGoals[homeIdx++];
+      if (buteur) resultats.push({ team: 'home', buteur });
+    } else if (marqueur === 'GOAL_AWAY') {
+      const buteur = awayGoals[awayIdx++];
+      if (buteur) resultats.push({ team: 'away', buteur });
+    }
+  }
+
+  return resultats;
+}
+
 async function notifierUtilisateur(telegramUserId: number, texte: string): Promise<void> {
   if (!TELEGRAM_TOKEN) return;
   await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
@@ -71,7 +102,7 @@ Deno.serve(async (req: Request) => {
   const matches: LiveMatch[] = body.matches ?? [];
   const today                = new Date().toISOString().slice(0, 10);
 
-  const rapport = { postsPublies: 0, erreurs: 0, tokensRevoques: 0, details: [] as string[] };
+  const rapport = { postsPublies: 0, photosPubliees: 0, erreurs: 0, tokensRevoques: 0, details: [] as string[] };
 
   for (const match of matches) {
     // ── Étape 1 : utilisateurs ayant activé CE match + leurs pages choisies ──
@@ -139,6 +170,37 @@ Deno.serve(async (req: Request) => {
         const newLog = prevLog
           ? (nouveauxMarqueurs.length ? prevLog + '\n' + nouveauxMarqueurs.join('\n') : prevLog)
           : nouveauxMarqueurs.join('\n');
+
+        // ── Post "photo du buteur" — en plus du post texte évolutif ─────
+        // (voir buteursNouveaux ci-dessus) : un post séparé par but marqué
+        // ce cycle, uniquement quand ESPN fournit une photo exploitable —
+        // sinon le but reste couvert par le post texte comme avant, sans
+        // rien publier de plus.
+        const nouveauxButeurs = buteursNouveaux(
+          nouveauxMarqueurs, prevLog,
+          match.homeGoalDetails ?? null, match.awayGoalDetails ?? null,
+        );
+        for (const { team, buteur } of nouveauxButeurs) {
+          const photoUrl = espnHeadshotUrl(buteur.espnId);
+          if (!photoUrl) continue;
+          const caption = buildGoalPhotoCaption({
+            scorerName:  buteur.nom,
+            scoringTeam: team === 'home' ? match.homeTeam : match.awayTeam,
+            homeTeam:    match.homeTeam,
+            awayTeam:    match.awayTeam,
+            homeScore:   match.homeScore,
+            awayScore:   match.awayScore,
+            competition: match.competition,
+          });
+          const photoResult = await posterPhotoSurPage(
+            connexion.fb_page_id, connexion.fb_page_access_token, photoUrl, caption,
+          );
+          if (photoResult.success) {
+            rapport.photosPubliees++;
+          } else {
+            rapport.details.push(`Photo but "${connexion.fb_page_name}" / ${match.matchId}: ${photoResult.error}`);
+          }
+        }
 
         // ── Construire le message complet avec timeline ─────────
         const message = buildFacebookPost({
