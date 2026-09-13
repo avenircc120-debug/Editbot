@@ -30,6 +30,14 @@
     awayGoalDetails?: string | null;
     }
 
+    /** Minute entière extraite d'un chrono ESPN ("34'", "45'+2'", "HT") — null
+     *  si non numérique (mi-temps, prolongations affichées autrement, etc.). */
+    function minuteDuChrono(clock: string | null): number | null {
+      if (!clock) return null;
+      const m = clock.match(/^(\d+)'/);
+      return m ? Number(m[1]) : null;
+    }
+
     async function diffuserSurFacebook(matchsModifies: MatchChange[]): Promise<void> {
     if (!matchsModifies.length) return;
     try {
@@ -64,7 +72,7 @@
 
     const { data: matchsAttendus } = await supabase
       .from('matchs_index')
-      .select('match_id, status, tournament_id, competition, home_team, away_team, home_score, away_score, match_date, raw_status')
+      .select('match_id, status, tournament_id, competition, home_team, away_team, home_score, away_score, match_date, raw_status, last_broadcast_minute')
       .in('status', ['inprogress', 'scheduled'])
       .gte('match_date', fenetreDebut)
       .lte('match_date', fenetreFin);
@@ -102,16 +110,9 @@
 
         if (!changed) continue;
 
-        // But marqué : ESPN fournit déjà le(s) buteur(s) dans
-        // competitions[0].details (même réponse que le score/chrono, aucun
-        // appel supplémentaire) — bien plus fiable que d'attendre TheSportsDB,
-        // qui ne fournit d'ailleurs cette donnée sur aucun de ses endpoints
-        // gratuits (vérifié : absente même de lookupevent.php).
-        const butMarque = status === 'inprogress'
-          && (homeScore > (match.home_score ?? 0) || awayScore > (match.away_score ?? 0));
-        const homeGoalDetails = buteursEquipe(found, idEquipeEspn(found, 'home'));
-        const awayGoalDetails = buteursEquipe(found, idEquipeEspn(found, 'away'));
-
+        // Toujours garder matchs_index à jour à la minute près (affichage
+        // Mini App / portail), indépendamment de la fréquence de publication
+        // Facebook ci-dessous.
         const { error } = await supabase.from('matchs_index').update({
           status,
           raw_status: liveClock ?? found.status?.type?.description ?? null,
@@ -121,6 +122,39 @@
         }).eq('match_id', match.match_id);
 
         if (error) { console.warn('[live-cron][espn] update', match.match_id, error.message); continue; }
+
+        // But marqué : ESPN fournit déjà le(s) buteur(s) dans
+        // competitions[0].details (même réponse que le score/chrono, aucun
+        // appel supplémentaire) — bien plus fiable que d'attendre TheSportsDB,
+        // qui ne fournit d'ailleurs cette donnée sur aucun de ses endpoints
+        // gratuits (vérifié : absente même de lookupevent.php).
+        const butMarque = status === 'inprogress'
+          && (homeScore > (match.home_score ?? 0) || awayScore > (match.away_score ?? 0));
+        const statutChange = match.status !== status;
+
+        // Publication Facebook : un but ou un changement de statut (coup
+        // d'envoi, fin de match) part toujours immédiatement. Le seul
+        // chronomètre qui avance, lui, ne republie plus à CHAQUE minute (ce
+        // qui, à raison d'un cron par minute et plusieurs matchs simultanés
+        // sur 2 pages, épuisait le quota anti-spam Facebook #368 en quelques
+        // heures un jour chargé) — juste tous les 5 minutes de jeu.
+        const minuteActuelle = minuteDuChrono(liveClock);
+        const jalonAtteint = status === 'inprogress'
+          && minuteActuelle != null
+          && minuteActuelle % 5 === 0
+          && minuteActuelle !== match.last_broadcast_minute;
+        const doitPublier = butMarque || statutChange || jalonAtteint;
+
+        if (!doitPublier) continue;
+
+        if (jalonAtteint) {
+          await supabase.from('matchs_index')
+            .update({ last_broadcast_minute: minuteActuelle })
+            .eq('match_id', match.match_id);
+        }
+
+        const homeGoalDetails = buteursEquipe(found, idEquipeEspn(found, 'home'));
+        const awayGoalDetails = buteursEquipe(found, idEquipeEspn(found, 'away'));
 
         matchsModifies.push({
           matchId: match.match_id,
