@@ -137,11 +137,11 @@
         // chronomètre qui avance, lui, ne republie plus à CHAQUE minute (ce
         // qui, à raison d'un cron par minute et plusieurs matchs simultanés
         // sur 2 pages, épuisait le quota anti-spam Facebook #368 en quelques
-        // heures un jour chargé) — juste tous les 5 minutes de jeu.
+        // heures un jour chargé) — juste tous les 15 minutes de jeu.
         const minuteActuelle = minuteDuChrono(liveClock);
         const jalonAtteint = status === 'inprogress'
           && minuteActuelle != null
-          && minuteActuelle % 5 === 0
+          && minuteActuelle % 15 === 0
           && minuteActuelle !== match.last_broadcast_minute;
         const doitPublier = butMarque || statutChange || jalonAtteint;
 
