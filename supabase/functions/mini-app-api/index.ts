@@ -166,7 +166,7 @@ async function handleProfile(chatId: number): Promise<Response> {
 // ─── Préférences "Set & Forget" (équipe favorite + compétitions suivies) ───
 
 async function handlePreferencesGet(chatId: number): Promise<Response> {
-  const [{ data: profil }, { data: competitions }, leagues] = await Promise.all([
+  const [{ data: profil }, { data: competitions }, { data: fbPages }, leagues] = await Promise.all([
     supabase
       .from('user_profiles')
       .select('favorite_team_id, favorite_team_name, auto_broadcast_enabled, preferences_onboarded')
@@ -177,6 +177,15 @@ async function handlePreferencesGet(chatId: number): Promise<Response> {
       .select('competition')
       .eq('telegram_user_id', chatId)
       .eq('active', true),
+    // Pages Facebook actives + leur statut "diffusion automatique" : permet à
+    // l'utilisateur de choisir SUR QUELLE(S) page(s) le mode automatique publie,
+    // indépendamment du choix de page fait au cas par cas en diffusion manuelle
+    // (broadcast_selections.fb_page_ids).
+    supabase
+      .from('facebook_connections')
+      .select('id, fb_page_name, auto_broadcast_enabled')
+      .eq('telegram_user_id', chatId)
+      .eq('is_active', true),
     getAvailableLeagues(supabase),
   ]);
 
@@ -186,6 +195,9 @@ async function handlePreferencesGet(chatId: number): Promise<Response> {
     autoBroadcastEnabled: profil?.auto_broadcast_enabled   ?? false,
     preferencesOnboarded: profil?.preferences_onboarded    ?? false,
     followedCompetitionIds: (competitions ?? []).map((c) => c.competition),
+    fbPages: (fbPages ?? []).map((p) => ({
+      id: p.id, name: p.fb_page_name, autoBroadcastEnabled: p.auto_broadcast_enabled ?? true,
+    })),
     leagues,
   });
 }
@@ -196,6 +208,7 @@ async function handlePreferencesPost(req: Request, chatId: number): Promise<Resp
     favoriteTeamName?: string | null;
     autoBroadcastEnabled?: boolean;
     competitionIds?: string[];
+    autoBroadcastPageIds?: Array<string | number>;
   };
 
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
@@ -225,6 +238,38 @@ async function handlePreferencesPost(req: Request, chatId: number): Promise<Resp
         competition:       tsdbId,
         active:            true,
       }, { onConflict: 'telegram_user_id,competition' });
+    }
+  }
+
+  // Pages Facebook activées pour le mode automatique : liste explicite reçue
+  // du client (cases cochées) → tout id présent devient activé, tout id
+  // absent (mais appartenant bien à l'utilisateur) devient désactivé. Séparé
+  // du choix de page en diffusion manuelle (broadcast_selections.fb_page_ids),
+  // qui reste inchangé ici.
+  if (Array.isArray(body.autoBroadcastPageIds)) {
+    const idsActives = body.autoBroadcastPageIds.map((id) => Number(id)).filter((id) => Number.isFinite(id));
+
+    const { data: connexions } = await supabase
+      .from('facebook_connections')
+      .select('id')
+      .eq('telegram_user_id', chatId)
+      .eq('is_active', true);
+    const tousLesIds = (connexions ?? []).map((c) => c.id as number);
+
+    const idsAActiver   = tousLesIds.filter((id) => idsActives.includes(id));
+    const idsADesactiver = tousLesIds.filter((id) => !idsActives.includes(id));
+
+    if (idsAActiver.length) {
+      await supabase.from('facebook_connections')
+        .update({ auto_broadcast_enabled: true })
+        .eq('telegram_user_id', chatId)
+        .in('id', idsAActiver);
+    }
+    if (idsADesactiver.length) {
+      await supabase.from('facebook_connections')
+        .update({ auto_broadcast_enabled: false })
+        .eq('telegram_user_id', chatId)
+        .in('id', idsADesactiver);
     }
   }
 
