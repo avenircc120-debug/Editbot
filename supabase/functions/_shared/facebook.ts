@@ -178,6 +178,39 @@ export async function posterSurPage(
   }
 }
 
+/**
+ * Publie une photo (avec légende) comme post séparé sur la Page — utilisé
+ * pour le post "photo du buteur" à chaque but, en plus du post texte évolutif
+ * (buildFacebookPost/editerPost) qui continue de suivre le score. Facebook
+ * télécharge lui-même l'image depuis `photoUrl` : si ESPN n'a pas de portrait
+ * pour ce joueur (URL en 404), Facebook renvoie une erreur ici, gérée comme
+ * un échec normal par l'appelant plutôt que de bloquer la diffusion.
+ */
+export async function posterPhotoSurPage(
+  pageId: string,
+  pageAccessToken: string,
+  photoUrl: string,
+  caption: string,
+): Promise<{ success: boolean; postId?: string; error?: string }> {
+  try {
+    const res = await fetch(`${FB_API}/${pageId}/photos`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ url: photoUrl, caption, access_token: pageAccessToken }),
+    });
+    const data = await safeJson(res);
+    if (data?.error) {
+      return { success: false, error: `#${data.error.code} ${data.error.message}` };
+    }
+    if (!res.ok || !data) {
+      return { success: false, error: `HTTP ${res.status}` };
+    }
+    return { success: true, postId: data.post_id ?? data.id };
+  } catch (e) {
+    return { success: false, error: String(e) };
+  }
+}
+
 export async function editerPost(
   postId: string,
   pageAccessToken: string,
