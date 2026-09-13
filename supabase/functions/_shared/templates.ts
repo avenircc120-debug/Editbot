@@ -64,6 +64,20 @@ export function formatStandingsBlock(
 
 // ─── Post cumulatif avec timeline des événements ────────────────────────────
 
+export interface ButeurDetail { nom: string; espnId: string | null; }
+
+/** Parse le format "Nom|idEspn;Nom2|idEspn2" produit par buteursEquipe()
+ *  (_shared/espn.ts) — l'id est absent (chaîne vide côté ESPN, ou champ
+ *  manquant côté TheSportsDB qui ne fournit pas cette donnée) auquel cas
+ *  espnId vaut null plutôt qu'une chaîne vide, pour que l'appelant puisse
+ *  simplement tester sa présence. */
+export function parseGoalDetails(raw: string | null | undefined): ButeurDetail[] {
+  return (raw ?? '').split(';').map(s => s.trim()).filter(Boolean).map(entree => {
+    const [nom, espnId] = entree.split('|');
+    return { nom: (nom ?? '').trim(), espnId: espnId?.trim() || null };
+  });
+}
+
 /**
  * Convertit le journal structuré (marqueurs internes séparés par \n) en lignes
  * lisibles pour l'affichage Facebook.
@@ -82,8 +96,8 @@ function renderEventsLog(
   homeGoalDetails: string | null,
   awayGoalDetails: string | null,
 ): string {
-  const homeGoals = (homeGoalDetails ?? '').split(';').map(s => s.trim()).filter(Boolean);
-  const awayGoals = (awayGoalDetails ?? '').split(';').map(s => s.trim()).filter(Boolean);
+  const homeGoals = parseGoalDetails(homeGoalDetails);
+  const awayGoals = parseGoalDetails(awayGoalDetails);
   let homeIdx = 0;
   let awayIdx = 0;
   const lines: string[] = [];
@@ -97,15 +111,36 @@ function renderEventsLog(
     } else if (marker === 'FULLTIME') {
       lines.push('🏁 Résultat final');
     } else if (marker === 'GOAL_HOME') {
-      const scorer = homeGoals[homeIdx++] ?? null;
+      const scorer = homeGoals[homeIdx++]?.nom || null;
       lines.push(scorer ? `⚽ ${scorer} (${homeTeam})` : `⚽ But ! (${homeTeam})`);
     } else if (marker === 'GOAL_AWAY') {
-      const scorer = awayGoals[awayIdx++] ?? null;
+      const scorer = awayGoals[awayIdx++]?.nom || null;
       lines.push(scorer ? `⚽ ${scorer} (${awayTeam})` : `⚽ But ! (${awayTeam})`);
     }
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Légende du post photo publié séparément quand un but est marqué (voir
+ * posterPhotoSurPage dans _shared/facebook.ts, appelé depuis facebook-post
+ * uniquement quand ESPN fournit un id de joueur exploitable via
+ * espnHeadshotUrl). Reste court : la photo est le contenu principal.
+ */
+export function buildGoalPhotoCaption(data: {
+  scorerName: string;
+  scoringTeam: string;
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: number;
+  awayScore: number;
+  competition: string;
+}): string {
+  const tag = data.competition.replace(/[\s\-()']/g, '');
+  return `⚽ BUT ! ${data.scorerName} (${data.scoringTeam})\n\n`
+    + `${data.homeTeam}  ${data.homeScore} - ${data.awayScore}  ${data.awayTeam}\n`
+    + `${data.competition}\n\n#Football #${tag}`;
 }
 
 /**
