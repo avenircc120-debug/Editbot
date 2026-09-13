@@ -36,7 +36,7 @@ export interface EspnGoalDetail {
   team: { id?: string };
   scoringPlay?: boolean;
   ownGoal?: boolean;
-  athletesInvolved?: Array<{ displayName: string }>;
+  athletesInvolved?: Array<{ id?: string; displayName: string }>;
 }
 
 export interface EspnEvent {
@@ -276,18 +276,35 @@ export function idEquipeEspn(ev: EspnEvent, homeAway: 'home' | 'away'): string |
 
 /** Liste (dans l'ordre chronologique, séparés par ';') des buteurs d'une équipe
  *  pour ce match, tels que rapportés par ESPN dans `competitions[0].details`.
- *  Les buts contre son camp sont exclus (le nom impliqué appartient à l'équipe
- *  adverse dans le schéma ESPN — l'attribuer aurait été trompeur), auquel cas
- *  le but reste affiché sans nom plutôt que mal attribué. */
+ *  Chaque entrée est encodée "Nom|idEspn" (id absent → "Nom|") pour permettre
+ *  à facebook-post de retrouver la photo officielle du buteur (voir
+ *  espnHeadshotUrl ci-dessous) sans changer le format consommé par
+ *  templates.ts::parseGoalDetails. Les buts contre son camp sont exclus (le
+ *  nom impliqué appartient à l'équipe adverse dans le schéma ESPN —
+ *  l'attribuer aurait été trompeur), auquel cas le but reste affiché sans nom
+ *  plutôt que mal attribué. */
 export function buteursEquipe(ev: EspnEvent, teamId: string | null): string {
   if (!teamId) return '';
   const details = ev.competitions?.[0]?.details ?? [];
   return details
     .filter(d => d.scoringPlay && !d.ownGoal && d.team?.id === teamId)
     .sort((a, b) => (a.clock?.value ?? 0) - (b.clock?.value ?? 0))
-    .map(d => d.athletesInvolved?.[0]?.displayName)
-    .filter((nom): nom is string => Boolean(nom))
+    .map(d => {
+      const buteur = d.athletesInvolved?.[0];
+      if (!buteur?.displayName) return null;
+      return `${buteur.displayName}|${buteur.id ?? ''}`;
+    })
+    .filter((entree): entree is string => Boolean(entree))
     .join(';');
+}
+
+/** URL de la photo officielle ESPN d'un joueur, ou null si l'id est absent.
+ *  ESPN ne dispose pas toujours d'un portrait pour les joueurs moins connus
+ *  (championnats mineurs, jeunes joueurs) — dans ce cas l'URL renvoie une 404
+ *  et l'appelant doit simplement renoncer à publier une photo pour ce but. */
+export function espnHeadshotUrl(espnId: string | null | undefined): string | null {
+  if (!espnId) return null;
+  return `https://a.espncdn.com/i/headshots/soccer/players/full/${espnId}.png`;
 }
 
 export interface EspnStandingsEntry {
